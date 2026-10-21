@@ -50,7 +50,7 @@ GitHub Actions の `poc-ingest` ワークフロー（手動実行）でも同じ
 | `D1_DATABASE_ID` | GitHub Actions Secrets | 書き込み先の D1 |
 | `CLOUDFLARE_API_TOKEN` | GitHub Actions Secrets | D1 への書き込み（権限は D1 編集のみ） |
 
-Cloudflare のダッシュボードは使いません。D1 などのリソースは [maaun-terraform](https://github.com/maa-un/maaun-terraform)、シークレットは `gh secret set` / `wrangler secret put` で設定します（手順は [docs/06](docs/06_secrets_and_repository.md)）。
+D1・R2 などのリソースは wrangler コマンドで作成します（一覧は [docs/03](docs/03_system_architecture.md#作成済みのリソース)）。シークレットは `gh secret set` / `wrangler secret put` で設定します（手順は [docs/06](docs/06_secrets_and_repository.md)）。
 
 ## 既知の制約（PoC時点）
 

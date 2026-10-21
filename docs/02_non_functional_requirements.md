@@ -82,7 +82,7 @@ IPA「非機能要求グレード」の6分類（可用性・性能・運用保�
 | データ品質チェック | 前日比±50%超の株価、配当性向300%超、欠損率が5%超を「要確認」として管理画面に出す（株式分割の取り違えなどを検知） |
 | ログ | 構造化ログ（JSON）。キー・メールアドレス・保有株は出さない |
 | デプロイと切り戻し | mainへのマージでGitHub Actionsが`wrangler deploy`。不具合時は`wrangler rollback`で過去バージョンに戻す |
-| インフラの変更 | ダッシュボードは使わない。maaun-terraformのプルリクエストで`plan`を確認し、承認後に`apply` |
+| インフラの変更 | wranglerコマンドで行い、作成したリソースは[03](03_system_architecture.md#作成済みのリソース)に記録する。本番への変更は事前に人が承認する |
 | 品質チェック（CI） | cargo fmt・clippy・test、tsc・lint・ビルドをプルリクエストごとに実行。domainとusecaseの単体テストのカバレッジ80%以上 |
 | 依存の更新 | Dependabotで月1回。cargo audit・npm auditをCIで実行 |
 | ドキュメント | README（構成・セットアップ・キー名）、設計判断の記録（ADR）、この仕様書 |

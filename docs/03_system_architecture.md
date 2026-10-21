@@ -91,24 +91,29 @@ flowchart LR
 
 ## インフラ管理とデプロイ
 
-Cloudflareのダッシュボードは使わず、すべてコードとコマンドで管理する。インフラは既存の[maaun-terraform](https://github.com/maa-un/maaun-terraform)（Cloudflareの`envs/global/cloudflare/account`レイヤ。Zone・DNS・D1・R2・Workersのドメイン・Cronをすでに管理している）に追加し、アプリのデプロイとシークレットの登録はコマンド（wrangler・gh）で行う。
+リソースは当面、wranglerコマンドで作成してCloudflare側で管理する。あとで[maaun-terraform](https://github.com/maa-un/maaun-terraform)にimportできるよう、名前は`maaun-`で始め、作成したリソースはこの表に記録する。デプロイとシークレットの登録もコマンド（wrangler・gh）で行う。
 
-| 対象 | 管理方法 | 置き場所 |
-|---|---|---|
-| D1データベース、R2バケット（ライフサイクルルールを含む） | Terraform（`cloudflare_d1_database`、`cloudflare_r2_bucket`） | maaun-terraform |
-| カスタムドメイン（stock.insight.maa-un.com）、DNS | Terraform（`cloudflare_workers_custom_domain`、`cloudflare_dns_record`） | maaun-terraform |
-| Cron Trigger（平日18:30 JST） | Terraform（`cloudflare_workers_cron_trigger`） | maaun-terraform |
-| Cloudflare APIトークン（CI用・バッチ用） | Terraform（`cloudflare_api_token`）。権限は用途ごとに最小にする | maaun-terraform |
-| GitHubリポジトリの設定（ブランチ保護、Secret scanning、Push protection） | Terraform（GitHubプロバイダ） | maaun-terraform |
-| Workerのコードと紐付け（D1、R2、Workers AI、Workflows） | `wrangler.jsonc`に定義し、`wrangler deploy`で反映 | stock-insight |
-| デプロイ | mainへのマージでGitHub Actionsが`wrangler deploy`を実行。プルリクエストでは`wrangler versions upload`でプレビューURLを発行 | stock-insight |
-| D1のテーブル定義の変更 | `migrations/`にSQLを置き、GitHub Actionsから`batch-cli migrate`（D1 HTTP API）で適用（技術検証で確認済み） | stock-insight |
-| Worker Secret | `wrangler secret put`（値は標準入力から渡す） | コマンド |
-| GitHub Actions Secrets | `gh secret set`（値は標準入力から渡す） | コマンド |
+### 作成済みのリソース
 
-- リソースの作成・変更はmaaun-terraformのプルリクエストで`plan`を確認してから`apply`する（本番への変更のため、適用前に人が承認する）
-- WorkerのスクリプトはTerraformでは管理しない。Rustのビルド成果物（Wasm）を扱えるwranglerでデプロイする。Terraformが参照するのはスクリプト名だけ
-- シークレットの値はTerraformのstateに残さないため、Terraformでは扱わない（[06](06_secrets_and_repository.md)）
+| 種類 | 名前 | 作成方法 | 作成日 |
+|---|---|---|---|
+| D1 | `maaun-stock-insight`（APAC） | `wrangler d1 create maaun-stock-insight --location apac` | 2026-10-21 |
+| R2 | `maaun-stock-insight-raw`（APAC） | `wrangler r2 bucket create maaun-stock-insight-raw --location apac` | 2026-10-21 |
+
+IDは`wrangler d1 info` / `wrangler r2 bucket info`で確認できる（秘密ではないが、GitHub Actionsへは`gh secret set`で渡す）。
+
+### 管理方法
+
+| 対象 | 管理方法 |
+|---|---|
+| D1、R2、カスタムドメイン、Cron Trigger | wranglerで作成。将来Terraformにimportする可能性あり |
+| Workerのコードと紐付け（D1、R2、Workers AI、Workflows） | `wrangler.jsonc`に定義し、`wrangler deploy`で反映 |
+| デプロイ | mainへのマージでGitHub Actionsが`wrangler deploy`。プルリクエストでは`wrangler versions upload`でプレビューURL |
+| D1のテーブル定義の変更 | `migrations/`にSQLを置き、`batch-cli migrate`（D1 HTTP API）で適用 |
+| Cloudflare APIトークン | ダッシュボードで発行（権限は用途ごとに最小）。値は`gh secret set`に直接入力 |
+| Worker Secret / GitHub Actions Secrets | `wrangler secret put` / `gh secret set`（値は標準入力から渡す） |
+
+- 本番への変更（リソースの作成・削除、スキーマの適用）は、実行前に人が承認する
 - 切り戻しは`wrangler rollback`で直前のバージョンに戻す
 
 ## ネットワークとドメイン
