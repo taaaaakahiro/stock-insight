@@ -67,6 +67,7 @@ export type StockDetail = {
   yield_series: [string, number][];
   /** [日付, 終値]（古い順、週1点） */
   price_series: [string, number][];
+  latest_disclosed: string | null;
 };
 
 /** 売り時のサイン（domain::portfolio::SellSignal） */
@@ -84,6 +85,7 @@ export type Status = {
     finished_at: number | null;
     status: string;
     latest_price_date: string | null;
+    latest_fin_date: string | null;
   } | null;
 };
 

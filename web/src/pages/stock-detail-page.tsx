@@ -14,7 +14,7 @@ import {
 import { type AnnualRow, ApiError, apiGet, type QuarterRow, type StockDetail } from "@/lib/api";
 import { useAuthState } from "@/lib/auth";
 import { type Kind, metricLabel } from "@/lib/filters";
-import { count, oku, pct, times, yen, yen1, ymd } from "@/lib/format";
+import { count, jstDateTime, oku, pct, times, yen, yen1, ymd } from "@/lib/format";
 import { backToList } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
@@ -72,6 +72,7 @@ function Detail({ d }: { d: StockDetail }) {
   const kind = s.kind;
   const stock = kind === "stock";
   const divWord = stock ? "配当" : "分配金";
+  const latestDisclosed = d.latest_disclosed;
   const metrics: { label: string; value: string }[] = [
     { label: metricLabel("price", kind), value: yen(s.price) },
     { label: metricLabel("dividend_yield", kind), value: pct(s.dividend_yield) },
@@ -104,8 +105,9 @@ function Detail({ d }: { d: StockDetail }) {
         </div>
         {stock && <Flags r={s} />}
         <p className="text-xs text-muted-foreground">
-          {metricLabel("price", kind)}は {ymd(s.price_date)}{" "}
-          の終値。財務は決算短信（J-Quants）の最新値。
+          {metricLabel("price", kind)}は {ymd(s.price_date)} の終値、財務は決算短信（J-Quants）の
+          {latestDisclosed ? ` ${ymd(latestDisclosed)} 開示分` : "最新値"}。指標の計算は{" "}
+          {jstDateTime(s.fetched_at)}。
         </p>
       </header>
 

@@ -31,6 +31,7 @@ struct RunRow {
     finished_at: Option<i64>,
     status: String,
     latest_price_date: Option<String>,
+    latest_fin_date: Option<String>,
 }
 
 /// レコメンド側の列。指標の列は同じ結果を Row としても読む
@@ -57,6 +58,7 @@ impl RecommendRepository for D1Recommendations {
             finished_at: r.finished_at,
             status: r.status,
             latest_price_date: r.latest_price_date,
+            latest_fin_date: r.latest_fin_date,
         }))
     }
 

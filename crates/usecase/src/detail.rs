@@ -19,6 +19,8 @@ pub struct StockDetail {
     pub yield_series: Vec<(Date, f64)>,
     /// 終値の推移（週1点、古い順）
     pub price_series: Vec<PriceBar>,
+    /// 取り込み済みの決算短信（年次）のうち最新の開示日（F8: 財務の鮮度）
+    pub latest_disclosed: Option<Date>,
 }
 
 pub trait StockDetailQuery {
@@ -44,6 +46,7 @@ pub async fn stock_detail<Q: StockDetailQuery>(
     let bars = repo.price_history(code).await?;
     let annuals = repo.annuals(code).await?;
     let quarterlies = repo.quarterlies(code).await?;
+    let latest_disclosed = annuals.iter().filter_map(|a| a.disclosed).max();
     let (market, fin, quarters, _) = build_inputs(bars, &annuals, &quarterlies);
     let mut ys = yield_series(&market);
     ys.reverse();
@@ -65,6 +68,7 @@ pub async fn stock_detail<Q: StockDetailQuery>(
             .into_iter()
             .rev()
             .collect(),
+        latest_disclosed,
     }))
 }
 

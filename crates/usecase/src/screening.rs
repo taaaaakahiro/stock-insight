@@ -52,6 +52,8 @@ pub struct DataStatus {
     pub finished_at: Option<i64>,
     pub status: String,
     pub latest_price_date: Option<String>,
+    /// 取り込み済みの決算短信のうち最新の開示日
+    pub latest_fin_date: Option<String>,
 }
 
 pub trait IndicatorQuery {

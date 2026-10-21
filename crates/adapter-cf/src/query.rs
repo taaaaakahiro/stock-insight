@@ -150,7 +150,9 @@ pub const QUARTERLIES_BY_CODE: &str =
      FROM financials_quarterly WHERE code = ? ORDER BY period_end DESC LIMIT 40";
 
 pub const LATEST_RUN: &str = "SELECT r.run_id, r.started_at, r.finished_at, r.status, \
-     (SELECT MAX(price_date) FROM indicators_latest) AS latest_price_date \
+     (SELECT MAX(price_date) FROM indicators_latest) AS latest_price_date, \
+     (SELECT MAX(disclosed) FROM (SELECT disclosed FROM financials_annual \
+      UNION ALL SELECT disclosed FROM financials_quarterly)) AS latest_fin_date \
      FROM batch_runs r ORDER BY r.started_at DESC LIMIT 1";
 
 /// AIレコメンドの候補（株式で、バリュー株か「5年連続配当かつ通期黒字」）。最終の絞り込みは domain で行う

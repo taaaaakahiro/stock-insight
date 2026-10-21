@@ -166,7 +166,7 @@ function Freshness() {
       )}
     >
       {status
-        ? `株価: ${ymd(status.latest_price_date)}終値（${jstDateTime(status.finished_at ?? status.started_at)}取得）`
+        ? `株価: ${ymd(status.latest_price_date)}終値・財務: ${ymd(status.latest_fin_date)}開示分（${jstDateTime(status.finished_at ?? status.started_at)}取得）`
         : "データがまだありません"}
       {stale && status ? "・更新が止まっています" : ""}
     </p>

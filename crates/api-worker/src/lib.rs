@@ -238,6 +238,7 @@ async fn status(req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
                     "finished_at": s.finished_at,
                     "status": s.status,
                     "latest_price_date": s.latest_price_date,
+                    "latest_fin_date": s.latest_fin_date,
                 })),
             })),
             Err(e) => internal(&e.0),
@@ -463,6 +464,7 @@ fn detail_json(d: &StockDetail) -> Value {
         })).collect::<Vec<_>>(),
         "yield_series": d.yield_series.iter().map(|(dt, y)| json!([dt.to_string(), y])).collect::<Vec<_>>(),
         "price_series": d.price_series.iter().map(|b| json!([b.date.to_string(), b.close])).collect::<Vec<_>>(),
+        "latest_disclosed": d.latest_disclosed.map(|d| d.to_string()),
     })
 }
 fn row_json(r: &StockRow) -> Value {
