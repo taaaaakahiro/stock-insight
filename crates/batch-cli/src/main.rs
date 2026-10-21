@@ -1,31 +1,34 @@
-//! 日次バッチの入口（技術検証版）。
+//! 日次バッチの入口。
 //!
 //! 使い方:
-//!   batch-cli migrate                                  D1 にスキーマを適用
-//!   batch-cli ingest --codes 7203,8058 [options]       取得 → 指標計算 → 保存
-//!   batch-cli ingest --all [--kinds stock,reit,etf]      銘柄マスタの全銘柄を対象にする（D1 から読む）
+//!   batch-cli migrate                     D1 にスキーマを適用
 //!   batch-cli sync-master [--dry-run <file>] [--from-file <xlsx>]
-//!                                                      JPX の上場銘柄一覧 → stocks（名称・種類・業種・規模）
-//!   batch-cli should-run [--label daily] [--force]      今日バッチを動かすか（休場日・当日成功済みなら false）。
-//!                                                      GITHUB_OUTPUT があれば run=true|false を書く
+//!                                         JPX の上場銘柄一覧 → stocks（名称・種類・業種・規模）
+//!   batch-cli sync-jq [options]           J-Quants から株価（終値）と財務（本決算）を日付ごとに取り込む。
+//!                                         前回の続きから今日まで。初回は過去5年分（中断しても続きから再開）
+//!   batch-cli compute [--label daily]     保存済みの株価と財務から、全銘柄の指標を計算して保存
+//!   batch-cli should-run [--label daily] [--force]
+//!                                         今日バッチを動かすか（休場日・当日成功済みなら false）。
+//!                                         GITHUB_OUTPUT があれば run=true|false を書く
 //!
-//! ingest のオプション:
-//!   --dry-run <file>     D1 に書かず、SQL をファイルに出力
-//!   --shard <i>/<n>      銘柄を n 分割した i 番目だけ処理（GitHub Actions の matrix 用）
-//!   --concurrency <n>    同時に処理する銘柄数（既定 8）
-//!   --edinet-days <n>    有報を探す日数（既定 400）
-//!   --label <name>       batch_runs の run_id の先頭（既定 manual。日次バッチは daily）
+//! sync-jq のオプション:
+//!   --from <YYYY-MM-DD>     初回の開始日（既定: 5年前）。2回目以降は前回の続きから
+//!   --until <YYYY-MM-DD>    終了日（既定: 今日）
+//!   --rate <n>              1分あたりの呼び出し数（既定 60 = Light。Free は 5）
+//!   --max-minutes <n>       この時間を過ぎたら、そこまでを保存して終わる（既定 300）
+//!   --persist-every <n>     何日分ごとに D1 へ保存するか（既定 120）
+//!   --dry-run <file>        D1 を読み書きせず、取得結果を SQL ファイルに書く（--from と --until が必要）
 //!
 //! 環境変数（値はリポジトリに書かない）:
-//!   EDINET_API_KEY                                       未設定なら財務はスキップ
-//!   CLOUDFLARE_ACCOUNT_ID, D1_DATABASE_ID, CLOUDFLARE_API_TOKEN   --dry-run 以外で必須
+//!   JQUANTS_API_KEY                                          sync-jq で必須
+//!   CLOUDFLARE_ACCOUNT_ID, D1_DATABASE_ID, CLOUDFLARE_API_TOKEN  D1 を使うコマンドで必須
 
-use adapter_batch::{d1, edinet::EdinetClient, http, jpx, yahoo::YahooClient};
-use domain::{Date, StockCode};
-use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::Semaphore;
-use usecase::{ingest_one, BatchRun, Clock, Outcome, SnapshotStore};
+use adapter_batch::{d1, http, jpx, jquants::JQuantsClient};
+use domain::{Date, PriceBar, StockCode};
+use std::collections::{HashMap, HashSet};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use usecase::fins::{AnnualReport, FinancialStore, FinancialSummarySource};
+use usecase::{BatchRun, Clock, SnapshotStore};
 
 struct SystemClock;
 impl Clock for SystemClock {
@@ -40,57 +43,47 @@ impl Clock for SystemClock {
 #[derive(Debug)]
 struct Args {
     cmd: String,
-    codes: Vec<StockCode>,
     dry_run: Option<String>,
-    shard: (usize, usize),
-    concurrency: usize,
-    edinet_days: i64,
     from_file: Option<String>,
-    all: bool,
-    kinds: Vec<String>,
     label: String,
     force: bool,
+    from: Option<Date>,
+    until: Option<Date>,
+    rate: u32,
+    max_minutes: u64,
+    persist_every: usize,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     let cmd = it
         .next()
-        .ok_or("command required: migrate | ingest | sync-master | should-run")?;
+        .ok_or("command required: migrate | sync-master | sync-jq | compute | should-run")?;
     let mut a = Args {
         cmd,
-        codes: vec![],
         dry_run: None,
-        shard: (0, 1),
-        concurrency: 8,
-        edinet_days: 400,
         from_file: None,
-        all: false,
-        kinds: vec!["stock".into(), "reit".into(), "etf".into()],
         label: "manual".into(),
         force: false,
+        from: None,
+        until: None,
+        rate: 60,
+        max_minutes: 300,
+        persist_every: 120,
     };
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or(format!("{flag} needs a value"));
+        let date = |s: String| Date::parse(&s).ok_or(format!("bad date: {s}"));
         match flag.as_str() {
-            "--codes" => {
-                a.codes = val()?
-                    .split(',')
-                    .map(|s| StockCode::parse(s).ok_or(format!("bad code: {s}")))
-                    .collect::<Result<_, _>>()?
-            }
             "--dry-run" => a.dry_run = Some(val()?),
             "--from-file" => a.from_file = Some(val()?),
-            "--all" => a.all = true,
             "--force" => a.force = true,
-            "--kinds" => {
-                a.kinds = val()?.split(',').map(|s| s.trim().to_string()).collect();
-                if a.kinds
-                    .iter()
-                    .any(|k| !["stock", "reit", "etf"].contains(&k.as_str()))
-                {
-                    return Err("--kinds takes stock,reit,etf".into());
-                }
+            "--from" => a.from = Some(date(val()?)?),
+            "--until" => a.until = Some(date(val()?)?),
+            "--rate" => a.rate = val()?.parse().map_err(|_| "bad rate")?,
+            "--max-minutes" => a.max_minutes = val()?.parse().map_err(|_| "bad max-minutes")?,
+            "--persist-every" => {
+                a.persist_every = val()?.parse().map_err(|_| "bad persist-every")?
             }
             "--label" => {
                 a.label = val()?;
@@ -98,19 +91,6 @@ fn parse_args() -> Result<Args, String> {
                     return Err("--label must be alphanumeric".into());
                 }
             }
-            "--shard" => {
-                let v = val()?;
-                let (i, n) = v.split_once('/').ok_or("--shard i/n")?;
-                a.shard = (
-                    i.parse().map_err(|_| "bad shard")?,
-                    n.parse().map_err(|_| "bad shard")?,
-                );
-                if a.shard.1 == 0 || a.shard.0 >= a.shard.1 {
-                    return Err("shard out of range".into());
-                }
-            }
-            "--concurrency" => a.concurrency = val()?.parse().map_err(|_| "bad concurrency")?,
-            "--edinet-days" => a.edinet_days = val()?.parse().map_err(|_| "bad edinet-days")?,
             other => return Err(format!("unknown flag: {other}")),
         }
     }
@@ -144,8 +124,9 @@ async fn main() {
     };
     let code = match args.cmd.as_str() {
         "migrate" => migrate().await,
-        "ingest" => tokio::task::LocalSet::new().run_until(ingest(args)).await,
         "sync-master" => sync_master(args).await,
+        "sync-jq" => sync_jq(args).await,
+        "compute" => compute(args).await,
         "should-run" => should_run(args).await,
         other => Err(format!("unknown command: {other}")),
     };
@@ -167,6 +148,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0003_stocks",
         include_str!("../../../migrations/0003_stocks.sql"),
+    ),
+    (
+        "0004_jquants",
+        include_str!("../../../migrations/0004_jquants.sql"),
     ),
 ];
 
@@ -255,96 +240,235 @@ async fn should_run(args: Args) -> Result<(), String> {
     Ok(())
 }
 
-async fn ingest(args: Args) -> Result<(), String> {
-    let all_codes: Vec<StockCode> = if args.all {
-        let kinds: Vec<&str> = args.kinds.iter().map(String::as_str).collect();
-        d1_store(http::client())?
-            .listed_codes(&kinds)
-            .await
-            .map_err(|e| e.0)?
-            .iter()
-            .filter_map(|c| StockCode::parse(c))
-            .collect()
-    } else {
-        args.codes.clone()
-    };
-    if all_codes.is_empty() {
-        return Err("no codes: pass --codes or --all (after sync-master)".into());
+/// sync-jq がどの日付まで取り込んだか
+const CURSOR_KEY: &str = "jq_synced_until";
+/// 初回に取る期間（Light プランで取れる5年）
+const BACKFILL_DAYS: i64 = 5 * 365;
+/// 夕方以降の開示を取りこぼさないよう、財務は直近この日数を毎回取り直す
+const REFETCH_FIN_DAYS: i64 = 3;
+
+async fn sync_jq(args: Args) -> Result<(), String> {
+    if let Some(path) = &args.dry_run {
+        return sync_jq_dry_run(&args, path).await;
     }
-    let clock = SystemClock;
-    let started = clock.now_unix();
-    let run_id = format!(
-        "{}-{}-{}of{}",
-        args.label, started, args.shard.0, args.shard.1
-    );
-    let codes: Vec<StockCode> = all_codes
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| i % args.shard.1 == args.shard.0)
-        .map(|(_, c)| c.clone())
-        .collect();
-
+    let started = Instant::now();
     let client = http::client();
-    let prices = Rc::new(YahooClient::new(client.clone()));
+    let jq = JQuantsClient::new(client.clone(), env("JQUANTS_API_KEY")?, args.rate);
+    let store = d1_store(client)?;
+    let now = SystemClock.now_unix();
+    let today = Date::from_unix_jst(now);
+    let until = args.until.unwrap_or(today);
 
-    // EDINET: 対象銘柄の最新の有報を索引化（4並列で日ごとの一覧を取得）
-    let mut edinet = match env("EDINET_API_KEY") {
-        Ok(key) => Some(EdinetClient::new(client.clone(), key)),
-        Err(_) => {
-            println!("warn: EDINET_API_KEY is not set; financials are skipped");
-            None
-        }
+    let cursor = store
+        .get_state(CURSOR_KEY)
+        .await
+        .map_err(|e| e.0)?
+        .and_then(|s| Date::parse(&s));
+    let start = match (cursor, args.from) {
+        (Some(c), _) => c.add_days(1),
+        (None, Some(f)) => f,
+        (None, None) => today.add_days(-BACKFILL_DAYS),
     };
-    if let Some(ed) = edinet.as_mut() {
-        let today = Date::from_unix_jst(started);
-        let ed_rc = Rc::new(std::mem::replace(
-            ed,
-            EdinetClient::new(client.clone(), String::new()),
-        ));
-        let sem = Rc::new(Semaphore::new(4));
-        let mut tasks = vec![];
-        for i in 0..args.edinet_days {
-            let (ed, sem) = (ed_rc.clone(), sem.clone());
-            tasks.push(tokio::task::spawn_local(async move {
-                let _p = sem.acquire().await.ok()?;
-                ed.list_day(today.add_days(-i)).await.ok()
-            }));
-        }
-        let mut lists = vec![];
-        let mut failed_days = 0;
-        for t in tasks {
-            match t.await.ok().flatten() {
-                Some(l) => lists.push(l),
-                None => failed_days += 1,
+    let fin_start = start.min(until.add_days(-REFETCH_FIN_DAYS));
+    let days = usecase::fins::weekdays(fin_start, until);
+    println!(
+        "sync-jq: prices {start}..{until}, financials {fin_start}..{until} ({} weekdays)",
+        days.len()
+    );
+    if days.is_empty() {
+        return Ok(());
+    }
+
+    let mut histories = store.load_price_histories().await.map_err(|e| e.0)?;
+    println!("sync-jq: loaded {} price histories", histories.len());
+    let mut changed: HashSet<String> = HashSet::new();
+    let mut reports: Vec<AnnualReport> = vec![];
+    let mut done_until: Option<Date> = None;
+    let mut since_persist = 0;
+    let deadline = std::time::Duration::from_secs(args.max_minutes * 60);
+
+    for (i, &day) in days.iter().enumerate() {
+        if day >= start {
+            let closes = jq
+                .closes_on(day)
+                .await
+                .map_err(|e| format!("{day} prices: {}", e.0))?;
+            let n = closes.len();
+            let mut by_code: HashMap<String, Vec<PriceBar>> = HashMap::new();
+            for (code, bar) in closes {
+                by_code
+                    .entry(code.as_str().to_string())
+                    .or_default()
+                    .push(bar);
+            }
+            for (code, bars) in by_code {
+                domain::price_history::merge(histories.entry(code.clone()).or_default(), &bars);
+                changed.insert(code);
+            }
+            if n > 0 {
+                println!("{day}: {n} closes");
             }
         }
-        let mut owned = Rc::try_unwrap(ed_rc).map_err(|_| "edinet client still shared")?;
-        for l in lists {
-            owned.add_to_index(l, &codes);
+        let fins = jq
+            .annual_reports_on(day)
+            .await
+            .map_err(|e| format!("{day} financials: {}", e.0))?;
+        if !fins.is_empty() {
+            println!("{day}: {} annual reports", fins.len());
         }
-        println!(
-            "edinet: indexed {} annual reports ({} days failed)",
-            owned.indexed(),
-            failed_days
-        );
-        *ed = owned;
+        reports.extend(fins);
+        if day >= start {
+            done_until = Some(day);
+        }
+        since_persist += 1;
+
+        let last = i + 1 == days.len();
+        let timed_out = started.elapsed() > deadline;
+        if last || timed_out || since_persist >= args.persist_every {
+            persist(
+                &store,
+                &histories,
+                &mut changed,
+                &mut reports,
+                done_until,
+                now,
+            )
+            .await?;
+            since_persist = 0;
+            if timed_out && !last {
+                println!("sync-jq: time limit reached; will resume after {done_until:?}");
+                return Ok(());
+            }
+        }
     }
+    // 休場日などで最後の日が平日でなくても、until まで進めておく
+    store
+        .set_state(
+            CURSOR_KEY,
+            &until.max(done_until.unwrap_or(until)).to_string(),
+            now,
+        )
+        .await
+        .map_err(|e| e.0)?;
+    println!("sync-jq: done in {}s", started.elapsed().as_secs());
+    Ok(())
+}
 
-    let fins = Rc::new(edinet.map(OptionalFins::Some).unwrap_or(OptionalFins::None));
-    let file_store = args
-        .dry_run
-        .as_ref()
-        .map(|_| Rc::new(d1::SqlFileStore::default()));
-    let d1 = match &args.dry_run {
-        Some(_) => None,
-        None => Some(Rc::new(d1_store(client.clone())?)),
+/// D1 に触れずに、指定期間の取得結果を SQL にする（取得元の形の確認用）
+async fn sync_jq_dry_run(args: &Args, path: &str) -> Result<(), String> {
+    let (Some(from), Some(until)) = (args.from, args.until) else {
+        return Err("--dry-run needs --from and --until".into());
     };
-    let store: Rc<Store> = Rc::new(match (&file_store, &d1) {
-        (Some(f), _) => Store::File(f.clone()),
-        (_, Some(d)) => Store::D1(d.clone()),
-        _ => unreachable!(),
-    });
+    let jq = JQuantsClient::new(http::client(), env("JQUANTS_API_KEY")?, args.rate);
+    let file = d1::SqlFileStore::default();
+    let mut histories: HashMap<String, Vec<PriceBar>> = HashMap::new();
+    let mut reports = vec![];
+    for day in usecase::fins::weekdays(from, until) {
+        let closes = jq.closes_on(day).await.map_err(|e| e.0)?;
+        let fins = jq.annual_reports_on(day).await.map_err(|e| e.0)?;
+        println!(
+            "{day}: {} closes, {} annual reports",
+            closes.len(),
+            fins.len()
+        );
+        for (code, bar) in closes {
+            domain::price_history::merge(
+                histories.entry(code.as_str().to_string()).or_default(),
+                &[bar],
+            );
+        }
+        reports.extend(fins);
+    }
+    let rows: Vec<(String, String, String)> = histories
+        .iter()
+        .filter_map(|(c, b)| {
+            Some((
+                c.clone(),
+                domain::price_history::encode(b),
+                b.last()?.date.to_string(),
+            ))
+        })
+        .collect();
+    file.save_annual_reports(&reports, 0)
+        .await
+        .map_err(|e| e.0)?;
+    let mut sql = file.into_string();
+    for s in adapter_batch::sql::price_history_stmts(&rows, 0) {
+        sql.push_str(&s.render());
+        sql.push('\n');
+    }
+    std::fs::write(path, sql).map_err(|e| e.to_string())?;
+    println!(
+        "dry-run: {} codes, {} annual reports -> {path}",
+        rows.len(),
+        reports.len()
+    );
+    Ok(())
+}
 
+async fn persist(
+    store: &d1::D1Store,
+    histories: &HashMap<String, Vec<PriceBar>>,
+    changed: &mut HashSet<String>,
+    reports: &mut Vec<AnnualReport>,
+    done_until: Option<Date>,
+    now: i64,
+) -> Result<(), String> {
+    let rows: Vec<(String, String, String)> = changed
+        .iter()
+        .filter_map(|code| {
+            let bars = histories.get(code)?;
+            let last = bars.last()?;
+            Some((
+                code.clone(),
+                domain::price_history::encode(bars),
+                last.date.to_string(),
+            ))
+        })
+        .collect();
+    store
+        .save_price_histories(&rows, now)
+        .await
+        .map_err(|e| e.0)?;
+    store
+        .save_annual_reports(reports, now)
+        .await
+        .map_err(|e| e.0)?;
+    println!(
+        "persist: {} price histories, {} annual reports",
+        rows.len(),
+        reports.len()
+    );
+    changed.clear();
+    reports.clear();
+    if let Some(d) = done_until {
+        store
+            .set_state(CURSOR_KEY, &d.to_string(), now)
+            .await
+            .map_err(|e| e.0)?;
+    }
+    Ok(())
+}
+
+async fn compute(args: Args) -> Result<(), String> {
+    let store = d1_store(http::client())?;
+    let started = SystemClock.now_unix();
+    let run_id = format!("{}-{}", args.label, started);
+    let codes: Vec<StockCode> = store
+        .listed_codes(&["stock", "reit", "etf"])
+        .await
+        .map_err(|e| e.0)?
+        .iter()
+        .filter_map(|c| StockCode::parse(c))
+        .collect();
+    let histories = store.load_price_histories().await.map_err(|e| e.0)?;
+    let annuals = store.load_annuals().await.map_err(|e| e.0)?;
+    println!(
+        "compute: {} codes, {} price histories, {} with financials",
+        codes.len(),
+        histories.len(),
+        annuals.len()
+    );
     let mut run = BatchRun {
         run_id: run_id.clone(),
         started_at: started,
@@ -355,109 +479,29 @@ async fn ingest(args: Args) -> Result<(), String> {
         status: "running",
     };
     store.save_run(&run).await.map_err(|e| e.0)?;
-
-    // 銘柄ごとに並列処理（同時実行数は Semaphore で制限）
-    let sem = Rc::new(Semaphore::new(args.concurrency.max(1)));
-    let mut tasks = vec![];
-    for code in codes {
-        let (prices, fins, store, sem, run_id) = (
-            prices.clone(),
-            fins.clone(),
-            store.clone(),
-            sem.clone(),
-            run_id.clone(),
-        );
-        tasks.push(tokio::task::spawn_local(async move {
-            let _p = sem.acquire().await.expect("semaphore");
-            let out = ingest_one(
-                &code,
-                &run_id,
-                prices.as_ref(),
-                fins.as_ref(),
-                store.as_ref(),
-                &SystemClock,
-            )
-            .await;
-            (code, out)
-        }));
-    }
-    for t in tasks {
-        let (code, out) = t.await.map_err(|e| e.to_string())?;
-        match out {
-            Outcome::Saved { warning } => {
-                run.succeeded += 1;
-                match warning {
-                    Some(w) => println!("ok   {} (warn: {w})", code.as_str()),
-                    None => println!("ok   {}", code.as_str()),
-                }
-            }
-            Outcome::Failed(e) => {
-                run.failed += 1;
-                println!("fail {} ({})", code.as_str(), e);
-            }
-        }
-    }
-    run.finished_at = Some(clock.now_unix());
-    run.status = if run.failed == 0 {
+    let (snaps, skipped) =
+        usecase::daily::compute_all(&codes, histories, &annuals, &run_id, started);
+    store.save_snapshots(&snaps).await.map_err(|e| e.0)?;
+    run.succeeded = snaps.len();
+    run.failed = skipped;
+    run.finished_at = Some(SystemClock.now_unix());
+    // 株価のない銘柄（上場直後など）があるのは普通なので、半分以上計算できれば成功とする
+    run.status = if snaps.len() * 2 >= codes.len().max(1) {
         "succeeded"
-    } else if run.succeeded > 0 {
+    } else if !snaps.is_empty() {
         "partial"
     } else {
         "failed"
     };
     store.save_run(&run).await.map_err(|e| e.0)?;
     println!(
-        "run {}: {} ok, {} failed, {}s",
-        run.run_id,
-        run.succeeded,
-        run.failed,
-        run.finished_at.unwrap() - started
+        "compute: {} saved, {} without prices, status {}",
+        snaps.len(),
+        skipped,
+        run.status
     );
-
-    if let (Some(path), Some(f)) = (&args.dry_run, file_store) {
-        drop(store);
-        let f = Rc::try_unwrap(f).map_err(|_| "store still shared")?;
-        std::fs::write(path, f.into_string()).map_err(|e| e.to_string())?;
-        println!("dry-run: wrote {path}");
-    }
-    if run.succeeded == 0 {
-        return Err("all stocks failed".into());
+    if run.status == "failed" {
+        return Err("no indicators computed".into());
     }
     Ok(())
-}
-
-/// EDINET キーが無い場合でも同じ型で扱うための包み
-enum OptionalFins {
-    Some(EdinetClient),
-    None,
-}
-impl usecase::FinancialSource for OptionalFins {
-    async fn fetch_financials(
-        &self,
-        code: &StockCode,
-    ) -> Result<Option<domain::FinancialData>, usecase::PortError> {
-        match self {
-            OptionalFins::Some(c) => c.fetch_financials(code).await,
-            OptionalFins::None => Ok(None),
-        }
-    }
-}
-
-enum Store {
-    File(Rc<d1::SqlFileStore>),
-    D1(Rc<d1::D1Store>),
-}
-impl SnapshotStore for Store {
-    async fn save_run(&self, run: &BatchRun) -> Result<(), usecase::PortError> {
-        match self {
-            Store::File(s) => s.save_run(run).await,
-            Store::D1(s) => s.save_run(run).await,
-        }
-    }
-    async fn save_snapshot(&self, snap: &usecase::Snapshot) -> Result<(), usecase::PortError> {
-        match self {
-            Store::File(s) => s.save_snapshot(snap).await,
-            Store::D1(s) => s.save_snapshot(snap).await,
-        }
-    }
 }

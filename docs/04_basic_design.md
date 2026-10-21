@@ -21,7 +21,7 @@ sequenceDiagram
   autonumber
   participant CR as Cron Trigger
   participant GH as GitHub Actions（batch-cli）
-  participant EX as JPX / Yahoo / EDINET
+  participant EX as JPX / J-Quants
   participant D1 as D1
   participant R2 as R2
   participant API as API Worker
@@ -76,7 +76,7 @@ Cargoワークスペースで層ごとにcrateを分け、依存は外側から�
 | domain | エンティティ | 銘柄、指標、保有株、売り時条件、警告ルール、ユーザー。配当利回りパーセンタイルや警告判定などの純粋関数。外部依存なし |
 | usecase | アプリケーション | 銘柄を絞り込む、銘柄詳細を得る、保有株を管理する、条件を評価する、レコメンドを作る、データを取り込む。外部との境界はトレイト（Repository、PriceSource、FinancialSource、Mailer、AiClient、IdentityVerifier、Clock） |
 | adapter-cf | インフラ（Worker用） | D1リポジトリ、Workers AI、メール送信、Clerkセッショントークンの検証、Clerk Webhookの署名検証 |
-| adapter-batch | インフラ（バッチ用） | Yahoo・EDINET・JPXの取得とXBRL解析、D1 HTTP API、R2 |
+| adapter-batch | インフラ（バッチ用） | J-Quants・JPXの取得とxlsx解析、D1 HTTP API |
 | api-worker | フレームワーク | workers-rsのルーター、セッションの確認、判定Workflow |
 | batch-cli | フレームワーク | tokioで動く日次バッチの入口 |
 

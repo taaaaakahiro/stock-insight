@@ -18,8 +18,7 @@
 flowchart LR
   subgraph SRC[データ取得元]
     JPX[JPX 上場銘柄一覧<br/>規模区分]
-    YF[Yahoo Finance<br/>株価・配当]
-    ED[EDINET API<br/>財務・配当方針]
+    JQ[J-Quants API<br/>株価・財務・配当]
   end
 
   subgraph GH[GitHub Actions]
@@ -63,10 +62,10 @@ flowchart LR
 | ブラウザ（SPA） | API Workerから配信 | 一覧・詳細・保有株・売り時条件・AIのおすすめ・通知履歴・ログイン記録の表示 | F1〜F8 |
 | API Worker | Cloudflare Workers（Rust / workers-rs） | セッショントークンの検証、許可リストの確認、D1の読み書き、Clerk Webhookの受信、内部エンドポイント | F1〜F6, F8 |
 | Cron Trigger | Cloudflare Workers | 平日18:30 JSTにGitHubの`workflow_dispatch`を呼ぶ | 日次バッチの起動 |
-| 日次バッチ（batch-cli） | GitHub Actions（Rust / tokio） | JPX・Yahoo・EDINETから取得、XBRL解析、指標計算、D1・R2への書き込み | データ要件 |
+| 日次バッチ（batch-cli） | GitHub Actions（Rust / tokio） | JPX・J-Quantsから取得、指標計算、D1への書き込み | データ要件 |
 | 判定Workflow | Cloudflare Workflows | 警告・売り時の判定、AIレコメンド、通知の作成、管理者へのメール | F4〜F7 |
 | D1 | Cloudflare D1 | 最新の指標、年次財務、ユーザーごとのデータ | 全機能 |
-| R2 | Cloudflare R2 | 株価・配当の履歴ファイル、EDINETの生データ | F3、パーセンタイル計算 |
+| R2 | Cloudflare R2 | （予備）今は未使用。株価の履歴はD1の price_history に1銘柄1行で持つ | — |
 | Workers AI | Cloudflare Workers AI | おすすめ銘柄の理由づけ、配当方針の抽出 | F3, F4, F7 |
 | Clerk | 外部SaaS（PropFolioと共用） | Google SSO、セッション、ログインのWebhook | F1 |
 | Email Service | Cloudflare Email Service | 検証済みの管理者アドレスへのメール送信 | F6 |

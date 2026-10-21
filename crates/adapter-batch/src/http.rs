@@ -15,6 +15,15 @@ pub fn client() -> reqwest::Client {
 
 /// GET してボディを返す。429・5xx・通信エラーは指数バックオフで最大3回まで再試行する。
 pub async fn get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, PortError> {
+    get_bytes_with_headers(client, url, &[]).await
+}
+
+/// ヘッダー付きの GET（API キーをヘッダーで渡すときに使う。値はエラー文に出さない）
+pub async fn get_bytes_with_headers(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &[(&str, &str)],
+) -> Result<Vec<u8>, PortError> {
     let mut wait = Duration::from_millis(500);
     let mut last = String::new();
     for attempt in 0..4 {
@@ -22,7 +31,11 @@ pub async fn get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, P
             tokio::time::sleep(wait).await;
             wait *= 2;
         }
-        match client.get(url).send().await {
+        let mut req = client.get(url);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        match req.send().await {
             Ok(res) if res.status().is_success() => {
                 return res
                     .bytes()
