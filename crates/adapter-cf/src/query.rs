@@ -114,6 +114,20 @@ pub fn count(f: &ScreeningFilter) -> Query {
     }
 }
 
+/// ポートフォリオに登録した銘柄の最新指標（? はユーザーID）
+pub fn portfolio_rows() -> String {
+    format!(
+        "SELECT {LIST_COLUMNS} FROM portfolio_items p JOIN indicators_latest i ON i.code = p.code \
+         LEFT JOIN stocks s ON s.code = p.code WHERE p.user_id = ?"
+    )
+}
+
+pub const PORTFOLIO_CODES: &str =
+    "SELECT code FROM portfolio_items WHERE user_id = ? ORDER BY added_at, code";
+pub const PORTFOLIO_ADD: &str =
+    "INSERT INTO portfolio_items (user_id, code, added_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING";
+pub const PORTFOLIO_REMOVE: &str = "DELETE FROM portfolio_items WHERE user_id = ? AND code = ?";
+
 pub const LATEST_RUN: &str = "SELECT r.run_id, r.started_at, r.finished_at, r.status, \
      (SELECT MAX(price_date) FROM indicators_latest) AS latest_price_date \
      FROM batch_runs r ORDER BY r.started_at DESC LIMIT 1";
@@ -198,6 +212,13 @@ mod tests {
                 Arg::Text("保険業".into()),
                 Arg::Text("large".into())
             ]
+        );
+    }
+
+    #[test]
+    fn portfolio_rows_use_the_list_columns() {
+        assert!(
+            portfolio_rows().starts_with(&format!("SELECT {LIST_COLUMNS} FROM portfolio_items"))
         );
     }
 

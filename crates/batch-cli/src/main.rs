@@ -167,6 +167,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0005_analysis",
         include_str!("../../../migrations/0005_analysis.sql"),
     ),
+    (
+        "0006_portfolio",
+        include_str!("../../../migrations/0006_portfolio.sql"),
+    ),
 ];
 
 async fn sync_master(args: Args) -> Result<(), String> {

@@ -1,4 +1,5 @@
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
+import { PortfolioToggle } from "@/components/portfolio-toggle";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -66,7 +67,7 @@ function SizeBadge({ size }: { size: StockRow["size_class"] }) {
 }
 
 /** 名称（なければコードだけ）と、コード・業種・規模 */
-function NameCell({ r }: { r: StockRow }) {
+export function NameCell({ r }: { r: StockRow }) {
   const sub = [r.code, r.kind === "stock" ? r.sector33 : null].filter(Boolean).join("・");
   return (
     <div className="flex min-w-0 flex-col">
@@ -211,8 +212,11 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
           <TableBody>
             {rows.map((r) => (
               <TableRow key={r.code}>
-                <TableCell className="max-w-64">
-                  <NameCell r={r} />
+                <TableCell className="max-w-72">
+                  <div className="flex items-center gap-1">
+                    <PortfolioToggle code={r.code} name={r.name ?? r.code} />
+                    <NameCell r={r} />
+                  </div>
                 </TableCell>
                 {columns.map((c) => (
                   <TableCell key={c.key} className="text-right tabular-nums">
@@ -234,7 +238,10 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
         {rows.map((r) => (
           <li key={r.code} className="rounded-xl border p-4">
             <div className="mb-3 flex items-start justify-between gap-2">
-              <NameCell r={r} />
+              <div className="flex min-w-0 items-center gap-1">
+                <PortfolioToggle code={r.code} name={r.name ?? r.code} />
+                <NameCell r={r} />
+              </div>
               {kind === "stock" && <Flags r={r} />}
             </div>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
