@@ -1,20 +1,75 @@
 //! 画面向けの API Worker。D1 を読むだけで、重い計算はしない。
 //!
-//! 現時点のエンドポイント（認証は次の段階で Clerk を入れる。それまで公開デプロイはしない）:
+//! すべての /api/* は Clerk のセッショントークン（Authorization: Bearer）と許可リストで守る。
+//!   GET /api/me       ログイン中のユーザー
 //!   GET /api/stocks   スクリーニング一覧（F2）
 //!   GET /api/status   データ鮮度（F8）
 
+use adapter_cf::clerk::{ClerkDirectory, ClerkVerifier};
 use adapter_cf::d1::D1Indicators;
+use adapter_cf::users::D1Users;
+use domain::access::Access;
 use domain::screening::ScreeningFilter;
 use serde_json::{json, Value};
+use usecase::auth::{authenticate, AuthError, AuthUser, RequestMeta};
 use usecase::screening::{data_status, screen, StockRow};
+use usecase::Clock;
 use worker::{event, Context, Env, Request, Response, Result, RouteContext, Router};
 
 const DB_BINDING: &str = "DB";
 
+struct WorkerClock;
+impl Clock for WorkerClock {
+    fn now_unix(&self) -> i64 {
+        (worker::Date::now().as_millis() / 1000) as i64
+    }
+}
+
+/// 設定（wrangler.jsonc の vars と Worker Secret）。足りなければ認証を通さない
+struct AuthConfig {
+    issuer: String,
+    api_url: String,
+    authorized_parties: Vec<String>,
+    secret_key: String,
+    admin_email: Option<String>,
+}
+
+impl AuthConfig {
+    fn from_env(env: &Env) -> Option<Self> {
+        let var = |k: &str| {
+            env.var(k)
+                .ok()
+                .map(|v| v.to_string())
+                .filter(|v| !v.is_empty())
+        };
+        let secret = |k: &str| {
+            env.secret(k)
+                .ok()
+                .map(|v| v.to_string())
+                .filter(|v| !v.is_empty())
+        };
+        Some(Self {
+            issuer: var("CLERK_ISSUER")?,
+            api_url: var("CLERK_API_URL").unwrap_or_else(|| "https://api.clerk.com/v1".into()),
+            authorized_parties: var("AUTHORIZED_PARTIES")?
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            secret_key: secret("CLERK_SECRET_KEY")?,
+            admin_email: secret("ADMIN_NOTIFY_EMAIL"),
+        })
+    }
+}
+
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    Router::new()
+    let user = match auth(&req, &env).await {
+        Ok(u) => u,
+        Err(res) => return res,
+    };
+    Router::with_data(user)
+        .get_async("/api/me", me)
         .get_async("/api/stocks", stocks)
         .get_async("/api/status", status)
         .or_else_any_method("/api/*path", |_, _| {
@@ -24,7 +79,67 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .await
 }
 
-async fn stocks(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+/// 本人確認。失敗したらそのまま返す応答を Err に入れる
+async fn auth(req: &Request, env: &Env) -> std::result::Result<AuthUser, Result<Response>> {
+    let Some(cfg) = AuthConfig::from_env(env) else {
+        worker::console_error!("auth is not configured");
+        return Err(json_error(
+            503,
+            "unavailable",
+            "authentication is not configured",
+        ));
+    };
+    let header = req.headers().get("Authorization").ok().flatten();
+    let token = header.as_deref().and_then(|h| h.strip_prefix("Bearer "));
+    let meta = RequestMeta {
+        ip_address: req.headers().get("CF-Connecting-IP").ok().flatten(),
+        user_agent: req.headers().get("User-Agent").ok().flatten(),
+    };
+    let db = |e: &Env| e.d1(DB_BINDING).map_err(|e| internal(&e.to_string()));
+    let result = authenticate(
+        token,
+        &meta,
+        cfg.admin_email.as_deref(),
+        &ClerkVerifier::new(&cfg.issuer, cfg.authorized_parties),
+        &ClerkDirectory::new(&cfg.api_url, cfg.secret_key),
+        &D1Users::new(db(env)?),
+        &WorkerClock,
+    )
+    .await;
+    result.map_err(|e| match e {
+        AuthError::Unauthenticated(reason) => {
+            // 理由はログにだけ出す（トークンの中身は出さない）
+            worker::console_log!("unauthenticated: {reason}");
+            json_error(401, "unauthenticated", "sign in required").and_then(|mut r| {
+                r.headers_mut().set("WWW-Authenticate", "Bearer")?;
+                Ok(r)
+            })
+        }
+        AuthError::Forbidden(access) => json_error(
+            403,
+            "forbidden",
+            match access {
+                Access::DeniedNotGoogle => "sign in with Google",
+                _ => "this account is not allowed",
+            },
+        ),
+        AuthError::Unavailable(detail) => {
+            worker::console_error!("auth unavailable: {detail}");
+            json_error(503, "unavailable", "try again later")
+        }
+    })
+}
+
+async fn me(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let u = &ctx.data;
+    json_response(
+        &json!({ "id": u.id, "email": u.email, "display_name": u.display_name, "is_admin": u.is_admin }),
+        200,
+        "no-store",
+    )
+}
+
+async fn stocks(req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
     let url = req.url()?;
     let pairs: Vec<(String, String)> = url.query_pairs().into_owned().collect();
     let filter =
@@ -44,7 +159,7 @@ async fn stocks(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     }
 }
 
-async fn status(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
+async fn status(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
     let repo = D1Indicators::new(ctx.env.d1(DB_BINDING)?);
     match data_status(&repo).await {
         Ok(s) => json_ok(&json!({

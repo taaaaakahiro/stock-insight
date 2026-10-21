@@ -54,10 +54,29 @@ curl "http://localhost:8787/api/stocks?dividend_yield_min=0.03&sort=pbr&order=as
 curl "http://localhost:8787/api/status"
 ```
 
-`--local` はローカルの D1 だけを使い、本番には触れません。認証（Clerk）を入れるまでは本番にデプロイしません。
+`--local` はローカルの D1 だけを使い、本番には触れません。
+
+すべての `/api/*` は Clerk のセッショントークン（`Authorization: Bearer`）が必要です。ローカルでは偽の Clerk（`scripts/mock-clerk.mjs`）で本物と同じ流れ（RS256 の署名検証・JWKS・ユーザー取得）を試せます。
+
+```sh
+cat > .dev.vars <<'VARS'
+CLERK_ISSUER=http://localhost:9871
+CLERK_API_URL=http://localhost:9871/v1
+AUTHORIZED_PARTIES=http://localhost:5173
+CLERK_SECRET_KEY=sk_test_local_mock
+ADMIN_NOTIFY_EMAIL=admin@example.test
+VARS
+npx wrangler d1 execute maaun-stock-insight --local --file migrations/0002_users.sql
+node scripts/mock-clerk.mjs 9871 &
+npx wrangler dev --local
+curl -H "Authorization: Bearer $(curl -s localhost:9871/token/user_member)" localhost:8787/api/me
+```
+
+使えるのは、Google アカウントで確認済みで、かつ Clerk の `public_metadata` に `{"stock_insight": true}` があるユーザーと、`ADMIN_NOTIFY_EMAIL` と同じアドレスの管理者だけです。Clerk への問い合わせ結果は `users` に保存し、1時間ごとに確認し直します。
 
 | エンドポイント | 内容 |
 | --- | --- |
+| `GET /api/me` | ログイン中のユーザー（管理者かどうかを含む） |
 | `GET /api/stocks` | スクリーニング一覧。`<指標>_min` / `<指標>_max`（price, dividend_yield, yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin）、`valuation`、`no_loss_years`、`profit_uptrend`、`sort`、`order`、`page`（50件ずつ） |
 | `GET /api/status` | 直近のバッチの状態と最新の株価日付 |
 

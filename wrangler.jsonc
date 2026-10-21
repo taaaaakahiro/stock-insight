@@ -16,5 +16,13 @@
       "migrations_dir": "migrations"
     }
   ],
+  // 秘密ではない設定。CLERK_SECRET_KEY と ADMIN_NOTIFY_EMAIL は wrangler secret put で登録する
+  "vars": {
+    // PropFolio と共通の Clerk 本番インスタンス（Frontend API）
+    "CLERK_ISSUER": "https://clerk.maa-un.com",
+    "CLERK_API_URL": "https://api.clerk.com/v1",
+    // トークンの発行先（azp）として受け付けるオリジン
+    "AUTHORIZED_PARTIES": "https://stock.insight.maa-un.com"
+  },
   "observability": { "enabled": true }
 }

@@ -5,7 +5,8 @@ import sqlite3, sys, pathlib
 
 root = pathlib.Path(__file__).resolve().parent.parent
 db = sqlite3.connect(":memory:")
-db.executescript((root / "migrations/0001_init.sql").read_text())
+for m in sorted((root / "migrations").glob("*.sql")):
+    db.executescript(m.read_text())
 db.executescript(pathlib.Path(sys.argv[1]).read_text())
 for row in db.execute("SELECT run_id, target, succeeded, failed, status FROM batch_runs"):
     print("batch_runs:", row)

@@ -5,6 +5,7 @@
 
 use domain::{compute, FinancialData, Indicators, MarketData, StockCode};
 
+pub mod auth;
 pub mod screening;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -108,6 +109,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests_support::block_on;
     use domain::{Date, PriceBar};
     use std::cell::RefCell;
 
@@ -153,23 +155,6 @@ mod tests {
         }
     }
 
-    /// 外部ランタイムなしで Future を1回だけ進める（テスト用。フェイクは即時完了する）
-    fn block_on<F: std::future::Future>(f: F) -> F::Output {
-        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        fn noop(_: *const ()) {}
-        fn clone(p: *const ()) -> RawWaker {
-            RawWaker::new(p, &VTABLE)
-        }
-        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
-        let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
-        let mut cx = Context::from_waker(&waker);
-        let mut f = std::pin::pin!(f);
-        match f.as_mut().poll(&mut cx) {
-            Poll::Ready(v) => v,
-            Poll::Pending => panic!("fake future pending"),
-        }
-    }
-
     #[test]
     fn saves_with_warning_when_no_financials() {
         let store = MemStore::default();
@@ -200,5 +185,25 @@ mod tests {
         ));
         assert!(matches!(out, Outcome::Failed(_)));
         assert!(store.0.borrow().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tests_support {
+    /// 外部ランタイムなしで Future を1回だけ進める（テスト用。フェイクは即時完了する）
+    pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+        fn noop(_: *const ()) {}
+        fn clone(p: *const ()) -> RawWaker {
+            RawWaker::new(p, &VTABLE)
+        }
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
+        let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
+        let mut cx = Context::from_waker(&waker);
+        let mut f = std::pin::pin!(f);
+        match f.as_mut().poll(&mut cx) {
+            Poll::Ready(v) => v,
+            Poll::Pending => panic!("fake future pending"),
+        }
     }
 }
