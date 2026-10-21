@@ -8,3 +8,4 @@ poc-*.sql
 /node_modules
 /web/node_modules
 /web/dist
+/backups
