@@ -15,7 +15,7 @@
 
 取り込みは `batch-cli sync-jq`。初回だけ過去5年分、以後は前回の続き（`sync_state.jq_synced_until`）。財務は直近3日分を毎回取り直す。
 
-EDINET は `batch-cli sync-edinet`。初回は過去400日分の書類一覧（有報は年1回なので、提出の遅い会社も含めて1年強）、以後は前回の続き（`sync_state.edinet_listed_until`）。API キーは URL に載せずヘッダー（`Subscription-Key`）で渡す。古い書類の扱い:
+EDINET は `batch-cli sync-edinet`。初回は過去400日分の書類一覧（有報は年1回なので、提出の遅い会社も含めて1年強）、以後は前回の続き（`sync_state.edinet_listed_until`）。API キーは URL に載せずヘッダー（`Ocp-Apim-Subscription-Key`。`Subscription-Key` ヘッダーは 401 になる）で渡す。古い書類の扱い:
 
 - 同じ銘柄・種類の新しい書類が出たら、D1 の行と R2 のファイルを上書きする（古い書類は残らない）
 - 新しい有報の期末が半期報告書の期末より後なら、その半期報告書は消す（初回の取り込みでは最初から取らない）

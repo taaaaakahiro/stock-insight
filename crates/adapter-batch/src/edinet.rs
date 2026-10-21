@@ -3,7 +3,8 @@
 //! 流れ: 書類一覧（1日1回の呼び出しで全社分）→ 銘柄・種類ごとに最新の1通を選ぶ（usecase::edinet）→
 //! 書類を type=5（XBRL を CSV にした zip。PDF より軽い）で取る → jpcrp*.csv（UTF-16LE の TSV）から
 //! 文章の項目（〜TextBlock）を抜く。
-//! API キーは URL に載せず、ヘッダー（Subscription-Key）で渡す。
+//! API キーは URL に載せず、ヘッダーで渡す。EDINET は Azure API Management の既定のヘッダー名
+//! （Ocp-Apim-Subscription-Key）だけを受け付ける。クエリと同じ名前の Subscription-Key ヘッダーは 401 になる。
 
 use crate::{http, jquants::code_from_jquants};
 use domain::disclosure::{normalize_text, DocKind, Section};
@@ -49,9 +50,12 @@ impl EdinetClient {
 
     async fn get(&self, url: &str) -> Result<Vec<u8>, PortError> {
         self.pace().await;
-        let body =
-            http::get_bytes_with_headers(&self.client, url, &[("Subscription-Key", &self.key)])
-                .await?;
+        let body = http::get_bytes_with_headers(
+            &self.client,
+            url,
+            &[("Ocp-Apim-Subscription-Key", &self.key)],
+        )
+        .await?;
         // 認証の失敗なども HTTP 200 で JSON（{"StatusCode": 401, ...}）が返る
         if body.first() == Some(&b'{') {
             if let Ok(v) = serde_json::from_slice::<Value>(&body) {
