@@ -93,3 +93,16 @@ export async function apiFetch<T>(
   }
   return (await res.json()) as T;
 }
+
+/** AIレコメンド（F7）の1銘柄。一覧と同じ指標に、順位と理由がつく */
+export type Recommendation = StockRow & { rank: number; reason: string };
+
+/** day は最新日の結果。まだ1日も作っていなければ null */
+export type Recommendations = {
+  day: {
+    date: string;
+    model: string;
+    created_at: number;
+    rows: Recommendation[];
+  } | null;
+};
