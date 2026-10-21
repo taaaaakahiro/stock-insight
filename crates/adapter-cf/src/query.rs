@@ -129,6 +129,26 @@ pub const PORTFOLIO_ADD: &str =
     "INSERT INTO portfolio_items (user_id, code, added_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING";
 pub const PORTFOLIO_REMOVE: &str = "DELETE FROM portfolio_items WHERE user_id = ? AND code = ?";
 
+/// 詳細ページ用: 1銘柄の最新の指標（一覧と同じ列）
+pub fn latest_by_code(code: &str) -> Query {
+    Query {
+        sql: format!("SELECT {LIST_COLUMNS} {FROM} WHERE i.code = ?"),
+        args: vec![Arg::Text(code.to_string())],
+    }
+}
+
+pub const PRICE_HISTORY_BY_CODE: &str = "SELECT closes FROM price_history WHERE code = ?";
+
+pub const ANNUALS_BY_CODE: &str =
+    "SELECT period_end, doc_id, disclosed, net_sales, operating_income, \
+     ordinary_income, net_income, equity, eps, bps, dps, operating_cf \
+     FROM financials_annual WHERE code = ? ORDER BY period_end DESC LIMIT 10";
+
+pub const QUARTERLIES_BY_CODE: &str =
+    "SELECT fiscal_year_end, period_type, period_end, net_sales, \
+     operating_income, ordinary_income, net_income \
+     FROM financials_quarterly WHERE code = ? ORDER BY period_end DESC LIMIT 40";
+
 pub const LATEST_RUN: &str = "SELECT r.run_id, r.started_at, r.finished_at, r.status, \
      (SELECT MAX(price_date) FROM indicators_latest) AS latest_price_date \
      FROM batch_runs r ORDER BY r.started_at DESC LIMIT 1";
@@ -252,6 +272,15 @@ mod tests {
         assert!(
             portfolio_rows().starts_with(&format!("SELECT {LIST_COLUMNS} FROM portfolio_items"))
         );
+    }
+
+    #[test]
+    fn detail_query_selects_one_code() {
+        let q = latest_by_code("7203");
+        assert!(q
+            .sql
+            .ends_with("LEFT JOIN stocks s ON s.code = i.code WHERE i.code = ?"));
+        assert_eq!(q.args, vec![Arg::Text("7203".into())]);
     }
 
     #[test]

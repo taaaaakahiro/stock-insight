@@ -27,6 +27,7 @@ use std::cell::RefCell;
 use std::future::Future;
 use std::rc::Rc;
 use usecase::auth::{authenticate, AuthError, AuthUser, CachedUsers, RequestMeta, UserMemo};
+use usecase::detail::{stock_detail, StockDetail};
 use usecase::portfolio::PortfolioError;
 use usecase::screening::{data_status, screen, StockRow};
 use usecase::Clock;
@@ -128,6 +129,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     Router::with_data(user)
         .get_async("/api/me", me)
         .get_async("/api/stocks", stocks)
+        .get_async("/api/stocks/:code", stock_detail_route)
         .get_async("/api/status", status)
         .get_async("/api/portfolio", portfolio)
         .put_async("/api/portfolio/:code", portfolio_add)
@@ -416,6 +418,53 @@ async fn recommendations(_req: Request, ctx: RouteContext<AuthUser>) -> Result<R
     }
 }
 
+/// 銘柄の詳細（F3）: 5年の年次、四半期単独の損益、利回りと株価の推移
+async fn stock_detail_route(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let Some(code) = ctx.param("code").and_then(|c| domain::StockCode::parse(c)) else {
+        return json_error(400, "bad_request", "bad stock code");
+    };
+    let repo = D1Indicators::new(ctx.env.d1(DB_BINDING)?);
+    match stock_detail(&repo, &code).await {
+        Ok(Some(d)) => json_ok(&detail_json(&d)),
+        Ok(None) => json_error(404, "not_found", "no such stock"),
+        Err(e) => internal(&e.0),
+    }
+}
+
+fn detail_json(d: &StockDetail) -> Value {
+    let ratio = |a: Option<f64>, b: Option<f64>| match (a, b) {
+        (Some(a), Some(b)) if b > 0.0 => Some(a / b),
+        _ => None,
+    };
+    json!({
+        "stock": row_json(&d.latest),
+        "annual": d.annual.iter().map(|y| json!({
+            "period_end": y.period_end.map(|p| p.to_string()),
+            "net_sales": y.net_sales,
+            "operating_income": y.operating_income,
+            "ordinary_income": y.ordinary_income,
+            "net_income": y.net_income,
+            "equity": y.equity,
+            "eps": y.eps,
+            "bps": y.bps,
+            "dps": y.dps,
+            "operating_cf": y.operating_cf,
+            "payout_ratio": ratio(y.dps, y.eps),
+            "operating_margin": ratio(y.operating_income, y.net_sales),
+        })).collect::<Vec<_>>(),
+        "quarters": d.quarters.iter().map(|q| json!({
+            "fiscal_year_end": q.fiscal_year_end.to_string(),
+            "quarter": q.quarter,
+            "period_end": q.period_end.to_string(),
+            "net_sales": q.net_sales,
+            "operating_income": q.operating_income,
+            "ordinary_income": q.ordinary_income,
+            "net_income": q.net_income,
+        })).collect::<Vec<_>>(),
+        "yield_series": d.yield_series.iter().map(|(dt, y)| json!([dt.to_string(), y])).collect::<Vec<_>>(),
+        "price_series": d.price_series.iter().map(|b| json!([b.date.to_string(), b.close])).collect::<Vec<_>>(),
+    })
+}
 fn row_json(r: &StockRow) -> Value {
     json!({
         "code": r.code,

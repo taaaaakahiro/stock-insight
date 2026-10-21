@@ -12,6 +12,7 @@ import {
 import type { StockRow } from "@/lib/api";
 import { type Filters, type Kind, type MetricKey, metricLabel, metricsFor } from "@/lib/filters";
 import { count, pct, times, yen } from "@/lib/format";
+import { navigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
 type Column = {
@@ -67,13 +68,29 @@ function SizeBadge({ size }: { size: StockRow["size_class"] }) {
 }
 
 /** 名称（なければコードだけ）と、コード・業種・規模 */
-export function NameCell({ r }: { r: StockRow }) {
+export function NameCell({ r, link = true }: { r: StockRow; link?: boolean }) {
   const sub = [r.code, r.kind === "stock" ? r.sector33 : null].filter(Boolean).join("・");
   return (
     <div className="flex min-w-0 flex-col">
-      <span className="truncate font-medium" title={r.name ?? r.code}>
-        {r.name ?? r.code}
-      </span>
+      {link ? (
+        <a
+          href={`/stocks/${r.code}`}
+          onClick={(e) => {
+            // 普通のクリックだけ画面内で切り替える（新しいタブなどはブラウザに任せる）
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+            e.preventDefault();
+            navigate(`/stocks/${r.code}`);
+          }}
+          className="truncate font-medium underline-offset-4 hover:underline"
+          title={r.name ?? r.code}
+        >
+          {r.name ?? r.code}
+        </a>
+      ) : (
+        <span className="truncate font-medium" title={r.name ?? r.code}>
+          {r.name ?? r.code}
+        </span>
+      )}
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
         {r.name ? sub : r.kind === "stock" ? r.sector33 : null}
         <SizeBadge size={r.size_class} />
@@ -110,7 +127,7 @@ const BADGES: { key: keyof StockRow; label: string; hint: string; className: str
   },
 ];
 
-function Flags({ r }: { r: StockRow }) {
+export function Flags({ r }: { r: StockRow }) {
   const on = BADGES.filter((b) => r[b.key] === true);
   if (on.length === 0) {
     return (

@@ -73,9 +73,9 @@ pub fn annual_dividend_at(divs: &[Dividend], date: Date) -> Option<f64> {
         .map(|d| d.annual)
 }
 
-/// 週1点（5営業日ごと）で過去の配当利回りを並べる。
+/// 週1点（5営業日ごと）の過去の配当利回りを、日付付きで新しい順に並べる（詳細ページのグラフ用）。
 /// その時点で開示済みの年間配当 ÷ その日の終値（どちらも分割調整前なので、分割をまたいでもずれない）
-pub fn yield_history(market: &MarketData) -> Vec<f64> {
+pub fn yield_series(market: &MarketData) -> Vec<(Date, f64)> {
     let Some(last) = market.bars.last() else {
         return vec![];
     };
@@ -87,8 +87,15 @@ pub fn yield_history(market: &MarketData) -> Vec<f64> {
         .rev()
         .step_by(5)
         .filter(|b| b.close > 0.0)
-        .filter_map(|b| annual_dividend_at(&market.dividends, b.date).map(|d| d / b.close))
+        .filter_map(|b| {
+            annual_dividend_at(&market.dividends, b.date).map(|d| (b.date, d / b.close))
+        })
         .collect()
+}
+
+/// 利回りの値だけ（パーセンタイルの計算用）
+pub fn yield_history(market: &MarketData) -> Vec<f64> {
+    yield_series(market).into_iter().map(|(_, y)| y).collect()
 }
 
 /// current が samples の中で下から何割の位置か（0.0〜1.0）

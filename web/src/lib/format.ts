@@ -22,6 +22,21 @@ export function yen(x: number | null | undefined): string {
   return `${yenFormat.format(Math.round(x * 10) / 10)}円`;
 }
 
+/** 1234567890 → "12.3億円"。百万円未満は "0.0億円" になるので、小さい値は万円で出す */
+export function oku(x: number | null | undefined): string {
+  if (x == null || !Number.isFinite(x)) return NONE;
+  const abs = Math.abs(x);
+  if (abs < 1e8) return `${(x / 1e4).toLocaleString("ja-JP", { maximumFractionDigits: 0 })}万円`;
+  // 1,000億円以上は小数を出さない（490,000.0億円 のような末尾の .0 を避ける）
+  return `${(x / 1e8).toLocaleString("ja-JP", { maximumFractionDigits: abs < 1e11 ? 1 : 0 })}億円`;
+}
+
+/** 1株配当など、円の小数1桁 */
+export function yen1(x: number | null | undefined): string {
+  if (x == null || !Number.isFinite(x)) return NONE;
+  return `${x.toLocaleString("ja-JP", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}円`;
+}
+
 export function count(n: number | null | undefined, unit = "年"): string {
   if (n == null) return NONE;
   return `${n}${unit}`;

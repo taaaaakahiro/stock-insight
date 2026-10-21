@@ -8,7 +8,7 @@ import {
   toApiNumber,
   toQuery,
 } from "./filters";
-import { jstDateTime, pct, times, yen, ymd } from "./format";
+import { jstDateTime, oku, pct, times, yen, yen1, ymd } from "./format";
 
 describe("filters", () => {
   it("converts percent inputs to ratios and back", () => {
@@ -104,6 +104,11 @@ describe("format", () => {
     expect(yen(176.1999969482422)).toBe("176.2円");
     expect(yen(3431)).toBe("3,431円");
     expect(ymd("2026-10-21")).toBe("2026/10/21");
+    expect(oku(1234567890)).toBe("12.3億円");
+    expect(oku(-250000000)).toBe("-2.5億円");
+    expect(oku(45000000)).toBe("4,500万円");
+    expect(oku(49000000000000)).toBe("490,000億円");
+    expect(yen1(62)).toBe("62.0円");
   });
 
   it("shows times in JST", () => {

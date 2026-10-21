@@ -1,8 +1,12 @@
 //! D1 から一覧と鮮度を読む（IndicatorQuery の実装）。ポートフォリオの読み書きもここ。
 
 use crate::query::{self, Arg, Query};
+use domain::analysis::{CumulativePeriod, PeriodType};
 use domain::screening::ScreeningFilter;
+use domain::{AnnualFinancial, Date, PriceBar, StockCode};
 use serde::Deserialize;
+use usecase::daily::StoredAnnual;
+use usecase::detail::StockDetailQuery;
 use usecase::portfolio::PortfolioRepository;
 use usecase::screening::{DataStatus, IndicatorQuery, StockRow};
 use usecase::PortError;
@@ -131,6 +135,126 @@ impl D1Indicators {
                 r.edinet_at.unwrap_or(0)
             ))
         }))
+    }
+}
+
+#[derive(Deserialize)]
+struct AnnualRow {
+    period_end: Option<String>,
+    doc_id: String,
+    disclosed: Option<String>,
+    net_sales: Option<f64>,
+    operating_income: Option<f64>,
+    ordinary_income: Option<f64>,
+    net_income: Option<f64>,
+    equity: Option<f64>,
+    eps: Option<f64>,
+    bps: Option<f64>,
+    dps: Option<f64>,
+    operating_cf: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct QuarterRow {
+    fiscal_year_end: String,
+    period_type: String,
+    period_end: String,
+    net_sales: Option<f64>,
+    operating_income: Option<f64>,
+    ordinary_income: Option<f64>,
+    net_income: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct ClosesRow {
+    closes: String,
+}
+
+fn code_arg(code: &StockCode) -> [JsValue; 1] {
+    [JsValue::from_str(code.as_str())]
+}
+
+impl StockDetailQuery for D1Indicators {
+    async fn latest(&self, code: &StockCode) -> Result<Option<StockRow>, PortError> {
+        let row: Option<Row> = self
+            .prepare(&query::latest_by_code(code.as_str()))?
+            .first(None)
+            .await
+            .map_err(err)?;
+        Ok(row.map(StockRow::from))
+    }
+
+    async fn price_history(&self, code: &StockCode) -> Result<Vec<PriceBar>, PortError> {
+        let row: Option<ClosesRow> = self
+            .db
+            .prepare(query::PRICE_HISTORY_BY_CODE)
+            .bind(&code_arg(code))
+            .map_err(err)?
+            .first(None)
+            .await
+            .map_err(err)?;
+        Ok(row
+            .map(|r| domain::price_history::decode(&r.closes))
+            .unwrap_or_default())
+    }
+
+    async fn annuals(&self, code: &StockCode) -> Result<Vec<StoredAnnual>, PortError> {
+        let rows: Vec<AnnualRow> = self
+            .db
+            .prepare(query::ANNUALS_BY_CODE)
+            .bind(&code_arg(code))
+            .map_err(err)?
+            .all()
+            .await
+            .map_err(err)?
+            .results()
+            .map_err(err)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| StoredAnnual {
+                doc_id: r.doc_id,
+                disclosed: r.disclosed.as_deref().and_then(Date::parse),
+                financial: AnnualFinancial {
+                    period_end: r.period_end.as_deref().and_then(Date::parse),
+                    net_sales: r.net_sales,
+                    operating_income: r.operating_income,
+                    ordinary_income: r.ordinary_income,
+                    net_income: r.net_income,
+                    equity: r.equity,
+                    eps: r.eps,
+                    bps: r.bps,
+                    dps: r.dps,
+                    operating_cf: r.operating_cf,
+                },
+            })
+            .collect())
+    }
+
+    async fn quarterlies(&self, code: &StockCode) -> Result<Vec<CumulativePeriod>, PortError> {
+        let rows: Vec<QuarterRow> = self
+            .db
+            .prepare(query::QUARTERLIES_BY_CODE)
+            .bind(&code_arg(code))
+            .map_err(err)?
+            .all()
+            .await
+            .map_err(err)?
+            .results()
+            .map_err(err)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                Some(CumulativePeriod {
+                    fiscal_year_end: Date::parse(&r.fiscal_year_end)?,
+                    period_end: Date::parse(&r.period_end)?,
+                    period_type: PeriodType::from_jquants(&r.period_type)?,
+                    net_sales: r.net_sales,
+                    operating_income: r.operating_income,
+                    ordinary_income: r.ordinary_income,
+                    net_income: r.net_income,
+                })
+            })
+            .collect())
     }
 }
 

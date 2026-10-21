@@ -33,6 +33,42 @@ export type StockRow = {
 
 export type StockPage = { rows: StockRow[]; total: number; page: number; page_size: number };
 
+/** 詳細ページ（GET /api/stocks/:code） */
+export type AnnualRow = {
+  period_end: string | null;
+  net_sales: number | null;
+  operating_income: number | null;
+  ordinary_income: number | null;
+  net_income: number | null;
+  equity: number | null;
+  eps: number | null;
+  bps: number | null;
+  dps: number | null;
+  operating_cf: number | null;
+  payout_ratio: number | null;
+  operating_margin: number | null;
+};
+export type QuarterRow = {
+  fiscal_year_end: string;
+  quarter: 1 | 2 | 3 | 4;
+  period_end: string;
+  net_sales: number | null;
+  operating_income: number | null;
+  ordinary_income: number | null;
+  net_income: number | null;
+};
+export type StockDetail = {
+  stock: StockRow;
+  /** 新しい期が先頭 */
+  annual: AnnualRow[];
+  /** 古い順 */
+  quarters: QuarterRow[];
+  /** [日付, 利回り]（古い順、週1点） */
+  yield_series: [string, number][];
+  /** [日付, 終値]（古い順、週1点） */
+  price_series: [string, number][];
+};
+
 /** 売り時のサイン（domain::portfolio::SellSignal） */
 export type SellSignal = "high_payout" | "expensive" | "no_increase" | "profit_downtrend" | "loss";
 
