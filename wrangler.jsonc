@@ -14,6 +14,11 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   },
+  // 本番のドメイン。デプロイ時に DNS レコードと証明書が作られる
+  "routes": [{ "pattern": "stock.insight.maa-un.com", "custom_domain": true }],
+  // 公開の入口はカスタムドメインだけにする。プレビュー URL（versions upload）は残す
+  "workers_dev": false,
+  "preview_urls": true,
   "d1_databases": [
     {
       "binding": "DB",
