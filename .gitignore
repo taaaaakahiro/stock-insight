@@ -9,3 +9,4 @@ poc-*.sql
 /web/node_modules
 /web/dist
 /backups
+.DS_Store

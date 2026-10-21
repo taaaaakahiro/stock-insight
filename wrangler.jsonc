@@ -34,7 +34,11 @@
     "CLERK_ISSUER": "https://clerk.maa-un.com",
     "CLERK_API_URL": "https://api.clerk.com/v1",
     // トークンの発行先（azp）として受け付けるオリジン
-    "AUTHORIZED_PARTIES": "https://stock.insight.maa-un.com"
+    "AUTHORIZED_PARTIES": "https://stock.insight.maa-un.com",
+    // 日次バッチ（GitHub Actions）のリポジトリ。起動用のトークンは Worker Secret の GITHUB_DISPATCH_TOKEN
+    "GITHUB_REPO": "taaaaakahiro/stock-insight"
   },
+  // 平日 18:30 JST（= 09:30 UTC）に日次バッチを起動する。休場日の判定はバッチ側で行う
+  "triggers": { "crons": ["30 9 * * 1-5"] },
   "observability": { "enabled": true }
 }

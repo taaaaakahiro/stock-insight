@@ -1,0 +1,109 @@
+name: daily-batch
+
+# 日次バッチ: 銘柄マスタ（JPX）を更新し、全銘柄の株価・配当（Yahoo）と財務（EDINET）を取り込んで指標を D1 に保存する。
+# 起動は Cloudflare の Cron Trigger（平日 18:30 JST）からの workflow_dispatch。schedule は予備で、
+# 同じ日に2回動いても should-run が2回目を止める（休場日も止める）。
+# シークレットは gh secret set で登録する（値はここに書かない。docs/06_secrets_and_repository.md）。
+on:
+  workflow_dispatch:
+    inputs:
+      codes:
+        description: "銘柄コード（カンマ区切り）。空なら銘柄マスタの全銘柄"
+        default: ""
+      shards:
+        description: "並列ジョブ数"
+        default: "4"
+      force:
+        description: "true なら休場日・当日実行済みでも動かす"
+        default: "false"
+  schedule:
+    # 予備（09:45 UTC = 18:45 JST、平日）。Cloudflare 側で起動済みなら should-run が止める
+    - cron: "45 9 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-batch
+  cancel-in-progress: false
+
+env:
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  # 手動で銘柄を指定したときは manual、それ以外は daily（should-run の重複判定に使う）
+  LABEL: ${{ github.event.inputs.codes != '' && 'manual' || 'daily' }}
+
+jobs:
+  # 一度だけビルドして、後のジョブはバイナリを使い回す
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: batch-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - run: cargo build -q -p batch-cli --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: batch-cli
+          path: target/release/batch-cli
+          retention-days: 1
+
+  guard:
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - id: check
+        run: ./batch-cli should-run --label "$LABEL" ${{ (github.event.inputs.force == 'true' || github.event.inputs.codes != '') && '--force' || '' }}
+      - id: plan
+        run: |
+          n="${{ github.event.inputs.shards || '4' }}"
+          echo "shards=$(seq -s, 0 $(( n - 1 )) | sed 's/^/[/;s/$/]/')" >> "$GITHUB_OUTPUT"
+
+  prepare:
+    needs: guard
+    if: needs.guard.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - run: ./batch-cli migrate
+      - run: ./batch-cli sync-master
+
+  ingest:
+    needs: [guard, prepare]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.guard.outputs.shards) }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - name: ingest
+        run: |
+          n="${{ github.event.inputs.shards || '4' }}"
+          if [ -n "${{ github.event.inputs.codes }}" ]; then
+            TARGET="--codes ${{ github.event.inputs.codes }}"
+          else
+            TARGET="--all"
+          fi
+          ./batch-cli ingest $TARGET --label "$LABEL" --shard ${{ matrix.shard }}/$n --concurrency 4
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}

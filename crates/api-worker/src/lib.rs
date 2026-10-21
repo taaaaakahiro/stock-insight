@@ -4,6 +4,8 @@
 //!   GET /api/me       ログイン中のユーザー
 //!   GET /api/stocks   スクリーニング一覧（F2）
 //!   GET /api/status   データ鮮度（F8）
+//!
+//! Cron Trigger（平日18:30 JST）では、GitHub Actions の日次バッチ（daily-batch.yml）を起動する。
 
 use adapter_cf::clerk::{ClerkDirectory, ClerkVerifier};
 use adapter_cf::d1::D1Indicators;
@@ -14,7 +16,10 @@ use serde_json::{json, Value};
 use usecase::auth::{authenticate, AuthError, AuthUser, RequestMeta};
 use usecase::screening::{data_status, screen, StockRow};
 use usecase::Clock;
-use worker::{event, Context, Env, Request, Response, Result, RouteContext, Router};
+use worker::{
+    event, Context, Env, Request, Response, Result, RouteContext, Router, ScheduleContext,
+    ScheduledEvent,
+};
 
 const DB_BINDING: &str = "DB";
 
@@ -59,6 +64,23 @@ impl AuthConfig {
             secret_key: secret("CLERK_SECRET_KEY")?,
             admin_email: secret("ADMIN_NOTIFY_EMAIL"),
         })
+    }
+}
+
+/// 日次バッチの起動。重複や休場日の判定は GitHub 側（batch-cli should-run）で行う
+#[event(scheduled)]
+async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    let repo = env
+        .var("GITHUB_REPO")
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    let Ok(token) = env.secret("GITHUB_DISPATCH_TOKEN").map(|v| v.to_string()) else {
+        worker::console_error!("cron {}: GITHUB_DISPATCH_TOKEN is not set", event.cron());
+        return;
+    };
+    match adapter_cf::github::dispatch_workflow(&repo, "daily-batch.yml", "main", &token).await {
+        Ok(()) => worker::console_log!("cron {}: dispatched daily-batch", event.cron()),
+        Err(e) => worker::console_error!("cron {}: {e}", event.cron()),
     }
 }
 

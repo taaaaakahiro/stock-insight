@@ -29,6 +29,11 @@ impl D1Store {
     }
 
     pub async fn exec(&self, stmt: &Stmt) -> Result<(), PortError> {
+        self.query(stmt).await.map(|_| ())
+    }
+
+    /// 1文を実行して結果の行（JSON のオブジェクト）を返す
+    pub async fn query(&self, stmt: &Stmt) -> Result<Vec<serde_json::Value>, PortError> {
         let params: Vec<serde_json::Value> = stmt.params.iter().map(|v| v.to_json()).collect();
         let body = serde_json::json!({ "sql": stmt.sql, "params": params });
         let res = self
@@ -47,7 +52,45 @@ impl D1Store {
         if !status.is_success() || v["success"].as_bool() != Some(true) {
             return Err(PortError(format!("d1 HTTP {status}: {}", v["errors"])));
         }
-        Ok(())
+        Ok(v["result"][0]["results"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// 銘柄マスタにある全銘柄（指定の種類だけ）のコード
+    pub async fn listed_codes(&self, kinds: &[&str]) -> Result<Vec<String>, PortError> {
+        let placeholders = vec!["?"; kinds.len()].join(", ");
+        let rows = self
+            .query(&Stmt {
+                sql: format!(
+                    "SELECT code FROM stocks WHERE kind IN ({placeholders}) ORDER BY code"
+                ),
+                params: kinds
+                    .iter()
+                    .map(|k| crate::sql::Val::Text(k.to_string()))
+                    .collect(),
+            })
+            .await?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| r["code"].as_str().map(str::to_string))
+            .collect())
+    }
+
+    /// 今日（日本時間）の、指定ラベルのバッチで成功したものがあるか
+    pub async fn succeeded_since(&self, label: &str, since: i64) -> Result<bool, PortError> {
+        let rows = self
+            .query(&Stmt {
+                sql: "SELECT COUNT(*) AS n FROM batch_runs WHERE status = 'succeeded' AND run_id LIKE ? AND started_at >= ?"
+                    .into(),
+                params: vec![
+                    crate::sql::Val::Text(format!("{label}-%")),
+                    crate::sql::Val::Int(since),
+                ],
+            })
+            .await?;
+        Ok(rows.first().and_then(|r| r["n"].as_i64()).unwrap_or(0) > 0)
     }
 
     /// マイグレーション用: セミコロン区切りのSQLを1文ずつ実行する

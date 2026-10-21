@@ -9,4 +9,6 @@ pub mod clerk;
 #[cfg(target_arch = "wasm32")]
 pub mod d1;
 #[cfg(target_arch = "wasm32")]
+pub mod github;
+#[cfg(target_arch = "wasm32")]
 pub mod users;

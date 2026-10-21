@@ -65,7 +65,7 @@ cargo run -p batch-cli -- migrate
 cargo run -p batch-cli -- ingest --codes 7203,8058 --shard 0/2 --concurrency 4
 ```
 
-GitHub Actions の `poc-ingest` ワークフロー（手動実行）でも同じことができます。
+GitHub Actions の `daily-batch` ワークフローが日次バッチです。平日 18:30 JST に Cloudflare の Cron Trigger から起動され、休場日（土日祝・12/31〜1/3）と当日実行済みのときは何もしません。手動で動かすときは銘柄コードを指定できます（`gh workflow run daily-batch -f codes=7203,8306`）。
 
 ### API Worker（ローカル）
 
