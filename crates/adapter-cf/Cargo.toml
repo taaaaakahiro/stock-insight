@@ -8,7 +8,9 @@ license.workspace = true
 domain = { path = "../domain" }
 usecase = { path = "../usecase" }
 serde.workspace = true
+serde_json.workspace = true
 
 # D1 への接続は Worker（wasm32）でだけビルドする。SQL の組み立てはネイティブでテストできる
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 worker = { version = "0.8.7", features = ["d1"] }
+web-sys = { version = "0.3.106", features = ["Crypto", "CryptoKey", "SubtleCrypto"] }

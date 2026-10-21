@@ -117,11 +117,27 @@ async fn main() {
     }
 }
 
+const MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "0001_init",
+        include_str!("../../../migrations/0001_init.sql"),
+    ),
+    (
+        "0002_users",
+        include_str!("../../../migrations/0002_users.sql"),
+    ),
+];
+
 async fn migrate() -> Result<(), String> {
     let store = d1_store(http::client())?;
-    let script = include_str!("../../../migrations/0001_init.sql");
-    let n = store.exec_script(script).await.map_err(|e| e.0)?;
-    println!("migrate: applied {n} statements");
+    // すべて CREATE ... IF NOT EXISTS で書くため、毎回番号順に全部流してよい
+    for (name, script) in MIGRATIONS {
+        let n = store
+            .exec_script(script)
+            .await
+            .map_err(|e| format!("{name}: {}", e.0))?;
+        println!("migrate: {name} applied {n} statements");
+    }
     Ok(())
 }
 
