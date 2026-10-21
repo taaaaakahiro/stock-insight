@@ -1,8 +1,9 @@
-//! D1 から一覧と鮮度を読む（IndicatorQuery の実装）。
+//! D1 から一覧と鮮度を読む（IndicatorQuery の実装）。ポートフォリオの読み書きもここ。
 
 use crate::query::{self, Arg, Query};
 use domain::screening::ScreeningFilter;
 use serde::Deserialize;
+use usecase::portfolio::PortfolioRepository;
 use usecase::screening::{DataStatus, IndicatorQuery, StockRow};
 use usecase::PortError;
 use worker::wasm_bindgen::JsValue;
@@ -138,5 +139,68 @@ impl IndicatorQuery for D1Indicators {
             status: r.status,
             latest_price_date: r.latest_price_date,
         }))
+    }
+}
+
+/// ポートフォリオの読み書き（PortfolioRepository の実装）
+pub struct D1Portfolio {
+    db: D1Database,
+}
+
+impl D1Portfolio {
+    pub fn new(db: D1Database) -> Self {
+        Self { db }
+    }
+
+    fn prepare(&self, sql: &str, args: &[JsValue]) -> Result<D1PreparedStatement, PortError> {
+        self.db.prepare(sql).bind(args).map_err(err)
+    }
+}
+
+#[derive(Deserialize)]
+struct CodeRow {
+    code: String,
+}
+
+impl PortfolioRepository for D1Portfolio {
+    async fn codes(&self, user_id: &str) -> Result<Vec<String>, PortError> {
+        let rows: Vec<CodeRow> = self
+            .prepare(query::PORTFOLIO_CODES, &[user_id.into()])?
+            .all()
+            .await
+            .map_err(err)?
+            .results()
+            .map_err(err)?;
+        Ok(rows.into_iter().map(|r| r.code).collect())
+    }
+
+    async fn rows(&self, user_id: &str) -> Result<Vec<StockRow>, PortError> {
+        let rows: Vec<Row> = self
+            .prepare(query::PORTFOLIO_ROWS, &[user_id.into()])?
+            .all()
+            .await
+            .map_err(err)?
+            .results()
+            .map_err(err)?;
+        Ok(rows.into_iter().map(StockRow::from).collect())
+    }
+
+    async fn add(&self, user_id: &str, code: &str, now: i64) -> Result<(), PortError> {
+        self.prepare(
+            query::PORTFOLIO_ADD,
+            &[user_id.into(), code.into(), JsValue::from_f64(now as f64)],
+        )?
+        .run()
+        .await
+        .map_err(err)?;
+        Ok(())
+    }
+
+    async fn remove(&self, user_id: &str, code: &str) -> Result<(), PortError> {
+        self.prepare(query::PORTFOLIO_REMOVE, &[user_id.into(), code.into()])?
+            .run()
+            .await
+            .map_err(err)?;
+        Ok(())
     }
 }
