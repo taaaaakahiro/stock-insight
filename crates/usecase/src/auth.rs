@@ -3,6 +3,8 @@
 
 use crate::{Clock, PortError};
 use domain::access::{decide_access, Access, DirectoryUser};
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 /// Clerk の確認結果を使い回す時間（秒）
 pub const RECHECK_AFTER_SECS: i64 = 3600;
@@ -163,11 +165,67 @@ fn result_of(s: &StoredUser) -> Result<AuthUser, AuthError> {
     }
 }
 
+/// users の行を Worker の isolate のメモリに持つ入れ物
+pub type UserMemo = RefCell<HashMap<String, StoredUser>>;
+
+/// メモリに持つ人数の上限（超えたら一度空にする。使う人は許可リストの数人）
+const MEMO_MAX_USERS: usize = 256;
+
+/// users の読み取りをメモリで省く。確認から1時間以内の行があれば D1 を読まない
+pub struct CachedUsers<'a, R> {
+    inner: &'a R,
+    memo: &'a UserMemo,
+    now: i64,
+}
+
+impl<'a, R> CachedUsers<'a, R> {
+    pub fn new(inner: &'a R, memo: &'a UserMemo, now: i64) -> Self {
+        Self { inner, memo, now }
+    }
+
+    fn remember(&self, user: &StoredUser) {
+        let mut m = self.memo.borrow_mut();
+        if m.len() >= MEMO_MAX_USERS && !m.contains_key(&user.id) {
+            m.clear();
+        }
+        m.insert(user.id.clone(), user.clone());
+    }
+}
+
+impl<R: UserRepository> UserRepository for CachedUsers<'_, R> {
+    async fn find(&self, id: &str) -> Result<Option<StoredUser>, PortError> {
+        let fresh = self
+            .memo
+            .borrow()
+            .get(id)
+            .filter(|u| self.now - u.checked_at < RECHECK_AFTER_SECS)
+            .cloned();
+        if fresh.is_some() {
+            return Ok(fresh);
+        }
+        let found = self.inner.find(id).await?;
+        if let Some(u) = &found {
+            self.remember(u);
+        }
+        Ok(found)
+    }
+
+    async fn save(&self, user: &StoredUser) -> Result<(), PortError> {
+        self.inner.save(user).await?;
+        self.remember(user);
+        Ok(())
+    }
+
+    async fn record_login(&self, event: &LoginEvent) -> Result<(), PortError> {
+        self.inner.record_login(event).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tests_support::block_on;
-    use std::cell::{Cell, RefCell};
+    use std::cell::Cell;
 
     struct Verifier;
     impl TokenVerifier for Verifier {
@@ -215,9 +273,11 @@ mod tests {
     struct Repo {
         users: RefCell<Vec<StoredUser>>,
         events: RefCell<Vec<LoginEvent>>,
+        finds: Cell<u32>,
     }
     impl UserRepository for Repo {
         async fn find(&self, id: &str) -> Result<Option<StoredUser>, PortError> {
+            self.finds.set(self.finds.get() + 1);
             Ok(self.users.borrow().iter().find(|u| u.id == id).cloned())
         }
         async fn save(&self, user: &StoredUser) -> Result<(), PortError> {
@@ -319,5 +379,47 @@ mod tests {
             run(Some("ok:new"), &down, &repo, 0),
             Err(AuthError::Unavailable(_))
         ));
+    }
+
+    fn run_cached(memo: &UserMemo, dir: &Directory, repo: &Repo, now: i64) -> AuthUser {
+        block_on(authenticate(
+            Some("ok:alice"),
+            &RequestMeta::default(),
+            None,
+            &Verifier,
+            dir,
+            &CachedUsers::new(repo, memo, now),
+            &At(now),
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn memo_skips_d1_reads_until_recheck() {
+        let (dir, repo, memo) = (
+            Directory::new(true, true),
+            Repo::default(),
+            UserMemo::default(),
+        );
+        run_cached(&memo, &dir, &repo, 1000);
+        run_cached(&memo, &dir, &repo, 1000 + RECHECK_AFTER_SECS - 1);
+        assert_eq!(repo.finds.get(), 1, "2回目はメモリから");
+        assert_eq!(dir.calls.get(), 1);
+        run_cached(&memo, &dir, &repo, 1000 + RECHECK_AFTER_SECS);
+        assert_eq!(repo.finds.get(), 2, "1時間たったら D1 を読み直す");
+        assert_eq!(dir.calls.get(), 2);
+    }
+
+    #[test]
+    fn memo_uses_rows_another_isolate_saved() {
+        let (dir, repo, memo) = (
+            Directory::new(true, true),
+            Repo::default(),
+            UserMemo::default(),
+        );
+        run(Some("ok:alice"), &dir, &repo, 1000).unwrap();
+        run_cached(&memo, &dir, &repo, 1001);
+        assert_eq!(dir.calls.get(), 1, "D1 の新しい行があれば Clerk に聞かない");
+        assert!(memo.borrow().contains_key("alice"));
     }
 }
