@@ -1,94 +1,94 @@
 # 05 詳細設計
 
-> 出典: Claude Docs「増配期待株ダッシュボード 要件定義」（rev 56, 2026-10-21）
+> 出典: Claude Docs「増配期待株ダッシュボード 要件定義」（rev 56, 2026-10-21）。その後の実装（v0.3.0 まで）に合わせて更新
 
 ## 指標の定義
 
-| 指標 | 計算式 | 種類 |
+各指標の取得元の項目と計算式は [08 指標の取得元と計算式](08_indicator_sources.md#指標の計算式domainsrcindicatorsrs-analysisrs) にまとめた（そちらが正本）。指標はバッチで計算して保存し、画面では計算しない。比率は小数で保存し（0.035 = 3.5%）、画面で % にする。
+
+株価と配当はどちらも J-Quants の分割調整前の値を使うので、株式分割をまたいでも利回りはずれない。1株配当の前年比較（連続増配年数）は分割の遡及調整をしていない（[08 既知の不整合](08_indicator_sources.md#既知の不整合)）。
+
+### 利回りの過去5年比（valuation）
+
+| 値 | 条件 | 画面の表示 |
 |---|---|---|
-| PBR | 株価 ÷ BPS | 時価 |
-| PER | 株価 ÷ EPS（直近実績） | 時価 |
-| 配当利回り | 年間配当（直近12か月の実績）÷ 株価 | 時価 |
-| 配当利回りパーセンタイル | 現在の配当利回りが、過去10年の週次配当利回りのうち下から何%の位置か。80%以上で「割安」、20%以下で「割高」 | 時価 |
-| 配当性向 | 1株配当 ÷ EPS | 財務 |
-| DOE | 配当金総額 ÷ 自己資本（期首・期末平均）。簡易版は1株配当 ÷ BPS | 財務 |
-| 連続増配年数 | 1株配当（株式分割調整後）が前年を上回った年の連続数 | 財務 |
-| 営業利益率 | 営業利益 ÷ 売上 | 財務 |
-| 赤字なし | 直近5期の営業利益・純利益がすべてプラス | 財務 |
-| 営業利益の増加傾向 | 直近5期の営業利益の回帰の傾きがプラス | 財務 |
+| `cheap` | 利回りの過去5年比 ≧ 80% | 「高い（上位20%。株価は過去と比べて安い）」 |
+| `neutral` | 20% < 過去5年比 < 80% | 「ふつう」 |
+| `expensive` | 過去5年比 ≦ 20% | 「低い（下位20%。株価は過去と比べて高い）」。ポートフォリオでは「割高」のサイン |
+| `unknown` | 週次の点が52に満たない、または配当がない | — |
 
-株式分割は配当・株価の両方を調整してから計算する。指標はバッチで計算して保存し、画面では計算しない。
-
-### 割安・中立・割高バッジ
-
-| バッジ | 条件 | 色 |
-|---|---|---|
-| 割安 | 配当利回りパーセンタイル ≧ 80% | 緑 |
-| 中立 | 20% < パーセンタイル < 80% | なし |
-| 割高 | 配当利回りパーセンタイル ≦ 20% | 赤 |
-
-色だけに意味を持たせず、文字（割安・中立・割高）を必ず併記する。
+基準は `domain::indicators::CHEAP_PERCENTILE`・`EXPENSIVE_PERCENTILE`。色だけに意味を持たせず、文字を必ず併記する。
 
 ## 判定ロジック
 
-判定は`domain`の純粋関数として実装し、判定Workflowから呼ぶ。
+判定は`domain`の純粋関数として実装する。
 
-### 増配期待の警告（F4）
+### 売り時のサイン（F4、実装済み）
 
-しきい値はユーザーが`alert_settings`で変更できる。下表は初期値。
+`domain::portfolio::sell_signals`。`/api/portfolio` を返すときに、最新の指標（indicators_latest）から毎回判定する。判定できない値（None）ではサインを出さない。
+
+| サイン（API の値） | 条件 | 使う列 |
+|---|---|---|
+| `high_payout` | 配当性向 > 50%（`PAYOUT_WARN`。ちょうど50%は出さない） | payout_ratio |
+| `expensive` | valuation が `expensive` | valuation |
+| `no_increase` | 連続増配年数が 0 | consecutive_increases |
+| `profit_downtrend` | 営業利益の増加傾向が偽 | profit_uptrend |
+| `loss` | 通期で赤字なし、または四半期で赤字なしが偽 | no_loss_years, no_quarterly_loss |
+
+1人が登録できる銘柄は100（`MAX_ITEMS`）。
+
+### 増配期待の警告（F4、未実装）
+
+しきい値はユーザーが`alert_settings`で変更できるようにする。下表は初期値。
 
 | 警告 | 判定条件（初期値） | 重さ | 使うデータ |
 |---|---|---|---|
-| 減配 | 直近の配当実績が前年同期を下回った | 高 | 配当履歴、有報・半期報告書 |
-| 配当方針の変更 | 有報の配当方針から「累進配当」「DOE目標」が消えた | 高 | dividend_policies（AIで前年と比較） |
+| 減配 | 直近の配当実績が前年同期を下回った | 高 | financials_annual、financials_quarterly |
+| 配当方針の変更 | 有報・半期報告書から「累進配当」「非減配」「DOE」の記述が消えた | 高 | edinet_docs（前の書類の値を残す必要がある） |
 | 赤字転落 | 最新期の営業利益または純利益がマイナス | 高 | financials_annual |
 | 本業の弱体化 | 営業利益が2期連続で減少 | 中 | financials_annual |
 | 配当余力の低下 | 配当性向が70%超 | 中 | indicators_latest |
 | 現金の不足 | 営業キャッシュフローがマイナス | 中 | financials_annual |
 
-### 売り時条件（F5）
+### 売り時条件（F5、未実装）
 
-- 使える指標: 株価、配当利回り、配当利回りパーセンタイル、PBR、PER、取得単価からの騰落率
+- 使える指標: 株価、配当利回り、利回りの過去5年比、PBR、PER、取得単価からの騰落率
 - 演算子: `>=`、`<=`。条件はAND/ORで組み合わせる
 - 対象: 銘柄ごと、または全保有株共通
 - 再通知の抑止: 条件ごとに「前回当たっていたか」を持ち、外れた→当たったに変わったときだけ通知する
 
-### 通知（F6）
+### 通知（F6、未実装）
 
 - 判定Workflowはユーザーごとにステップを分け、警告・売り時の結果を`notifications`に書く
 - 管理者（シークレット`ADMIN_NOTIFY_EMAIL`と一致するユーザー）にだけ、管理者の保有株の警告・売り時とバッチの結果をまとめて1通送る。該当がなければ送らない
 - 本文: 銘柄名、当たった条件、現在値、データ取得日、銘柄詳細へのリンク、免責表示
 
-### AIレコメンド（F7）
+### AIレコメンド（F7、未実装）
 
-1. その日の株価で、ルールにより候補を約50銘柄に絞る（例: 割安バッジ、赤字なし、減配なし）
+1. その日の株価で、ルールにより候補を約50銘柄に絞る（例: 利回りの過去5年比が高い、通期黒字、5年配当、累進配当・非減配）
 2. 候補の指標をWorkers AI（Llama 3.1 8B）に渡し、上位10銘柄と理由（1〜2文）を出させる
 3. 根拠の数字と出典を併記して`recommendations`に保存（90日保持）
 4. AIが失敗した日はルールによる候補だけを表示する
-5. 配当方針の抽出（有報の「配当政策」節 → 累進配当の有無・DOE目標値）は無料枠に収まるよう数日に分ける
 
 ## 認証の処理（F1）
 
+`usecase::auth::authenticate`。
+
 1. ブラウザはClerkのReact SDKでGoogleログインし、セッショントークン（JWT）を得る
-2. APIは`Authorization`ヘッダーでトークンを受け取る（CSRF対策）
-3. API WorkerはClerkの公開鍵（JWKS、1時間キャッシュ。検証失敗時は取り直す）でRS256の署名をWeb Cryptoで検証する
-4. トークンのログイン方法がGoogle以外なら拒否する
-5. 許可リスト（メールアドレス、またはClerkのユーザーメタデータの「stock-insight利用可」）になければ拒否する
-6. 初回ログイン時は`users`を自動作成（ClerkのユーザーID、メールアドレス、表示名）
-7. ClerkのWebhook（`session.created`）は署名をHMAC（Web Crypto）で検証してから`login_events`に記録する。許可リスト外の拒否も記録する
+2. APIは`Authorization: Bearer`ヘッダーでトークンを受け取る（CSRF対策）。なければ 401
+3. API WorkerはClerkの公開鍵（JWKS、1時間キャッシュ。検証失敗時は取り直す）でRS256の署名をWeb Cryptoで検証する。発行元（`CLERK_ISSUER`）、発行先（`azp` が `AUTHORIZED_PARTIES` のどれか）、有効期限と `nbf`（ずれは5秒まで）も確かめる。失敗したら 401
+4. `users` に1時間以内（`RECHECK_AFTER_SECS`）に確かめた結果があれば、それで許可・拒否を決める
+5. なければ Clerk のユーザー API（`CLERK_SECRET_KEY`）でユーザーを取り、`domain::access::decide_access` で判定する
+   - 確認済みの主メールアドレスと同じアドレスの Google アカウント（`oauth_google`）が確認済みでつながっていなければ拒否（`denied_not_google`）
+   - 主メールアドレスが`ADMIN_NOTIFY_EMAIL`と同じなら管理者として許可
+   - `public_metadata` に `{"stock_insight": true}` があれば許可。どちらでもなければ拒否
+6. 結果を`users`に保存（初回は自動作成）し、`login_events`に許可・拒否を記録する（記録の失敗でログインは止めない）。拒否は 403
+7. Clerk に問い合わせられないときは、前回の結果があればそれを使い、なければ 503
+8. 設定（`CLERK_ISSUER`・`AUTHORIZED_PARTIES`・`CLERK_SECRET_KEY`）が足りなければ、すべての `/api/*` を 503 にする
+
+未実装: ClerkのWebhook（`session.created`）の署名をHMAC（Web Crypto）で検証して`login_events`に記録する流れ。今は手順5のたびに記録するので、1時間以内の再ログインは記録されない。
 
 ## バッチ
-
-### バッチの並列実行
-
-取得は「ジョブの分割」と「ジョブ内の同時取得」の2段で並列にする。取得先に負荷をかけすぎないよう、同時実行数には上限を設ける。
-
-1. GitHub Actionsのmatrixで銘柄コードを4分割し、4ジョブを同時に実行する（分割数は設定で変更可）
-2. J-Quantsは日付指定で全銘柄をまとめて返すため、銘柄ごとの並列取得はしない。呼び出し間隔はプランの上限（Light 60件/分）に合わせて `--rate` で制御する
-3. 失敗は指数バックオフで最大3回再試行し、それでも失敗した銘柄は前回の値を残す
-4. D1へは100行単位のバッチで書き込む
-5. 全ジョブの完了後に集約ジョブが全銘柄の指標とパーセンタイルを確定し、batch_runsに結果を記録してから判定Workflowを起動する
-6. 判定Workflowはユーザーごとにステップを分け、警告・売り時の判定とメール作成を並列に処理する
 
 ### バッチの起動
 
@@ -97,60 +97,112 @@ GitHub Actionsにもcron（`on: schedule`）はあるが、起動はCloudflare�
 - 混雑時には開始が数十分遅れることがある（時刻指定はUTC）
 - 公開リポジトリでは、60日間コミットなどの動きがないと定期実行が自動で止まる
 
-CloudflareのCron Trigger（平日18:30 JST）は呼び出しを送るだけなのでCPU 10msに収まる。GitHub側の`schedule`は予備として残し、同じ日に2回動かないようbatch_runsで重複を弾く。Workerにはキー名GITHUB_DISPATCH_TOKEN（対象リポジトリのActions実行権限のみ）をWorker Secretとして登録する。
+CloudflareのCron Trigger（`30 9 * * 1-5` = 平日18:30 JST）は呼び出しを送るだけなのでCPU 10msに収まる。Workerには`GITHUB_DISPATCH_TOKEN`（対象リポジトリのActions実行権限のみ）をWorker Secretとして登録し、`vars.GITHUB_REPO` の `daily-batch.yml` を `main` で起動する。GitHub側の`schedule`（平日18:45 JST）は予備として残し、`batch-cli should-run` が休場日と当日成功済み（同じラベルで今日0:00 JST以降に `succeeded` の batch_runs がある）を弾く。
+
+手動で動かすときの入力（`gh workflow run daily-batch -f ...`）:
+
+| 入力 | 既定 | 意味 |
+|---|---|---|
+| `force` | false | 休場日・当日実行済みでも動かす |
+| `probe` | false | D1 に触れず、直近の数日分を J-Quants（と EDINET を5件）から取って SQL を成果物に保存する（取得元の確認用） |
+| `max_minutes` | 300 | 取り込みの時間の上限（分）。過ぎたらそこまでを保存し、次回は続きから |
+| `persist_every` | 1500 | 何日分ごとに D1 へ保存するか |
+| `refill_prices` | false | 取り込み済みの過去5年分の株価も取り直して `price_history` を埋める（`sync-jq --refill-prices`）。財務と `sync_state` は変えない |
+
+### 日次バッチのステップ
+
+ワークフロー `daily-batch.yml` は `build`（batch-cli を1回だけビルド）→ `guard`（`should-run`）→ `daily` の順で、`daily` ジョブの中で次を順に実行する（タイムアウト340分）。
+
+1. `batch-cli migrate`: `migrations/` の SQL を順に適用する。`ALTER TABLE ... ADD COLUMN` の「列がすでにある」は読み飛ばす
+2. `batch-cli sync-master`: JPX の上場銘柄一覧（xlsx）から `stocks` を upsert
+3. `batch-cli sync-jq --rate 60 --max-minutes 300 --persist-every 1500 --raw-dir raw`: J-Quants を日付ごとに取り込む
+   - 範囲は前回の続き（`sync_state.jq_synced_until` の翌日）から今日まで。初回は5年前から。財務は直近3日分を毎回取り直す
+   - 呼び出しは1分あたり `--rate` 回まで（Light は60）。429・5xx・通信エラーは指数バックオフで最大3回再試行し、J-Quants の 429 はさらに1分待って2回まで試す
+   - `--refill-prices` のときは、`--from`（既定は5年前）から前回の続きの前日までの株価も取り直して履歴に足す（同じ日付は上書き）。取り直した日の生データは R2 に上げ直さず、財務も取り直さない
+   - 終値の履歴は直近5年＋1か月（`KEEP_DAYS`）を超えた分を捨てる
+   - D1 への保存は `--persist-every` 日分ごと（既定では最後に1回）。保存のたびに全銘柄の `price_history` を書き直すため、小さくすると D1 の1日の書き込み上限（10万行）に当たる
+   - 応答の全項目を `raw/bars/<日付>.json.gz`・`raw/fins/<日付>.json.gz` に書き出す
+4. `batch-cli compute --label daily`: D1 に保存済みの終値と財務から全銘柄の指標を計算して `indicators_latest` に upsert し、`batch_runs` に記録する（run_id は `daily-<開始のUNIX秒>`）。株価のない銘柄は数えるだけで飛ばす。半数以上の銘柄を保存できたら `succeeded`、そうでなければ `failed`
+5. `batch-cli sync-edinet --rate 60 --max-minutes 60 --raw-dir raw`（`continue-on-error`）: EDINET の書類一覧（前回の続き。初回は過去400日分）から有報・半期報告書を選び、まだ持っていない書類の CSV を取って `edinet_docs` を更新、文章を `raw/edinet/<コード>/<種類>.json.gz` に書き出す。古くなった分の R2 のキーは `raw/edinet-delete.txt` に書く（詳細は [08](08_indicator_sources.md#取得元の-api)）
+6. R2 へのアップロード: `wrangler r2 object put` で `raw/` のファイルを `maaun-stock-insight-raw` に置き、`edinet-delete.txt` のキーを消す
+
+1ジョブで順に動かすのは、J-Quants が日付指定で全銘柄をまとめて返すため銘柄ごとの並列取得が要らず、呼び出しの上限（60件/分）が律速になるから。
 
 ### 取得失敗とデータ品質
 
-- 1銘柄の取得失敗でバッチ全体を止めず、前回の値を残して「古いデータ」と表示する
-- 失敗は指数バックオフで最大3回再試行する
-- 前日比±50%超の株価、配当性向300%超、欠損率5%超を「要確認」として管理画面に出す
-- バッチが失敗したら当日中に自動で1回再実行し、それでも失敗したら管理者にメールする
+- 時間切れ（`--max-minutes`）や途中の失敗で止まっても、`sync_state` に保存した日付の続きから次回再開する
+- 1銘柄の計算失敗でバッチ全体を止めず、その銘柄の `indicators_latest` は前回の値のまま残る
+- EDINET の失敗は一覧の更新を止めない
+- 未実装: 当日中の自動再実行、管理者へのメール、前日比±50%超の株価・配当性向300%超・欠損率5%超の「要確認」の検知、画面の「古いデータ」表示
 
 ### マイグレーション
 
-- `migrations/`に連番のSQLを置き、GitHub Actionsから`batch-cli migrate`（D1 HTTP API）で適用する
-- 後方互換を保ち、列の削除は2段階で行う
+- `migrations/`に連番のSQL（`0001`〜`0007`）を置き、日次バッチの最初に`batch-cli migrate`（D1 HTTP API）で適用する。手で適用するときも同じコマンドか `wrangler d1 execute --remote --file`（[07](07_deploy.md)）
+- `CREATE ... IF NOT EXISTS` と `ALTER TABLE ... ADD COLUMN` だけで後方互換を保つ。列の削除は2段階で行う
 
-## テーブル定義（案）
+## テーブル定義
 
-要件から導いた列の案。型はD1（SQLite）に合わせる。実装時にマイグレーションで確定する。
+`migrations/` の実物。型はD1（SQLite）。日時はUNIX秒、日付は `YYYY-MM-DD` の文字列、比率は小数。
 
 ### 共通データ
 
-| テーブル | 主な列 |
-|---|---|
-| stocks | code (PK), name, sector33, market, size_class（大型/中型/小型/なし）, updated_at |
-| indicators_latest | code (PK), price, price_date, pbr, per, dividend_yield, yield_percentile, payout_ratio, doe, consecutive_increase_years, operating_margin, equity_ratio, market_cap, no_deficit_5y, op_income_uptrend, no_dividend_cut, fetched_at, source, batch_run_id, is_stale |
-| financials_annual | code, fiscal_year (PK: code+fiscal_year), revenue, operating_income, net_income, operating_cf, net_assets, eps, bps, dps, total_dividends, filed_at, source, fetched_at |
-| dividend_policies | code, fiscal_year, progressive (bool), doe_target, summary, source_doc_id, extracted_at |
-| recommendations | date, rank, code, reason, created_at |
-| batch_runs | id (PK), started_at, finished_at, target_count, success_count, failure_count, status, trigger（cron/schedule/manual） |
+| テーブル | 列 | 作成 |
+|---|---|---|
+| stocks | code (PK), name, kind（stock/reit/etf）, market, sector33, size_class（large/mid/small/none）, as_of, updated_at | 0003 |
+| indicators_latest | code (PK), run_id, fetched_at, price, price_date, dividend_ttm, dividend_yield, yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin, no_loss_years, profit_uptrend, valuation, fin_doc_id, fin_submitted, dividend_every_year, no_quarterly_loss, is_value, data_years, sales_growth, op_growth | 0001（0005・0007 で列を追加） |
+| financials_annual | code, period_end (PK: code+period_end), doc_id, net_sales, operating_income, ordinary_income, net_income, equity, eps, bps, dps, operating_cf, fetched_at, disclosed | 0001（0004 で disclosed を追加） |
+| financials_quarterly | code, fiscal_year_end, period_type (PK: code+fiscal_year_end+period_type), period_end, doc_id, disclosed, net_sales, operating_income, ordinary_income, net_income, fetched_at | 0005 |
+| price_history | code (PK), closes（`YYYYMMDD,終値;…`）, last_date, updated_at | 0004 |
+| edinet_docs | code, doc_kind (PK: code+doc_kind。annual/semiannual), doc_id, submitted, period_end, r2_key, progressive_dividend, no_dividend_cut, dividend_raise, doe_target, payout_target, phrases（JSON の文字列配列）, fetched_at | 0007 |
+| sync_state | key (PK。`jq_synced_until`・`edinet_listed_until`), value, updated_at | 0004 |
+| batch_runs | run_id (PK), started_at, finished_at, target, succeeded, failed, status（running/succeeded/failed） | 0001 |
+
+索引: indicators_latest の dividend_yield・pbr・payout_ratio・valuation、stocks の kind。
 
 ### ユーザーデータ（すべて`user_id`を持つ）
 
+| テーブル | 列 | 作成 |
+|---|---|---|
+| users | id (PK, ClerkのユーザーID), email, display_name, allowed, is_admin, checked_at, created_at | 0002 |
+| login_events | id (PK), user_id, email, occurred_at, ip_address, user_agent, result（allowed / denied_not_google / denied_not_listed） | 0002（索引 occurred_at） |
+| portfolio_items | user_id, code (PK: user_id+code), added_at | 0006 |
+
+### 予定のテーブル（列の案）
+
 | テーブル | 主な列 |
 |---|---|
-| users | id (PK, ClerkのユーザーID), email, display_name, created_at |
-| login_events | id, user_id, email, occurred_at, ip_address, user_agent, result（許可/拒否） |
-| holdings | id, user_id, code, shares, acquisition_price, memo, created_at, updated_at |
+| holdings | user_id, code, shares, acquisition_price, memo, created_at, updated_at（portfolio_items に列を足す案もある） |
 | sell_rules | id, user_id, code（NULLなら全保有株共通）, expression（AND/ORの条件をJSONで保持）, last_matched, updated_at |
 | alert_settings | user_id (PK), payout_ratio_threshold, op_income_decline_periods, ほか各しきい値 |
 | saved_filters | id, user_id, name, filter_json, is_exclusion, updated_at |
 | notifications | id, user_id, code, kind（警告/売り時）, condition, value, data_date, created_at |
-
-索引: 一覧の絞り込みに使う`indicators_latest`の列、ユーザーデータの`user_id`。
+| recommendations | date, rank, code, reason, created_at |
 
 ## キャッシュ
 
-| 対象 | 実装 |
-|---|---|
-| 銘柄一覧・詳細API | Cache API。キャッシュキーに最新バッチIDを含め、TTL 24時間 |
-| APIのレスポンス | `Cache-Control: private, max-age=300` + `ETag`。ユーザー固有データは`no-store` |
-| 静的ファイル | ハッシュ付きJS・CSSは`max-age=31536000, immutable`、`index.html`は`no-cache` |
-| JWKS | Workerのメモリに1時間。検証失敗時は即時取り直し |
+| 対象 | 実装 | 状態 |
+|---|---|---|
+| 一覧・配当方針・状態の API | `Cache-Control: private, max-age=300` | 済み |
+| ユーザー固有データ（`/api/me`・`/api/portfolio`）とエラー | `Cache-Control: no-store` | 済み |
+| 静的ファイル | `/assets/*`（ハッシュ付きJS・CSS）は`public, max-age=31536000, immutable`、それ以外は`no-cache`（`web/public/_headers`） | 済み |
+| JWKS | Workerのメモリに1時間。検証失敗時は即時取り直し | 済み |
+| 許可リストの判定 | D1 の `users` に1時間 | 済み |
+| 一覧・詳細 API のサーバー側 | Cache API。キャッシュキーに最新バッチIDを含め、TTL 24時間。ETag | 未実装 |
 
 ## エラー処理とログ
 
-- エラー型は各crateの自前の`enum`で定義する（anyhowは使わない）
-- APIのエラーはHTTPステータスと機械可読なコードで返す（400 入力不正、401 未認証、403 許可リスト外・権限なし、404、429 レート制限、500）
-- ログは構造化ログ（JSON）。キー・メールアドレス・保有株は出さず、件数と銘柄コードだけを出す
+- エラー型は各crateの自前の型で定義する（anyhowは使わない）
+- APIのエラーは `{"error": {"code": ..., "message": ...}}` とHTTPステータスで返す
+
+| ステータス | code | 場面 |
+|---|---|---|
+| 400 | `bad_request` | クエリの値が不正（未知の並べ替え、min > max、不正な銘柄コードなど） |
+| 401 | `unauthenticated` | トークンがない・検証できない（`WWW-Authenticate: Bearer` を付ける） |
+| 403 | `forbidden` | Google 以外のログイン、許可リスト外 |
+| 404 | `not_found` | 未知の `/api/*` |
+| 409 | `too_many` | ポートフォリオが100銘柄を超える |
+| 500 | `internal` | 内部エラー（詳細は応答に出さず Worker のログにだけ残す） |
+| 503 | `unavailable` | 認証の設定が足りない、Clerk に問い合わせられず前回の結果もない |
+
+- 429（レート制限）は未実装
+- ログにはキー・トークン・メールアドレス・ポートフォリオは出さず、件数と銘柄コードだけを出す
