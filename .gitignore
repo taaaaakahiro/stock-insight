@@ -6,3 +6,5 @@ poc-*.sql
 /crates/api-worker/build
 /.wrangler
 /node_modules
+/web/node_modules
+/web/dist

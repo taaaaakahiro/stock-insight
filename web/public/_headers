@@ -1,0 +1,14 @@
+# Workers の静的アセットに付けるヘッダー（/api/* は Worker が返す）
+# CSP は area-insight（machinome）と同じ方針。Clerk（clerk.maa-un.com）と Turnstile だけを許可する
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://clerk.maa-un.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://img.clerk.com; font-src 'self'; connect-src 'self' https://clerk.maa-un.com; frame-src https://challenges.cloudflare.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Cache-Control: no-cache
+
+# ハッシュ付きのファイルは中身が変わると名前も変わるので1年キャッシュする
+/assets/*
+  ! Cache-Control
+  Cache-Control: public, max-age=31536000, immutable
