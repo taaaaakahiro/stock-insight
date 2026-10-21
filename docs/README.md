@@ -36,7 +36,7 @@
 - [x] 決算短信の速報: 対象外
 - [x] Yahoo Financeの代替: J-Quantsの有料プランが次の候補。今回は使わない
 
-- [x] インフラ: Cloudflareのダッシュボードは使わない。リソースはmaaun-terraform（Terraform）、デプロイとシークレットはコマンド（wrangler・gh）で管理する
+- [x] インフラ: リソースはwranglerコマンドで作成し、当面はCloudflare側で管理する（あとでmaaun-terraformにimportするかもしれない）。デプロイとシークレットもコマンド（wrangler・gh）で行う
 
 次のステップ:
 
