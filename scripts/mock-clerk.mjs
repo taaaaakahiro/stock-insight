@@ -34,7 +34,8 @@ function token(sub, overrides = {}) {
 createServer((req, res) => {
   const url = new URL(req.url, issuer);
   const send = (status, body) => {
-    res.writeHead(status, { "Content-Type": "application/json" });
+    // 画面の開発サーバー（別オリジン）からトークンを取れるようにする
+    res.writeHead(status, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
     res.end(typeof body === "string" ? body : JSON.stringify(body));
   };
   if (url.pathname === "/.well-known/jwks.json") return send(200, { keys: [jwk] });

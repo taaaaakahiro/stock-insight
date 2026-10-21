@@ -25,6 +25,29 @@
 
 依存は最小限にしています。追加する場合は理由をこの表に書いてください。
 
+## 画面（web/）
+
+React + Vite + TypeScript、UI は shadcn/ui（使う部品だけ `web/src/components/ui` に取り込み）、ログインは Clerk の React SDK。画面は API Worker と同じオリジン（Workers の静的アセット）から配信し、`/api/*` だけ Worker を通します。セキュリティヘッダー（CSP など）は `web/public/_headers` にあります。
+
+Node は 22.23.3（`.nvmrc`）。Volta を使っている場合、pnpm をこのバージョンで動かすには `VOLTA_FEATURE_PNPM=1` が必要です（古い Node だと Vite のネイティブ部品が入りません）。
+
+```sh
+cd web
+pnpm install
+pnpm lint && pnpm typecheck && pnpm test
+pnpm build                       # web/dist を作る（wrangler はこれを配信する）
+```
+
+ローカルで画面ごと試す（偽の Clerk を使い、本物の Clerk・本番の D1 には触れない）:
+
+```sh
+node scripts/mock-clerk.mjs 9871 &                     # 偽の Clerk
+npx wrangler dev --local --port 8787 &                 # API Worker（.dev.vars は上の API Worker の節）
+cd web && VITE_MOCK_CLERK_URL=http://localhost:9871 pnpm dev   # http://localhost:5173
+```
+
+ログインボタンで `user_member` としてログインします。`?mock_user=user_outsider` を付けて開くと、許可リストにないユーザーとして試せます。`VITE_MOCK_CLERK_URL` は開発サーバーでだけ有効で、本番のビルドには入りません。本番のビルドには `VITE_CLERK_PUBLISHABLE_KEY`（Clerk の公開キー）が必要です。
+
 ## ドキュメント
 
 仕様書は [docs/](docs/README.md) にあります（要件定義・非機能要件・システム構成図・基本設計・詳細設計・シークレット運用）。

@@ -5,7 +5,14 @@
   "main": "crates/api-worker/build/index.js",
   "compatibility_date": "2026-10-01",
   "build": {
+    // API Worker（wasm）だけをビルドする。画面（web/dist）は先に `pnpm --dir web build` で作っておく
     "command": "cd crates/api-worker && worker-build --release"
+  },
+  // 画面は静的アセットとして配信し、/api/* だけ Worker を通す
+  "assets": {
+    "directory": "web/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
   },
   "d1_databases": [
     {
