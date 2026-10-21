@@ -14,7 +14,8 @@ import {
   DEFAULT_FILTERS,
   type Filters,
   isInvalidInput,
-  METRICS,
+  metricLabel,
+  metricsFor,
   UNIT_SUFFIX,
   type Valuation,
 } from "@/lib/filters";
@@ -44,7 +45,9 @@ export function FilterPanel({ value, onChange }: Props) {
           type="button"
           variant="ghost"
           size="sm"
-          onClick={() => onChange({ ...DEFAULT_FILTERS, sort: value.sort, order: value.order })}
+          onClick={() =>
+            onChange({ ...DEFAULT_FILTERS, kind: value.kind, sort: value.sort, order: value.order })
+          }
         >
           <RotateCcw aria-hidden />
           リセット
@@ -71,18 +74,18 @@ export function FilterPanel({ value, onChange }: Props) {
 
       <fieldset className="flex flex-col gap-3">
         <legend className="mb-2 text-sm font-medium">範囲</legend>
-        {METRICS.map((m) => {
+        {metricsFor(value.kind).map((m) => {
           const minKey = `${m.key}_min` as const;
           const maxKey = `${m.key}_max` as const;
           return (
             <div key={m.key} className="grid grid-cols-[1fr_auto_1fr] items-center gap-x-2 gap-y-1">
               <span className="col-span-3 text-xs text-muted-foreground">
-                {m.label}（{UNIT_SUFFIX[m.unit]}）
+                {metricLabel(m.key, value.kind)}（{UNIT_SUFFIX[m.unit]}）
               </span>
               <Input
                 inputMode="decimal"
                 placeholder="下限"
-                aria-label={`${m.label}の下限`}
+                aria-label={`${metricLabel(m.key, value.kind)}の下限`}
                 aria-invalid={isInvalidInput(value.ranges[minKey]) || undefined}
                 value={value.ranges[minKey] ?? ""}
                 onChange={(e) => setRange(minKey, e.target.value)}
@@ -94,7 +97,7 @@ export function FilterPanel({ value, onChange }: Props) {
               <Input
                 inputMode="decimal"
                 placeholder="上限"
-                aria-label={`${m.label}の上限`}
+                aria-label={`${metricLabel(m.key, value.kind)}の上限`}
                 aria-invalid={isInvalidInput(value.ranges[maxKey]) || undefined}
                 value={value.ranges[maxKey] ?? ""}
                 onChange={(e) => setRange(maxKey, e.target.value)}
@@ -105,23 +108,26 @@ export function FilterPanel({ value, onChange }: Props) {
         })}
       </fieldset>
 
-      <fieldset className="flex flex-col gap-3">
-        <legend className="mb-2 text-sm font-medium">業績</legend>
-        <Label className="font-normal">
-          <Checkbox
-            checked={value.noLossYears}
-            onCheckedChange={(c) => set({ noLossYears: c === true })}
-          />
-          直近5期に赤字なし
-        </Label>
-        <Label className="font-normal">
-          <Checkbox
-            checked={value.profitUptrend}
-            onCheckedChange={(c) => set({ profitUptrend: c === true })}
-          />
-          営業利益が増加傾向
-        </Label>
-      </fieldset>
+      {/* 業績の条件は財務がある株式だけ */}
+      {value.kind === "stock" && (
+        <fieldset className="flex flex-col gap-3">
+          <legend className="mb-2 text-sm font-medium">業績</legend>
+          <Label className="font-normal">
+            <Checkbox
+              checked={value.noLossYears}
+              onCheckedChange={(c) => set({ noLossYears: c === true })}
+            />
+            直近5期に赤字なし
+          </Label>
+          <Label className="font-normal">
+            <Checkbox
+              checked={value.profitUptrend}
+              onCheckedChange={(c) => set({ profitUptrend: c === true })}
+            />
+            営業利益が増加傾向
+          </Label>
+        </fieldset>
+      )}
     </form>
   );
 }

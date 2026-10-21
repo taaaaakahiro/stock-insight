@@ -3,5 +3,6 @@
 pub mod d1;
 pub mod edinet;
 pub mod http;
+pub mod jpx;
 pub mod sql;
 pub mod yahoo;

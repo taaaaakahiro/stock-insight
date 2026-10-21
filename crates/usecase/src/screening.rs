@@ -21,6 +21,14 @@ pub struct StockRow {
     pub profit_uptrend: Option<bool>,
     pub valuation: String,
     pub fetched_at: i64,
+    /// 銘柄マスタ（stocks）から。マスタにまだなければ None
+    pub name: Option<String>,
+    /// stock / reit / etf
+    pub kind: String,
+    pub market: Option<String>,
+    pub sector33: Option<String>,
+    /// large / mid / small / none
+    pub size_class: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

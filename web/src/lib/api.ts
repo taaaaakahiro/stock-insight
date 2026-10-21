@@ -18,6 +18,12 @@ export type StockRow = {
   profit_uptrend: boolean | null;
   valuation: "cheap" | "neutral" | "expensive" | "unknown";
   fetched_at: number;
+  /** 銘柄マスタ（JPX）から。まだ取り込んでいなければ null */
+  name: string | null;
+  kind: "stock" | "reit" | "etf";
+  market: string | null;
+  sector33: string | null;
+  size_class: "large" | "mid" | "small" | "none" | null;
 };
 
 export type StockPage = { rows: StockRow[]; total: number; page: number; page_size: number };

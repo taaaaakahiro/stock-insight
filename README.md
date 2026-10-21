@@ -59,6 +59,7 @@ cargo test                                   # 単体テスト + オフライン
 python3 scripts/verify_sql.py target/poc_offline.sql   # 出力SQLをSQLiteで検証
 
 # 実データ（ネットワークとキーが必要）
+cargo run -p batch-cli -- sync-master --dry-run master.sql   # JPX の上場銘柄一覧 → 銘柄マスタ
 cargo run -p batch-cli -- ingest --codes 7203,8058 --dry-run out.sql
 cargo run -p batch-cli -- migrate
 cargo run -p batch-cli -- ingest --codes 7203,8058 --shard 0/2 --concurrency 4

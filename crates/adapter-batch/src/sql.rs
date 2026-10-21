@@ -1,5 +1,6 @@
 //! D1（SQLite）に書き込むSQL文の組み立て。値は必ずプレースホルダで渡す。
 
+use domain::stock_master::ListedStock;
 use usecase::{BatchRun, Snapshot};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,9 +149,67 @@ pub fn snapshot_stmts(s: &Snapshot) -> Vec<Stmt> {
     out
 }
 
+/// D1 は1文あたりのパラメータが100個まで。8列なので12行ずつまとめる
+const STOCK_ROWS_PER_STMT: usize = 12;
+
+/// 銘柄マスタの upsert（複数行の INSERT に分ける）
+pub fn stocks_stmts(as_of: &str, stocks: &[ListedStock], now: i64) -> Vec<Stmt> {
+    stocks
+        .chunks(STOCK_ROWS_PER_STMT)
+        .map(|chunk| {
+            let values = vec!["(?, ?, ?, ?, ?, ?, ?, ?)"; chunk.len()].join(", ");
+            Stmt {
+                sql: format!(
+                    "INSERT INTO stocks (code, name, kind, market, sector33, size_class, as_of, updated_at) VALUES {values} \
+                     ON CONFLICT(code) DO UPDATE SET name = excluded.name, kind = excluded.kind, market = excluded.market, \
+                     sector33 = excluded.sector33, size_class = excluded.size_class, as_of = excluded.as_of, \
+                     updated_at = excluded.updated_at"
+                ),
+                params: chunk
+                    .iter()
+                    .flat_map(|s| {
+                        [
+                            Val::Text(s.code.as_str().into()),
+                            Val::Text(s.name.clone()),
+                            Val::Text(s.kind.as_str().into()),
+                            Val::Text(s.market.clone()),
+                            s.sector33.clone().map_or(Val::Null, Val::Text),
+                            Val::Text(s.size_class.as_str().into()),
+                            Val::Text(as_of.into()),
+                            Val::Int(now),
+                        ]
+                    })
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stocks_are_chunked_under_the_param_limit() {
+        use domain::stock_master::listed_stock_from_jpx;
+        let stocks: Vec<_> = (0..30)
+            .map(|i| {
+                listed_stock_from_jpx(
+                    &format!("{}", 1300 + i),
+                    "名前",
+                    "プライム（内国株式）",
+                    "-",
+                    "-",
+                )
+                .unwrap()
+            })
+            .collect();
+        let stmts = stocks_stmts("20260930", &stocks, 1);
+        assert_eq!(stmts.len(), 3);
+        assert!(stmts.iter().all(|s| s.params.len() <= 100));
+        assert_eq!(stmts[2].params.len(), 6 * 8);
+        assert_eq!(stmts[0].params[4], Val::Null, "業種 '-' は NULL");
+    }
 
     #[test]
     fn render_escapes_quotes() {

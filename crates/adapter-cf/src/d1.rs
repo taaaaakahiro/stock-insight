@@ -53,6 +53,11 @@ struct Row {
     profit_uptrend: Option<i64>,
     valuation: String,
     fetched_at: i64,
+    name: Option<String>,
+    kind: String,
+    market: Option<String>,
+    sector33: Option<String>,
+    size_class: Option<String>,
 }
 
 impl From<Row> for StockRow {
@@ -73,6 +78,11 @@ impl From<Row> for StockRow {
             profit_uptrend: r.profit_uptrend.map(|v| v != 0),
             valuation: r.valuation,
             fetched_at: r.fetched_at,
+            name: r.name,
+            kind: r.kind,
+            market: r.market,
+            sector33: r.sector33,
+            size_class: r.size_class,
         }
     }
 }

@@ -192,6 +192,11 @@ fn row_json(r: &StockRow) -> Value {
         "profit_uptrend": r.profit_uptrend,
         "valuation": r.valuation,
         "fetched_at": r.fetched_at,
+        "name": r.name,
+        "kind": r.kind,
+        "market": r.market,
+        "sector33": r.sector33,
+        "size_class": r.size_class,
     })
 }
 

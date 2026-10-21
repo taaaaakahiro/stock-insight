@@ -3,9 +3,10 @@ import { useEffect, useMemo, useState } from "react";
 import { FilterPanel } from "@/components/filter-panel";
 import { ResultsTable } from "@/components/results-table";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ApiError, apiGet, type StockPage } from "@/lib/api";
 import { useAuthState } from "@/lib/auth";
-import { type Filters, fromQuery, toQuery } from "@/lib/filters";
+import { type Filters, fromQuery, KINDS, type Kind, switchKind, toQuery } from "@/lib/filters";
 
 type Load =
   | { state: "loading" }
@@ -71,79 +72,96 @@ export function ScreeningPage() {
   const lastPage = page ? Math.max(1, Math.ceil(page.total / page.page_size)) : 1;
 
   return (
-    <div className="grid gap-6 md:grid-cols-[18rem_1fr]">
-      <aside className="md:sticky md:top-20 md:self-start">
-        {/* スマホでは絞り込みを畳み、一覧をすぐ見せる */}
-        <Button
-          variant="outline"
-          className="w-full md:hidden"
-          aria-expanded={filtersOpen}
-          aria-controls="filter-panel"
-          onClick={() => setFiltersOpen((o) => !o)}
-        >
-          <SlidersHorizontal aria-hidden />
-          {filtersOpen ? "絞り込みを閉じる" : "絞り込み"}
-        </Button>
-        <div id="filter-panel" className={filtersOpen ? "mt-4 md:mt-0" : "hidden md:block"}>
-          <FilterPanel value={filters} onChange={setFilters} />
-        </div>
-      </aside>
+    <div className="flex flex-col gap-6">
+      <Tabs value={filters.kind} onValueChange={(v) => setFilters((f) => switchKind(f, v as Kind))}>
+        <TabsList aria-label="種類">
+          {KINDS.map((k) => (
+            <TabsTrigger key={k.key} value={k.key}>
+              {k.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+      <div className="grid gap-6 md:grid-cols-[18rem_1fr]">
+        <aside className="md:sticky md:top-20 md:self-start">
+          {/* スマホでは絞り込みを畳み、一覧をすぐ見せる */}
+          <Button
+            variant="outline"
+            className="w-full md:hidden"
+            aria-expanded={filtersOpen}
+            aria-controls="filter-panel"
+            onClick={() => setFiltersOpen((o) => !o)}
+          >
+            <SlidersHorizontal aria-hidden />
+            {filtersOpen ? "絞り込みを閉じる" : "絞り込み"}
+          </Button>
+          <div id="filter-panel" className={filtersOpen ? "mt-4 md:mt-0" : "hidden md:block"}>
+            <FilterPanel value={filters} onChange={setFilters} />
+          </div>
+        </aside>
 
-      <section aria-labelledby="results-heading" className="min-w-0">
-        <div className="mb-3 flex items-baseline justify-between gap-2">
-          <h2 id="results-heading" className="text-sm">
-            一覧
-          </h2>
-          <p className="text-sm text-muted-foreground tabular-nums" aria-live="polite">
-            {page ? `${page.total.toLocaleString("ja-JP")}銘柄` : "読み込み中…"}
-          </p>
-        </div>
+        <section aria-labelledby="results-heading" className="min-w-0">
+          <div className="mb-3 flex items-baseline justify-between gap-2">
+            <h2 id="results-heading" className="text-sm">
+              一覧
+            </h2>
+            <p className="text-sm text-muted-foreground tabular-nums" aria-live="polite">
+              {page ? `${page.total.toLocaleString("ja-JP")}件` : "読み込み中…"}
+            </p>
+          </div>
 
-        {load.state === "error" && (
-          <p role="alert" className="rounded-lg border border-warning/50 bg-warning/10 p-3 text-sm">
-            {load.message}
-          </p>
-        )}
-        {page && page.rows.length === 0 && (
-          <p className="rounded-lg border p-6 text-center text-sm text-muted-foreground">
-            条件に合う銘柄はありません。条件をゆるめてみてください。
-          </p>
-        )}
-        {page && page.rows.length > 0 && (
-          <ResultsTable
-            rows={page.rows}
-            sort={filters.sort}
-            order={filters.order}
-            onSort={onSort}
-          />
-        )}
-
-        {page && lastPage > 1 && (
-          <nav aria-label="ページ" className="mt-4 flex items-center justify-center gap-3">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={filters.page <= 1}
-              onClick={() => setFilters((f) => ({ ...f, page: f.page - 1 }))}
+          {load.state === "error" && (
+            <p
+              role="alert"
+              className="rounded-lg border border-warning/50 bg-warning/10 p-3 text-sm"
             >
-              <ChevronLeft aria-hidden />
-              前へ
-            </Button>
-            <span className="text-sm tabular-nums">
-              {filters.page} / {lastPage}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={filters.page >= lastPage}
-              onClick={() => setFilters((f) => ({ ...f, page: f.page + 1 }))}
-            >
-              次へ
-              <ChevronRight aria-hidden />
-            </Button>
-          </nav>
-        )}
-      </section>
+              {load.message}
+            </p>
+          )}
+          {page && page.rows.length === 0 && (
+            <p className="rounded-lg border p-6 text-center text-sm text-muted-foreground">
+              {filters.kind === "stock"
+                ? "条件に合う銘柄はありません。条件をゆるめてみてください。"
+                : "条件に合う銘柄はありません。REIT・ETF はまだ価格・分配金を取り込んでいない場合があります。"}
+            </p>
+          )}
+          {page && page.rows.length > 0 && (
+            <ResultsTable
+              rows={page.rows}
+              kind={filters.kind}
+              sort={filters.sort}
+              order={filters.order}
+              onSort={onSort}
+            />
+          )}
+
+          {page && lastPage > 1 && (
+            <nav aria-label="ページ" className="mt-4 flex items-center justify-center gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={filters.page <= 1}
+                onClick={() => setFilters((f) => ({ ...f, page: f.page - 1 }))}
+              >
+                <ChevronLeft aria-hidden />
+                前へ
+              </Button>
+              <span className="text-sm tabular-nums">
+                {filters.page} / {lastPage}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={filters.page >= lastPage}
+                onClick={() => setFilters((f) => ({ ...f, page: f.page + 1 }))}
+              >
+                次へ
+                <ChevronRight aria-hidden />
+              </Button>
+            </nav>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
