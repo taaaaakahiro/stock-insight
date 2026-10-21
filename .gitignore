@@ -3,3 +3,6 @@
 .dev.vars
 *.sql.out
 poc-*.sql
+/crates/api-worker/build
+/.wrangler
+/node_modules

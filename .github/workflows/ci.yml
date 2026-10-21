@@ -1,0 +1,28 @@
+name: ci
+
+# プルリクエストと main への push で品質チェックだけを行う。シークレットは使わない（pull_request_target は使わない）
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: ci-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      # rust-toolchain.toml のバージョンと wasm32 ターゲットが自動で入る
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - name: clippy (wasm32 / Worker)
+        run: cargo clippy -p api-worker -p adapter-cf --target wasm32-unknown-unknown -- -D warnings

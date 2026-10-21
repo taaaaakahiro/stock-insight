@@ -1,0 +1,15 @@
+[package]
+name = "api-worker"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+domain = { path = "../domain" }
+usecase = { path = "../usecase" }
+adapter-cf = { path = "../adapter-cf" }
+serde_json.workspace = true
+worker = { version = "0.8.7", features = ["d1"] }
