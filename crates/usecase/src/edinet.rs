@@ -156,7 +156,7 @@ mod tests {
                 DocKind::Semiannual,
                 "S1",
                 "2025-11-10",
-                "2025-09-30",
+                "2026-03-31",
             ),
         );
         let listed = vec![doc(
@@ -180,7 +180,7 @@ mod tests {
                 DocKind::Semiannual,
                 "S1",
                 "2025-11-10",
-                "2025-09-30",
+                "2026-03-31",
             ),
             doc("7203", DocKind::Annual, "A2", "2026-06-20", "2026-03-31"),
             doc(
@@ -188,7 +188,7 @@ mod tests {
                 DocKind::Semiannual,
                 "S2",
                 "2026-11-10",
-                "2026-09-30",
+                "2027-03-31",
             ),
             doc("8058", DocKind::Annual, "B2", "2026-06-21", "2026-03-31"),
         ];
