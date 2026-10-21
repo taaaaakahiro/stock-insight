@@ -1,0 +1,60 @@
+{
+  "data": [
+    {
+      "DiscDate": "2025-04-30",
+      "DiscTime": "15:00:00",
+      "Code": "86970",
+      "DiscNo": "20250430500001",
+      "DocType": "FYFinancialStatements_Consolidated_IFRS",
+      "CurPerType": "FY",
+      "CurPerSt": "2024-04-01",
+      "CurPerEn": "2025-03-31",
+      "CurFYSt": "2024-04-01",
+      "CurFYEn": "2025-03-31",
+      "Sales": "162000000000",
+      "OP": "100000000000",
+      "OdP": "",
+      "NP": "72000000000",
+      "EPS": "70.5",
+      "TA": "80000000000000",
+      "Eq": "390000000000",
+      "ShEq": "380000000000",
+      "BPS": "370.1",
+      "CFO": "",
+      "DivAnn": "62.0",
+      "DivUnit": "",
+      "PayoutRatioAnn": "0.879"
+    },
+    {
+      "DiscDate": "2025-04-30",
+      "DiscTime": "15:00:00",
+      "Code": "72030",
+      "DiscNo": "20250430500002",
+      "DocType": "3QFinancialStatements_Consolidated_IFRS",
+      "CurPerType": "3Q",
+      "CurPerEn": "2024-12-31",
+      "CurFYEn": "2025-03-31",
+      "Sales": "36000000000000",
+      "EPS": "250.0"
+    },
+    {
+      "DiscDate": "2025-04-30",
+      "DiscTime": "15:30:00",
+      "Code": "89510",
+      "DiscNo": "20250430500003",
+      "DocType": "FYFinancialStatements_NonConsolidated_REIT",
+      "CurPerType": "FY",
+      "CurPerEn": "2025-03-31",
+      "CurFYEn": "2025-03-31",
+      "Sales": "",
+      "NCSales": "48000000000",
+      "NP": "",
+      "NCNP": "25000000000",
+      "EPS": "",
+      "NCEPS": "18000",
+      "DivAnn": "",
+      "DivUnit": "18500"
+    }
+  ],
+  "pagination_key": ""
+}

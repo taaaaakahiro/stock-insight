@@ -5,9 +5,10 @@ use crate::model::*;
 pub struct Indicators {
     pub price: f64,
     pub price_date: Date,
+    /// 計算に使った年間配当（開示がなければ 0）
     pub dividend_ttm: f64,
     pub dividend_yield: Option<f64>,
-    /// 配当利回りが過去10年のどこにいるか（0.0〜1.0。高いほど割安）
+    /// 配当利回りが取れる期間（最大10年）のどこにいるか（0.0〜1.0。高いほど割安）
     pub yield_percentile: Option<f64>,
     pub pbr: Option<f64>,
     pub per: Option<f64>,
@@ -50,36 +51,29 @@ pub enum IndicatorError {
     NoPrice,
 }
 
-/// 指定日までの直近365日の配当合計
-pub fn dividends_ttm(divs: &[Dividend], asof: Date) -> f64 {
-    let from = asof.to_days() - 365;
-    let to = asof.to_days();
+/// 指定日に有効な年間配当（その日までに開示された最新のもの）。まだ開示がなければ None
+pub fn annual_dividend_at(divs: &[Dividend], date: Date) -> Option<f64> {
     divs.iter()
-        .filter(|d| {
-            let x = d.ex_date.to_days();
-            x > from && x <= to
-        })
-        .map(|d| d.amount)
-        .sum()
+        .filter(|d| d.effective <= date)
+        .max_by_key(|d| d.effective)
+        .map(|d| d.annual)
 }
 
-/// 週1点（5営業日ごと）で過去の配当利回りを並べる
+/// 週1点（5営業日ごと）で過去の配当利回りを並べる。
+/// その時点で開示済みの年間配当 ÷ その日の終値（どちらも分割調整前なので、分割をまたいでもずれない）
 pub fn yield_history(market: &MarketData) -> Vec<f64> {
     let Some(last) = market.bars.last() else {
         return vec![];
     };
     let start = last.date.to_days() - HISTORY_DAYS;
-    // 配当の記録が始まる前の期間は利回り0と誤判定しないよう除外する
-    let first_div = market.dividends.iter().map(|d| d.ex_date.to_days()).min();
     market
         .bars
         .iter()
         .filter(|b| b.date.to_days() >= start)
-        .filter(|b| first_div.is_some_and(|f| b.date.to_days() >= f + 365))
         .rev()
         .step_by(5)
         .filter(|b| b.close > 0.0)
-        .map(|b| dividends_ttm(&market.dividends, b.date) / b.close)
+        .filter_map(|b| annual_dividend_at(&market.dividends, b.date).map(|d| d / b.close))
         .collect()
 }
 
@@ -88,8 +82,10 @@ pub fn percentile_rank(samples: &[f64], current: f64) -> Option<f64> {
     if samples.len() < MIN_HISTORY_SAMPLES {
         return None;
     }
-    let below = samples.iter().filter(|&&s| s <= current).count();
-    Some(below as f64 / samples.len() as f64)
+    // 同じ値は半分だけ数える（中央順位）。利回りが変わらない期間が長くても、端に寄らない
+    let below = samples.iter().filter(|&&s| s < current).count() as f64;
+    let equal = samples.iter().filter(|&&s| s == current).count() as f64;
+    Some((below + equal / 2.0) / samples.len() as f64)
 }
 
 /// 新しい順に並んだ値の連続増加回数
@@ -128,8 +124,9 @@ pub fn compute(
 ) -> Result<Indicators, IndicatorError> {
     let last = *market.bars.last().ok_or(IndicatorError::NoPrice)?;
     let price = last.close;
-    let ttm = dividends_ttm(&market.dividends, last.date);
-    let dividend_yield = (price > 0.0).then(|| ttm / price);
+    let annual = annual_dividend_at(&market.dividends, last.date);
+    let ttm = annual.unwrap_or(0.0);
+    let dividend_yield = annual.filter(|_| price > 0.0).map(|d| d / price);
     let yield_percentile = dividend_yield.and_then(|y| percentile_rank(&yield_history(market), y));
 
     let years: &[AnnualFinancial] = fin.map(|f| f.years.as_slice()).unwrap_or(&[]);
@@ -200,23 +197,20 @@ mod tests {
     }
 
     #[test]
-    fn ttm_window() {
+    fn annual_dividend_uses_the_latest_disclosure() {
         let divs = [
             Dividend {
-                ex_date: d("2025-03-28"),
-                amount: 10.0,
+                effective: d("2025-05-10"),
+                annual: 40.0,
             },
             Dividend {
-                ex_date: d("2025-09-29"),
-                amount: 12.0,
-            },
-            Dividend {
-                ex_date: d("2026-03-30"),
-                amount: 13.0,
+                effective: d("2026-05-12"),
+                annual: 44.0,
             },
         ];
-        assert_eq!(dividends_ttm(&divs, d("2026-04-01")), 25.0);
-        assert_eq!(dividends_ttm(&divs, d("2025-12-31")), 22.0);
+        assert_eq!(annual_dividend_at(&divs, d("2025-05-09")), None);
+        assert_eq!(annual_dividend_at(&divs, d("2025-12-31")), Some(40.0));
+        assert_eq!(annual_dividend_at(&divs, d("2026-05-12")), Some(44.0));
     }
 
     #[test]
@@ -232,7 +226,9 @@ mod tests {
     fn percentile_needs_history() {
         assert_eq!(percentile_rank(&[0.03; 10], 0.03), None);
         let s: Vec<f64> = (1..=100).map(|i| i as f64 / 1000.0).collect();
-        assert_eq!(percentile_rank(&s, 0.08), Some(0.8));
+        assert_eq!(percentile_rank(&s, 0.08), Some(0.795));
+        // ずっと同じ値なら真ん中
+        assert_eq!(percentile_rank(&[0.03; 60], 0.03), Some(0.5));
     }
 
     #[test]
@@ -253,23 +249,21 @@ mod tests {
             }
             day = day.add_days(1);
         }
-        let mut dividends = vec![];
-        for (y, a) in [
-            (2022, 15.0),
-            (2023, 16.0),
-            (2024, 18.0),
-            (2025, 20.0),
-            (2026, 22.0),
-        ] {
-            dividends.push(Dividend {
-                ex_date: Date::new(y, 3, 28),
-                amount: a,
-            });
-            dividends.push(Dividend {
-                ex_date: Date::new(y, 9, 27),
-                amount: a,
-            });
-        }
+        // 年間配当: 2024年5月に32円、2025年5月に40円、2026年5月に44円と開示
+        let dividends = vec![
+            Dividend {
+                effective: d("2024-05-10"),
+                annual: 32.0,
+            },
+            Dividend {
+                effective: d("2025-05-10"),
+                annual: 40.0,
+            },
+            Dividend {
+                effective: d("2026-05-12"),
+                annual: 44.0,
+            },
+        ];
         let market = MarketData { bars, dividends };
         let fin = FinancialData {
             doc_id: "S100TEST".into(),
@@ -305,7 +299,7 @@ mod tests {
             ],
         };
         let ind = compute(&market, Some(&fin)).unwrap();
-        // 直近365日（2025-10-21〜2026-10-20）は 2026年3月・9月の 22円×2
+        // 最新の開示（2026年5月）の 44円を使う
         assert!((ind.dividend_ttm - 44.0).abs() < 1e-9);
         assert!((ind.payout_ratio.unwrap() - 0.4).abs() < 1e-9);
         assert!((ind.doe.unwrap() - 44.0 / 1200.0).abs() < 1e-9);

@@ -91,14 +91,16 @@ pub struct PriceBar {
     pub close: f64,
 }
 
-/// 配当（権利落ち日と1株あたり金額）
+/// 年間配当。決算の開示で分かった値を、開示日から次の開示まで使う
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Dividend {
-    pub ex_date: Date,
-    pub amount: f64,
+    /// この日から有効（決算の開示日）
+    pub effective: Date,
+    /// 1株（REIT・ETF は1口）当たりの年間配当
+    pub annual: f64,
 }
 
-/// 株価・配当の取得結果
+/// 株価（終値）と、開示された年間配当の履歴
 #[derive(Debug, Clone, Default)]
 pub struct MarketData {
     pub bars: Vec<PriceBar>,

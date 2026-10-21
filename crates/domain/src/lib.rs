@@ -5,6 +5,7 @@ pub mod access;
 pub mod calendar;
 pub mod indicators;
 pub mod model;
+pub mod price_history;
 pub mod screening;
 pub mod stock_master;
 
