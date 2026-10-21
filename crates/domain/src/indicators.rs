@@ -55,8 +55,8 @@ impl Valuation {
 pub const CHEAP_PERCENTILE: f64 = 0.8;
 pub const EXPENSIVE_PERCENTILE: f64 = 0.2;
 const MIN_HISTORY_SAMPLES: usize = 52;
-/// 利回りの過去比に使う期間（J-Quants Light で取れる5年）
-const HISTORY_DAYS: i64 = 5 * 366;
+/// 利回りの過去比に使う期間（J-Quants Light で取れる5年）。終値の履歴はこれ以上の期間を持つ（price_history::KEEP_DAYS）
+pub const HISTORY_DAYS: i64 = 5 * 366;
 /// 配当の継続・通期赤字の判定に使う期数
 pub const ANALYSIS_YEARS: usize = 5;
 /// 四半期の赤字判定に使う四半期数と、判定に最低限必要な四半期数
