@@ -40,19 +40,25 @@ D1 の Time Travel でも過去の時点に戻せる（`wrangler d1 time-travel 
 専用のステージング環境はないため、次の2段で確認する。
 
 1. **ローカル**（済み・PR #4〜#6）: `wrangler dev --local` と偽の Clerk（`scripts/mock-clerk.mjs`）で、認証・一覧・画面・ヘッダーを確認
-2. **本番に切り替える前のプレビュー**: 新しいバージョンをアップロードだけして、プレビュー URL で確かめる（本番のドメインにはまだ出ない）
+2. **本番に切り替える前のプレビュー**: 公開先のない Worker にバージョンを上げ、プレビュー URL で確かめる（本番のドメインにも workers.dev にも出ない）
+
+`versions upload` は Worker が存在しないと使えないため、**初回だけ** `routes` を外した一時的な設定で Worker を作る（公開先なし。`No targets deployed` と出る）。一時ファイルは Git に入れず、終わったら消す。
 
 ```bash
 pnpm --dir web install --frozen-lockfile
 VITE_CLERK_PUBLISHABLE_KEY=$(gh variable get CLERK_PUBLISHABLE_KEY --repo maa-un/area-insight) pnpm --dir web build
-npx wrangler@4.151.3 versions upload
+grep -v '"routes"' wrangler.jsonc > wrangler.unrouted.jsonc   # 初回だけ
+npx wrangler@4.151.3 deploy --config wrangler.unrouted.jsonc   # 初回だけ
+npx wrangler@4.151.3 versions upload --config wrangler.unrouted.jsonc
+rm wrangler.unrouted.jsonc
 ```
 
-プレビュー URL（`*.workers.dev`）で確認すること:
+プレビュー URL（`https://<バージョン>-maaun-stock-insight.<サブドメイン>.workers.dev`）で確認すること:
 
-- `/` が 200 で、CSP などのヘッダーが付いている
-- `/api/me` がトークンなしで 401
-- Clerk の本番インスタンスは maa-un.com のサブドメインでしか動かないため、**プレビュー URL ではログインできない**（ログインの確認は 5. で行う）
+- `/` と深いパスが 200 で、CSP・HSTS・`X-Frame-Options` などのヘッダーが付いている。`/assets/*` は `immutable`
+- `/api/*` は 503（`authentication is not configured`）。シークレットを入れる前なので、設定不足では通さない動きのとおり
+- `https://maaun-stock-insight.<サブドメイン>.workers.dev/` は 404、stock.insight.maa-un.com はまだ応答しない
+- 画面は「読み込み中…」のまま。Clerk の本番キーは maa-un.com でしか使えないため（コンソールに `Production Keys are only allowed for domain "maa-un.com"`）。**ログインの確認は 6. で行う**
 
 ## 4. 人の承認
 
