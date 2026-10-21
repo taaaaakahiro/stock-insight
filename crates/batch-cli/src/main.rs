@@ -19,7 +19,8 @@
 //!   --until <YYYY-MM-DD>    終了日（既定: 今日）
 //!   --rate <n>              1分あたりの呼び出し数（既定 60 = Light。Free は 5）
 //!   --max-minutes <n>       この時間を過ぎたら、そこまでを保存して終わる（既定 300）
-//!   --persist-every <n>     何日分ごとに D1 へ保存するか（既定 120）
+//!   --persist-every <n>     何日分ごとに D1 へ保存するか（既定 1500 = 基本は最後に1回。保存のたびに全銘柄の
+//!                           株価の履歴を書き直すので、小さくすると D1 の1日の書き込み上限に当たる）
 //!   --dry-run <file>        D1 を読み書きせず、取得結果を SQL ファイルに書く（--from と --until が必要）
 //!   --raw-dir <dir>         J-Quants の応答を全項目そのまま gzip JSON で置く場所（既定 raw。あとで R2 に上げる）
 //!
@@ -89,7 +90,7 @@ fn parse_args() -> Result<Args, String> {
         until: None,
         rate: 60,
         max_minutes: 300,
-        persist_every: 120,
+        persist_every: 1500,
         raw_dir: "raw".into(),
         limit: 5,
     };

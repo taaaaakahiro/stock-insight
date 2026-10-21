@@ -18,6 +18,9 @@ on:
       max_minutes:
         description: "取り込みの時間の上限（分）。過ぎたらそこまでを保存し、次回は続きから"
         default: "300"
+      persist_every:
+        description: "何日分ごとに D1 へ保存するか。保存のたびに全銘柄の株価の履歴を書き直すので、無料枠（1日10万行）を守るには大きいほどよい"
+        default: "1500"
   schedule:
     # 予備（09:45 UTC = 18:45 JST、平日）。Cloudflare 側で起動済みなら should-run が止める
     - cron: "45 9 * * 1-5"
@@ -116,7 +119,8 @@ jobs:
       - run: chmod +x batch-cli
       - run: ./batch-cli migrate
       - run: ./batch-cli sync-master
-      - run: ./batch-cli sync-jq --rate 60 --max-minutes "${{ github.event.inputs.max_minutes || '300' }}" --raw-dir raw
+      # 保存は基本1回（最後）。毎回保存すると株価の履歴（全銘柄分）を書き直して D1 の1日の書き込み上限（10万行）に当たる
+      - run: ./batch-cli sync-jq --rate 60 --max-minutes "${{ github.event.inputs.max_minutes || '300' }}" --persist-every "${{ github.event.inputs.persist_every || '1500' }}" --raw-dir raw
       - run: ./batch-cli compute --label daily
       # EDINET の有報・半期報告書（銘柄・種類ごとに最新の1通）。初回は過去400日分の一覧から（約1時間強。時間切れなら次回は続きから）。
       # 指標の計算より後に置き、ここが失敗しても一覧の更新は止めない
