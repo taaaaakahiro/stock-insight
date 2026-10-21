@@ -91,17 +91,25 @@ flowchart LR
 
 ## インフラ管理とデプロイ
 
-インフラはCloudflareのダッシュボードで管理し、デプロイはCloudflareのGitHub連携（Workers Builds）に任せる。手元でwranglerコマンドを打つ運用はしない。
+Cloudflareのダッシュボードは使わず、すべてコードとコマンドで管理する。インフラは既存の[maaun-terraform](https://github.com/maa-un/maaun-terraform)（Cloudflareの`envs/global/cloudflare/account`レイヤ。Zone・DNS・D1・R2・Workersのドメイン・Cronをすでに管理している）に追加し、アプリのデプロイとシークレットの登録はコマンド（wrangler・gh）で行う。
 
-| 対象 | 管理方法 |
-|---|---|
-| Worker、Cron Trigger、カスタムドメイン（stock.insight.maa-un.com） | ダッシュボードで作成・設定 |
-| D1、R2、Workers AI、Workflowsの紐付け | ダッシュボードで作成。紐付け（バインディング）の定義だけ設定ファイルに書く |
-| Worker Secret | ダッシュボードで登録 |
-| デプロイ | mainへのマージでWorkers Buildsが自動でビルド・公開。プルリクエストごとにプレビューURL |
-| D1のテーブル定義の変更 | batch-cliに`migrate`サブコマンドを用意し、GitHub ActionsからD1 HTTP APIで適用（`wrangler d1 migrations`は使わない） |
+| 対象 | 管理方法 | 置き場所 |
+|---|---|---|
+| D1データベース、R2バケット（ライフサイクルルールを含む） | Terraform（`cloudflare_d1_database`、`cloudflare_r2_bucket`） | maaun-terraform |
+| カスタムドメイン（stock.insight.maa-un.com）、DNS | Terraform（`cloudflare_workers_custom_domain`、`cloudflare_dns_record`） | maaun-terraform |
+| Cron Trigger（平日18:30 JST） | Terraform（`cloudflare_workers_cron_trigger`） | maaun-terraform |
+| Cloudflare APIトークン（CI用・バッチ用） | Terraform（`cloudflare_api_token`）。権限は用途ごとに最小にする | maaun-terraform |
+| GitHubリポジトリの設定（ブランチ保護、Secret scanning、Push protection） | Terraform（GitHubプロバイダ） | maaun-terraform |
+| Workerのコードと紐付け（D1、R2、Workers AI、Workflows） | `wrangler.jsonc`に定義し、`wrangler deploy`で反映 | stock-insight |
+| デプロイ | mainへのマージでGitHub Actionsが`wrangler deploy`を実行。プルリクエストでは`wrangler versions upload`でプレビューURLを発行 | stock-insight |
+| D1のテーブル定義の変更 | `migrations/`にSQLを置き、GitHub Actionsから`batch-cli migrate`（D1 HTTP API）で適用（技術検証で確認済み） | stock-insight |
+| Worker Secret | `wrangler secret put`（値は標準入力から渡す） | コマンド |
+| GitHub Actions Secrets | `gh secret set`（値は標準入力から渡す） | コマンド |
 
-Workers Buildsは内部でwranglerを使うため、設定ファイル（wrangler.jsonc）はリポジトリに置く。wranglerを完全になくすには、GitHub ActionsからCloudflare APIでWorkerを直接アップロードする必要があり、RustのWasmを読み込む下準備も自前で書くことになるため推奨しない。構成をコードで管理したくなったらTerraformのCloudflareプロバイダが候補。
+- リソースの作成・変更はmaaun-terraformのプルリクエストで`plan`を確認してから`apply`する（本番への変更のため、適用前に人が承認する）
+- WorkerのスクリプトはTerraformでは管理しない。Rustのビルド成果物（Wasm）を扱えるwranglerでデプロイする。Terraformが参照するのはスクリプト名だけ
+- シークレットの値はTerraformのstateに残さないため、Terraformでは扱わない（[06](06_secrets_and_repository.md)）
+- 切り戻しは`wrangler rollback`で直前のバージョンに戻す
 
 ## ネットワークとドメイン
 

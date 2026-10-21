@@ -1,0 +1,82 @@
+name: poc-ingest
+
+# 技術検証: 10銘柄を Yahoo と EDINET から取得し、指標を計算して D1 に入れる。
+# 手動実行のみ。シークレットは gh secret set で登録する（値はここに書かない。docs/06_secrets_and_repository.md）。
+on:
+  workflow_dispatch:
+    inputs:
+      codes:
+        description: "銘柄コード（カンマ区切り）"
+        default: "7203,8058,8306,8316,9432,9433,4502,2914,8591,1928"
+      shards:
+        description: "並列ジョブ数"
+        default: "2"
+      dry_run:
+        description: "true なら D1 に書かず SQL を成果物として保存"
+        default: "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: poc-ingest
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+
+  migrate:
+    needs: test
+    if: ${{ inputs.dry_run != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo run -q -p batch-cli --release -- migrate
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.m.outputs.shards }}
+    steps:
+      - id: m
+        run: echo "shards=$(seq -s, 0 $(( ${{ inputs.shards }} - 1 )) | sed 's/^/[/;s/$/]/')" >> "$GITHUB_OUTPUT"
+
+  ingest:
+    needs: [test, migrate, plan]
+    if: ${{ always() && needs.test.result == 'success' && needs.migrate.result != 'failure' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: cargo-${{ hashFiles('Cargo.lock') }}
+      - name: ingest
+        run: |
+          ARGS="--codes ${{ inputs.codes }} --shard ${{ matrix.shard }}/${{ inputs.shards }} --concurrency 4"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run poc-${{ matrix.shard }}.sql"; fi
+          cargo run -q -p batch-cli --release -- ingest $ARGS
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - if: ${{ inputs.dry_run == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: poc-sql-${{ matrix.shard }}
+          path: poc-${{ matrix.shard }}.sql

@@ -108,7 +108,7 @@ CloudflareのCron Trigger（平日18:30 JST）は呼び出しを送るだけな�
 
 ### マイグレーション
 
-- `batch-cli migrate`でD1 HTTP API経由で適用する（`wrangler d1 migrations`は使わない）
+- `migrations/`に連番のSQLを置き、GitHub Actionsから`batch-cli migrate`（D1 HTTP API）で適用する
 - 後方互換を保ち、列の削除は2段階で行う
 
 ## テーブル定義（案）
