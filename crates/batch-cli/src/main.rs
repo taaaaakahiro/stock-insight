@@ -3,14 +3,18 @@
 //! 使い方:
 //!   batch-cli migrate                                  D1 にスキーマを適用
 //!   batch-cli ingest --codes 7203,8058 [options]       取得 → 指標計算 → 保存
+//!   batch-cli ingest --all [--kinds stock,reit,etf]      銘柄マスタの全銘柄を対象にする（D1 から読む）
 //!   batch-cli sync-master [--dry-run <file>] [--from-file <xlsx>]
 //!                                                      JPX の上場銘柄一覧 → stocks（名称・種類・業種・規模）
+//!   batch-cli should-run [--label daily] [--force]      今日バッチを動かすか（休場日・当日成功済みなら false）。
+//!                                                      GITHUB_OUTPUT があれば run=true|false を書く
 //!
 //! ingest のオプション:
 //!   --dry-run <file>     D1 に書かず、SQL をファイルに出力
 //!   --shard <i>/<n>      銘柄を n 分割した i 番目だけ処理（GitHub Actions の matrix 用）
 //!   --concurrency <n>    同時に処理する銘柄数（既定 8）
 //!   --edinet-days <n>    有報を探す日数（既定 400）
+//!   --label <name>       batch_runs の run_id の先頭（既定 manual。日次バッチは daily）
 //!
 //! 環境変数（値はリポジトリに書かない）:
 //!   EDINET_API_KEY                                       未設定なら財務はスキップ
@@ -42,13 +46,17 @@ struct Args {
     concurrency: usize,
     edinet_days: i64,
     from_file: Option<String>,
+    all: bool,
+    kinds: Vec<String>,
+    label: String,
+    force: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     let cmd = it
         .next()
-        .ok_or("command required: migrate | ingest | sync-master")?;
+        .ok_or("command required: migrate | ingest | sync-master | should-run")?;
     let mut a = Args {
         cmd,
         codes: vec![],
@@ -57,6 +65,10 @@ fn parse_args() -> Result<Args, String> {
         concurrency: 8,
         edinet_days: 400,
         from_file: None,
+        all: false,
+        kinds: vec!["stock".into(), "reit".into(), "etf".into()],
+        label: "manual".into(),
+        force: false,
     };
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or(format!("{flag} needs a value"));
@@ -69,6 +81,23 @@ fn parse_args() -> Result<Args, String> {
             }
             "--dry-run" => a.dry_run = Some(val()?),
             "--from-file" => a.from_file = Some(val()?),
+            "--all" => a.all = true,
+            "--force" => a.force = true,
+            "--kinds" => {
+                a.kinds = val()?.split(',').map(|s| s.trim().to_string()).collect();
+                if a.kinds
+                    .iter()
+                    .any(|k| !["stock", "reit", "etf"].contains(&k.as_str()))
+                {
+                    return Err("--kinds takes stock,reit,etf".into());
+                }
+            }
+            "--label" => {
+                a.label = val()?;
+                if !a.label.chars().all(|c| c.is_ascii_alphanumeric()) {
+                    return Err("--label must be alphanumeric".into());
+                }
+            }
             "--shard" => {
                 let v = val()?;
                 let (i, n) = v.split_once('/').ok_or("--shard i/n")?;
@@ -117,6 +146,7 @@ async fn main() {
         "migrate" => migrate().await,
         "ingest" => tokio::task::LocalSet::new().run_until(ingest(args)).await,
         "sync-master" => sync_master(args).await,
+        "should-run" => should_run(args).await,
         other => Err(format!("unknown command: {other}")),
     };
     if let Err(e) = code {
@@ -177,15 +207,77 @@ async fn migrate() -> Result<(), String> {
     Ok(())
 }
 
+/// 内閣府「国民の祝日・休日」（公式・無料）
+const HOLIDAYS_URL: &str = "https://www8.cao.go.jp/chosei/shukujitsu/syukujitsu.csv";
+
+async fn should_run(args: Args) -> Result<(), String> {
+    let now = SystemClock.now_unix();
+    let today = Date::from_unix_jst(now);
+    let client = http::client();
+    let (run, reason) = if args.force {
+        (true, "forced".to_string())
+    } else {
+        let csv = http::get_bytes(&client, HOLIDAYS_URL)
+            .await
+            .map_err(|e| format!("holidays: {}", e.0))?;
+        let holidays = domain::calendar::parse_holiday_csv(&csv);
+        if holidays.is_empty() {
+            return Err("holidays: no dates parsed".into());
+        }
+        if !domain::calendar::is_trading_day(today, &holidays) {
+            (false, format!("{today} is not a trading day"))
+        } else {
+            // 今日の 0:00（日本時間）以降に、同じラベルで成功した実行があれば重ねて動かさない
+            let since = today.to_days() * 86_400 - 9 * 3600;
+            let done = d1_store(client)?
+                .succeeded_since(&args.label, since)
+                .await
+                .map_err(|e| e.0)?;
+            if done {
+                (
+                    false,
+                    format!("{} batch already succeeded on {today}", args.label),
+                )
+            } else {
+                (true, format!("{today} is a trading day"))
+            }
+        }
+    };
+    println!("should-run: {run} ({reason})");
+    if let Ok(path) = std::env::var("GITHUB_OUTPUT") {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        writeln!(f, "run={run}").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 async fn ingest(args: Args) -> Result<(), String> {
-    if args.codes.is_empty() {
-        return Err("--codes is required in the PoC".into());
+    let all_codes: Vec<StockCode> = if args.all {
+        let kinds: Vec<&str> = args.kinds.iter().map(String::as_str).collect();
+        d1_store(http::client())?
+            .listed_codes(&kinds)
+            .await
+            .map_err(|e| e.0)?
+            .iter()
+            .filter_map(|c| StockCode::parse(c))
+            .collect()
+    } else {
+        args.codes.clone()
+    };
+    if all_codes.is_empty() {
+        return Err("no codes: pass --codes or --all (after sync-master)".into());
     }
     let clock = SystemClock;
     let started = clock.now_unix();
-    let run_id = format!("{}-{}of{}", started, args.shard.0, args.shard.1);
-    let codes: Vec<StockCode> = args
-        .codes
+    let run_id = format!(
+        "{}-{}-{}of{}",
+        args.label, started, args.shard.0, args.shard.1
+    );
+    let codes: Vec<StockCode> = all_codes
         .iter()
         .enumerate()
         .filter(|(i, _)| i % args.shard.1 == args.shard.0)

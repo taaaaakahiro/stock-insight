@@ -133,3 +133,25 @@ Clerk ダッシュボード → Users → 対象のユーザー → Metadata の
 ## 2回目以降のデプロイ
 
 画面と Worker を変えたときは 3.（プレビュー）→ 承認 → `wrangler deploy` → 6. の確認。テーブル定義を変えるときは 2.（バックアップ）と `batch-cli migrate` も行う。GitHub Actions からの自動デプロイは、デプロイ用の API トークン（[06](06_secrets_and_repository.md) のデプロイ用の権限）を用意してから追加する。
+
+## 日次バッチを有効にする
+
+日次バッチは GitHub Actions の `daily-batch`。Worker の Cron Trigger（`wrangler.jsonc` の `triggers.crons`、平日 09:30 UTC = 18:30 JST）が `workflow_dispatch` で起動する。
+
+1. GitHub で Fine-grained personal access token を作る（Repository access: `taaaaakahiro/stock-insight` のみ、Permissions: Actions = Read and write、有効期限を設定）
+2. Worker Secret に登録する（値は対話入力。ダッシュボードの場合は Variables and Secrets に Secret として追加）
+
+```bash
+npx wrangler@4.151.3 secret put GITHUB_DISPATCH_TOKEN
+```
+
+3. `wrangler deploy` で Cron Trigger を反映する（手順 5-3 と同じ。画面は公開キー入りでビルドしてから）
+4. 初回は手動で全銘柄を流して確かめる（休場日・当日実行済みの判定は `force=true` で飛ばせる）
+
+```bash
+gh workflow run daily-batch --repo taaaaakahiro/stock-insight -f force=true
+```
+
+5. 次の平日 18:30 以降に、`batch_runs` に `daily-...` の行が増えていること、`wrangler tail` に `dispatched daily-batch` が出ていることを確かめる
+
+止めたいときは `wrangler.jsonc` の `triggers.crons` を空にして `wrangler deploy`（GitHub 側の予備の schedule は、ワークフローを無効化する: `gh workflow disable daily-batch`）。
