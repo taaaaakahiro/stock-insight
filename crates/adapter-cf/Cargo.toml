@@ -1,0 +1,14 @@
+[package]
+name = "adapter-cf"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { path = "../domain" }
+usecase = { path = "../usecase" }
+serde.workspace = true
+
+# D1 への接続は Worker（wasm32）でだけビルドする。SQL の組み立てはネイティブでテストできる
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker = { version = "0.8.7", features = ["d1"] }

@@ -1,0 +1,20 @@
+// API Worker の設定。シークレットの値はここに書かない（wrangler secret put で登録する）
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "maaun-stock-insight",
+  "main": "crates/api-worker/build/index.js",
+  "compatibility_date": "2026-10-01",
+  "build": {
+    "command": "cd crates/api-worker && worker-build --release"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "maaun-stock-insight",
+      // 秘密ではない（wrangler d1 info maaun-stock-insight で確認できる）
+      "database_id": "9ffd69bf-18dd-4bc0-8fb4-eb4ff1da13fb",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "observability": { "enabled": true }
+}

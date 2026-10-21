@@ -3,6 +3,7 @@
 
 pub mod indicators;
 pub mod model;
+pub mod screening;
 
 pub use indicators::*;
 pub use model::*;

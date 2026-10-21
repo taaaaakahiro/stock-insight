@@ -20,6 +20,8 @@
 | `usecase` | 取り込みユースケースとポート（トレイト内 async fn） | なし |
 | `adapter-batch` | Yahoo・EDINET・D1 との接続、XBRL CSV の解析 | reqwest, tokio(time), zip, serde_json |
 | `batch-cli` | バッチの入口（並列実行・シャード分割） | tokio |
+| `adapter-cf` | Worker 用: D1 の読み取り、スクリーニングの SQL 組み立て | worker（wasm32 のみ）, serde |
+| `api-worker` | 画面向け API（workers-rs のルーター）。wasm32 専用 | worker, serde_json |
 
 依存は最小限にしています。追加する場合は理由をこの表に書いてください。
 
@@ -40,6 +42,24 @@ cargo run -p batch-cli -- ingest --codes 7203,8058 --shard 0/2 --concurrency 4
 ```
 
 GitHub Actions の `poc-ingest` ワークフロー（手動実行）でも同じことができます。
+
+### API Worker（ローカル）
+
+```sh
+cargo install worker-build --locked                       # 初回のみ
+npx wrangler d1 execute maaun-stock-insight --local --file migrations/0001_init.sql
+npx wrangler d1 execute maaun-stock-insight --local --file target/poc_offline.sql   # テストデータ
+npx wrangler dev --local                                   # http://localhost:8787
+curl "http://localhost:8787/api/stocks?dividend_yield_min=0.03&sort=pbr&order=asc"
+curl "http://localhost:8787/api/status"
+```
+
+`--local` はローカルの D1 だけを使い、本番には触れません。認証（Clerk）を入れるまでは本番にデプロイしません。
+
+| エンドポイント | 内容 |
+| --- | --- |
+| `GET /api/stocks` | スクリーニング一覧。`<指標>_min` / `<指標>_max`（price, dividend_yield, yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin）、`valuation`、`no_loss_years`、`profit_uptrend`、`sort`、`order`、`page`（50件ずつ） |
+| `GET /api/status` | 直近のバッチの状態と最新の株価日付 |
 
 ## シークレット（キー名のみ）
 

@@ -1,0 +1,266 @@
+//! スクリーニング一覧（F2）の絞り込み条件。値の検証だけを行い、SQLは知らない。
+
+/// 範囲で絞り込める指標（列名は indicators_latest に対応）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Metric {
+    Price,
+    DividendYield,
+    YieldPercentile,
+    Pbr,
+    Per,
+    PayoutRatio,
+    Doe,
+    ConsecutiveIncreases,
+    OperatingMargin,
+}
+
+impl Metric {
+    pub const ALL: [Metric; 9] = [
+        Metric::Price,
+        Metric::DividendYield,
+        Metric::YieldPercentile,
+        Metric::Pbr,
+        Metric::Per,
+        Metric::PayoutRatio,
+        Metric::Doe,
+        Metric::ConsecutiveIncreases,
+        Metric::OperatingMargin,
+    ];
+
+    /// APIのクエリ名・D1の列名
+    pub fn key(self) -> &'static str {
+        match self {
+            Metric::Price => "price",
+            Metric::DividendYield => "dividend_yield",
+            Metric::YieldPercentile => "yield_percentile",
+            Metric::Pbr => "pbr",
+            Metric::Per => "per",
+            Metric::PayoutRatio => "payout_ratio",
+            Metric::Doe => "doe",
+            Metric::ConsecutiveIncreases => "consecutive_increases",
+            Metric::OperatingMargin => "operating_margin",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.key() == s)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Range {
+    pub metric: Metric,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortOrder {
+    Asc,
+    Desc,
+}
+
+/// 並べ替えのキー。指標の他に銘柄コード
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortKey {
+    Code,
+    Metric(Metric),
+}
+
+impl SortKey {
+    pub fn key(self) -> &'static str {
+        match self {
+            SortKey::Code => "code",
+            SortKey::Metric(m) => m.key(),
+        }
+    }
+}
+
+pub const PAGE_SIZE: u32 = 50;
+const MAX_PAGE: u32 = 1000;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScreeningFilter {
+    pub ranges: Vec<Range>,
+    /// 割安などのバッジで絞る（Valuation::as_str の値）
+    pub valuation: Option<crate::Valuation>,
+    pub no_loss_years: bool,
+    pub profit_uptrend: bool,
+    pub sort: SortKey,
+    pub order: SortOrder,
+    /// 1始まり
+    pub page: u32,
+}
+
+impl Default for ScreeningFilter {
+    fn default() -> Self {
+        Self {
+            ranges: vec![],
+            valuation: None,
+            no_loss_years: false,
+            profit_uptrend: false,
+            sort: SortKey::Metric(Metric::DividendYield),
+            order: SortOrder::Desc,
+            page: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilterError(pub String);
+
+impl ScreeningFilter {
+    /// クエリ文字列の組（キー, 値）から組み立てる。
+    /// 範囲は `<指標>_min` / `<指標>_max`。未知のキーは無視する。
+    pub fn from_pairs<'a>(
+        pairs: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Result<Self, FilterError> {
+        let mut f = Self::default();
+        for (k, v) in pairs {
+            let v = v.trim();
+            if v.is_empty() {
+                continue;
+            }
+            match k {
+                "sort" => {
+                    f.sort = if v == "code" {
+                        SortKey::Code
+                    } else {
+                        SortKey::Metric(
+                            Metric::from_key(v)
+                                .ok_or_else(|| FilterError(format!("unknown sort: {v}")))?,
+                        )
+                    }
+                }
+                "order" => {
+                    f.order = match v {
+                        "asc" => SortOrder::Asc,
+                        "desc" => SortOrder::Desc,
+                        _ => return Err(FilterError(format!("bad order: {v}"))),
+                    }
+                }
+                "page" => {
+                    f.page = v
+                        .parse()
+                        .ok()
+                        .filter(|p| (1..=MAX_PAGE).contains(p))
+                        .ok_or_else(|| FilterError(format!("bad page: {v}")))?
+                }
+                "valuation" => {
+                    f.valuation = Some(match v {
+                        "cheap" => crate::Valuation::Cheap,
+                        "neutral" => crate::Valuation::Neutral,
+                        "expensive" => crate::Valuation::Expensive,
+                        _ => return Err(FilterError(format!("bad valuation: {v}"))),
+                    })
+                }
+                "no_loss_years" => f.no_loss_years = parse_flag(v)?,
+                "profit_uptrend" => f.profit_uptrend = parse_flag(v)?,
+                _ => {
+                    let Some((name, bound)) = k.rsplit_once('_') else {
+                        continue;
+                    };
+                    let Some(metric) = Metric::from_key(name) else {
+                        continue;
+                    };
+                    let x: f64 = v
+                        .parse()
+                        .ok()
+                        .filter(|x: &f64| x.is_finite())
+                        .ok_or_else(|| FilterError(format!("bad number for {k}: {v}")))?;
+                    let r = f.range_mut(metric);
+                    match bound {
+                        "min" => r.min = Some(x),
+                        "max" => r.max = Some(x),
+                        _ => continue,
+                    }
+                }
+            }
+        }
+        for r in &f.ranges {
+            if let (Some(a), Some(b)) = (r.min, r.max) {
+                if a > b {
+                    return Err(FilterError(format!("{}: min > max", r.metric.key())));
+                }
+            }
+        }
+        Ok(f)
+    }
+
+    fn range_mut(&mut self, metric: Metric) -> &mut Range {
+        let i = match self.ranges.iter().position(|r| r.metric == metric) {
+            Some(i) => i,
+            None => {
+                self.ranges.push(Range {
+                    metric,
+                    min: None,
+                    max: None,
+                });
+                self.ranges.len() - 1
+            }
+        };
+        &mut self.ranges[i]
+    }
+
+    pub fn offset(&self) -> u32 {
+        (self.page - 1) * PAGE_SIZE
+    }
+}
+
+fn parse_flag(v: &str) -> Result<bool, FilterError> {
+    match v {
+        "1" | "true" => Ok(true),
+        "0" | "false" => Ok(false),
+        _ => Err(FilterError(format!("bad flag: {v}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_ranges_and_flags() {
+        let f = ScreeningFilter::from_pairs([
+            ("dividend_yield_min", "0.03"),
+            ("pbr_max", "1.2"),
+            ("dividend_yield_max", "0.08"),
+            ("no_loss_years", "1"),
+            ("valuation", "cheap"),
+            ("sort", "pbr"),
+            ("order", "asc"),
+            ("page", "2"),
+            ("unknown", "x"),
+        ])
+        .unwrap();
+        assert_eq!(f.ranges.len(), 2);
+        assert_eq!(
+            f.ranges[0],
+            Range {
+                metric: Metric::DividendYield,
+                min: Some(0.03),
+                max: Some(0.08)
+            }
+        );
+        assert!(f.no_loss_years && !f.profit_uptrend);
+        assert_eq!(f.valuation, Some(crate::Valuation::Cheap));
+        assert_eq!(f.sort, SortKey::Metric(Metric::Pbr));
+        assert_eq!(f.order, SortOrder::Asc);
+        assert_eq!(f.offset(), 50);
+    }
+
+    #[test]
+    fn rejects_bad_input() {
+        assert!(ScreeningFilter::from_pairs([("pbr_min", "abc")]).is_err());
+        assert!(ScreeningFilter::from_pairs([("pbr_min", "2"), ("pbr_max", "1")]).is_err());
+        assert!(ScreeningFilter::from_pairs([("sort", "name; DROP TABLE x")]).is_err());
+        assert!(ScreeningFilter::from_pairs([("page", "0")]).is_err());
+        assert!(ScreeningFilter::from_pairs([("pbr_min", "NaN")]).is_err());
+    }
+
+    #[test]
+    fn empty_values_are_ignored() {
+        let f = ScreeningFilter::from_pairs([("pbr_min", ""), ("page", " ")]).unwrap();
+        assert_eq!(f, ScreeningFilter::default());
+    }
+}

@@ -1,6 +1,21 @@
 [workspace]
 resolver = "2"
-members = ["crates/domain", "crates/usecase", "crates/adapter-batch", "crates/batch-cli"]
+members = [
+  "crates/domain",
+  "crates/usecase",
+  "crates/adapter-batch",
+  "crates/batch-cli",
+  "crates/adapter-cf",
+  "crates/api-worker",
+]
+# api-worker は wasm32 専用。ネイティブの cargo build / test では対象外にする
+default-members = [
+  "crates/domain",
+  "crates/usecase",
+  "crates/adapter-batch",
+  "crates/batch-cli",
+  "crates/adapter-cf",
+]
 
 [workspace.package]
 edition = "2021"

@@ -5,6 +5,8 @@
 
 use domain::{compute, FinancialData, Indicators, MarketData, StockCode};
 
+pub mod screening;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PortError(pub String);
 
