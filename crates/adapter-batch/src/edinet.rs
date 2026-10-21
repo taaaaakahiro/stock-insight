@@ -71,12 +71,12 @@ impl EdinetClient {
         Ok(body)
     }
 
-    /// 1日分の書類一覧（有報・半期報告書だけ）
+    /// 1日分の書類一覧（その日に提出された有報・半期報告書だけ）
     pub async fn list_day(&self, date: Date) -> Result<Vec<DocRef>, PortError> {
         let body = self
             .get(&format!("{BASE}/documents.json?date={date}&type=2"))
             .await?;
-        parse_document_list(&body)
+        parse_document_list(&body, date)
     }
 
     /// 書類の文章（項目ごと、整形済み）。数値の項目は J-Quants で足りるので読まない
@@ -89,8 +89,10 @@ impl EdinetClient {
     }
 }
 
-/// 書類一覧APIの応答から、有報・半期報告書（CSV があり、取下げでなく、証券コードがあるもの）
-pub fn parse_document_list(body: &[u8]) -> Result<Vec<DocRef>, PortError> {
+/// 書類一覧APIの応答から、有報・半期報告書（CSV があり、取下げでなく、証券コードがあるもの）。
+/// 一覧には、その日に縦覧の状態などが変わった過去の書類も載るので、その日に提出されたものだけを残す
+/// （古い書類の提出日で続きの日付が大きく戻らないように）
+pub fn parse_document_list(body: &[u8], day: Date) -> Result<Vec<DocRef>, PortError> {
     let v: Value = serde_json::from_slice(body).map_err(|e| PortError(format!("json: {e}")))?;
     if let Some(code) = v["metadata"]["status"].as_str() {
         if code != "200" {
@@ -114,6 +116,7 @@ pub fn parse_document_list(body: &[u8]) -> Result<Vec<DocRef>, PortError> {
                 period_end: r["periodEnd"].as_str().and_then(Date::parse),
             })
         })
+        .filter(|d| d.submitted == day)
         .collect())
 }
 
@@ -242,9 +245,9 @@ mod tests {
     #[test]
     fn document_list_fixture() {
         let body = include_bytes!("../../../fixtures/edinet_documents_sample.json");
-        let list = parse_document_list(body).unwrap();
+        let list = parse_document_list(body, Date::new(2026, 11, 10)).unwrap();
         let ids: Vec<(&str, DocKind)> = list.iter().map(|d| (d.doc_id.as_str(), d.kind)).collect();
-        // 有報と半期報告書だけ。CSV なし・取下げ・証券コードなし・訂正は除く
+        // その日に提出された有報と半期報告書だけ。CSV なし・取下げ・証券コードなし・訂正・前に提出された書類は除く
         assert_eq!(
             ids,
             [
@@ -253,14 +256,18 @@ mod tests {
             ]
         );
         assert_eq!(list[0].code, "9999");
-        assert_eq!(list[0].submitted.to_string(), "2026-06-20");
-        assert_eq!(list[1].period_end.unwrap().to_string(), "2026-09-30");
+        assert_eq!(list[0].submitted.to_string(), "2026-11-10");
+        assert_eq!(
+            list[1].period_end.unwrap().to_string(),
+            "2027-03-31",
+            "事業年度の末日"
+        );
     }
 
     #[test]
     fn error_status_in_list() {
         let body = br#"{"metadata":{"status":"404","message":"Not Found"}}"#;
-        assert!(parse_document_list(body).is_err());
+        assert!(parse_document_list(body, Date::new(2026, 11, 10)).is_err());
     }
 
     #[test]

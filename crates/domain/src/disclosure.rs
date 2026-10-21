@@ -231,9 +231,10 @@ pub fn normalize_text(raw: &str) -> String {
         .to_string()
 }
 
-/// 半期報告書が、それより後の期末の有報で古くなったか（不要なので消してよい）
+/// 半期報告書が、同じ事業年度かそれより後の有報で古くなったか（不要なので消してよい）。
+/// EDINET の periodEnd は、半期報告書でも半期の末日ではなく事業年度の末日
 pub fn semiannual_superseded(semiannual_period_end: Date, annual_period_end: Date) -> bool {
-    annual_period_end > semiannual_period_end
+    annual_period_end >= semiannual_period_end
 }
 
 #[cfg(test)]
@@ -341,9 +342,11 @@ mod tests {
     }
 
     #[test]
-    fn semiannual_is_superseded_by_later_annual() {
+    fn semiannual_is_superseded_by_the_same_years_annual() {
         let d = |s| Date::parse(s).unwrap();
-        assert!(semiannual_superseded(d("2025-09-30"), d("2026-03-31")));
-        assert!(!semiannual_superseded(d("2026-09-30"), d("2026-03-31")));
+        // 2026年3月期の半期報告書（2025年11月提出）と有報（2026年6月提出）
+        assert!(semiannual_superseded(d("2026-03-31"), d("2026-03-31")));
+        // 2027年3月期の半期報告書は、2026年3月期の有報より新しい
+        assert!(!semiannual_superseded(d("2027-03-31"), d("2026-03-31")));
     }
 }
