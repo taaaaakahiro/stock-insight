@@ -9,6 +9,7 @@ pub mod auth;
 pub mod daily;
 pub mod fins;
 pub mod master;
+pub mod portfolio;
 pub mod screening;
 
 #[derive(Debug, Clone, PartialEq)]

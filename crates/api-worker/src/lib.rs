@@ -4,16 +4,20 @@
 //!   GET /api/me       ログイン中のユーザー
 //!   GET /api/stocks   スクリーニング一覧（F2）
 //!   GET /api/status   データ鮮度（F8）
+//!   GET /api/portfolio              登録した銘柄と売り時のサイン
+//!   PUT /api/portfolio/:code        銘柄を登録
+//!   DELETE /api/portfolio/:code     登録を外す
 //!
 //! Cron Trigger（平日18:30 JST）では、GitHub Actions の日次バッチ（daily-batch.yml）を起動する。
 
 use adapter_cf::clerk::{ClerkDirectory, ClerkVerifier};
-use adapter_cf::d1::D1Indicators;
+use adapter_cf::d1::{D1Indicators, D1Portfolio};
 use adapter_cf::users::D1Users;
 use domain::access::Access;
 use domain::screening::ScreeningFilter;
 use serde_json::{json, Value};
 use usecase::auth::{authenticate, AuthError, AuthUser, RequestMeta};
+use usecase::portfolio::PortfolioError;
 use usecase::screening::{data_status, screen, StockRow};
 use usecase::Clock;
 use worker::{
@@ -94,6 +98,9 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/api/me", me)
         .get_async("/api/stocks", stocks)
         .get_async("/api/status", status)
+        .get_async("/api/portfolio", portfolio)
+        .put_async("/api/portfolio/:code", portfolio_add)
+        .delete_async("/api/portfolio/:code", portfolio_remove)
         .or_else_any_method("/api/*path", |_, _| {
             json_error(404, "not_found", "no such endpoint")
         })
@@ -196,6 +203,52 @@ async fn status(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> 
             })),
         })),
         Err(e) => internal(&e.0),
+    }
+}
+
+async fn portfolio(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let repo = D1Portfolio::new(ctx.env.d1(DB_BINDING)?);
+    match usecase::portfolio::list(&repo, &ctx.data.id).await {
+        // 登録・解除の直後に古い一覧を見せないよう、キャッシュしない
+        Ok(p) => json_response(
+            &json!({
+                "codes": p.codes,
+                "rows": p.rows.iter().map(|h| {
+                    let mut v = row_json(&h.stock);
+                    v["signals"] = json!(h.signals.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+                    v
+                }).collect::<Vec<_>>(),
+            }),
+            200,
+            "no-store",
+        ),
+        Err(e) => internal(&e.0),
+    }
+}
+
+async fn portfolio_add(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let repo = D1Portfolio::new(ctx.env.d1(DB_BINDING)?);
+    let code = ctx.param("code").cloned().unwrap_or_default();
+    let now = WorkerClock.now_unix();
+    portfolio_result(usecase::portfolio::add(&repo, &ctx.data.id, &code, now).await)
+}
+
+async fn portfolio_remove(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let repo = D1Portfolio::new(ctx.env.d1(DB_BINDING)?);
+    let code = ctx.param("code").cloned().unwrap_or_default();
+    portfolio_result(usecase::portfolio::remove(&repo, &ctx.data.id, &code).await)
+}
+
+fn portfolio_result(r: std::result::Result<(), PortfolioError>) -> Result<Response> {
+    match r {
+        Ok(()) => json_response(&json!({ "ok": true }), 200, "no-store"),
+        Err(PortfolioError::BadCode) => json_error(400, "bad_request", "bad stock code"),
+        Err(PortfolioError::TooMany) => json_error(
+            409,
+            "too_many",
+            &format!("up to {} stocks", domain::portfolio::MAX_ITEMS),
+        ),
+        Err(PortfolioError::Port(e)) => internal(&e.0),
     }
 }
 
