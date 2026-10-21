@@ -1,0 +1,8 @@
+[package]
+name = "domain"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# 外部依存なし（Wasmとネイティブの両方でビルドできること）
+[dependencies]

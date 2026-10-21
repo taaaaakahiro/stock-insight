@@ -1,0 +1,4 @@
+# ローカルとCIで同じバージョンを使う（clippyの判定がずれないように）
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]

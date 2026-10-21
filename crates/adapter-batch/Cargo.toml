@@ -1,0 +1,16 @@
+[package]
+name = "adapter-batch"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { path = "../domain" }
+usecase = { path = "../usecase" }
+serde_json.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tokio = { version = "1", features = ["time"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

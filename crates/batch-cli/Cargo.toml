@@ -1,0 +1,11 @@
+[package]
+name = "batch-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { path = "../domain" }
+usecase = { path = "../usecase" }
+adapter-batch = { path = "../adapter-batch" }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }

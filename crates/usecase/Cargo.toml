@@ -1,0 +1,8 @@
+[package]
+name = "usecase"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { path = "../domain" }
