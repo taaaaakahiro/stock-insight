@@ -155,3 +155,13 @@ gh workflow run daily-batch --repo taaaaakahiro/stock-insight -f force=true
 5. 次の平日 18:30 以降に、`batch_runs` に `daily-...` の行が増えていること、`wrangler tail` に `dispatched daily-batch` が出ていることを確かめる
 
 止めたいときは `wrangler.jsonc` の `triggers.crons` を空にして `wrangler deploy`（GitHub 側の予備の schedule は、ワークフローを無効化する: `gh workflow disable daily-batch`）。
+
+## バージョンとタグ
+
+版の元は `Cargo.toml` の `workspace.package.version` だけ（semver: MAJOR.MINOR.PATCH）。画面のフッターと `/api/status` の `version` はビルド時にここから入る。
+
+1. `Cargo.toml` と `web/package.json` の version を上げて main にマージする
+2. 同じ番号でタグを押す（`git tag v0.2.0 && git push origin v0.2.0`）。`release.yml` が Cargo.toml と照合し、一致しなければ失敗する。一致すれば GitHub Release を作る
+3. 本番への反映は 5-3 と同じ（`wrangler deploy`）。デプロイ後、フッターの `v0.2.0` と `/api/status` の `version` がタグと同じであることを確かめる
+
+タグと画面の版がずれているときは、タグを打ち直すのではなく version を直して出し直す。

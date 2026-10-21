@@ -20,6 +20,14 @@ pub struct Indicators {
     pub no_loss_years: Option<bool>,
     pub profit_uptrend: Option<bool>,
     pub valuation: Valuation,
+    /// 直近5期すべてで配当がある（期数が足りなければ None）
+    pub dividend_every_year: Option<bool>,
+    /// 直近20四半期に赤字がない（判定できる四半期が足りなければ None）
+    pub no_quarterly_loss: Option<bool>,
+    /// バリュー株の目安（PBR 1倍以下 かつ PER 15倍以下）
+    pub is_value: Option<bool>,
+    /// 判定に使えた年次財務の期数
+    pub data_years: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +52,13 @@ impl Valuation {
 pub const CHEAP_PERCENTILE: f64 = 0.8;
 pub const EXPENSIVE_PERCENTILE: f64 = 0.2;
 const MIN_HISTORY_SAMPLES: usize = 52;
-const HISTORY_DAYS: i64 = 3653;
+/// 利回りの過去比に使う期間（J-Quants Light で取れる5年）
+const HISTORY_DAYS: i64 = 5 * 366;
+/// 配当の継続・通期赤字の判定に使う期数
+pub const ANALYSIS_YEARS: usize = 5;
+/// 四半期の赤字判定に使う四半期数と、判定に最低限必要な四半期数
+pub const ANALYSIS_QUARTERS: usize = 20;
+const MIN_KNOWN_QUARTERS: usize = 4;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum IndicatorError {
@@ -121,6 +135,7 @@ fn ratio(a: Option<f64>, b: Option<f64>) -> Option<f64> {
 pub fn compute(
     market: &MarketData,
     fin: Option<&FinancialData>,
+    quarters: &[crate::analysis::QuarterResult],
 ) -> Result<Indicators, IndicatorError> {
     let last = *market.bars.last().ok_or(IndicatorError::NoPrice)?;
     let price = last.close;
@@ -142,6 +157,10 @@ pub fn compute(
         .collect();
     let incomes: Vec<f64> = years.iter().filter_map(|y| y.net_income).collect();
 
+    let dps_all: Vec<Option<f64>> = years.iter().take(ANALYSIS_YEARS).map(|y| y.dps).collect();
+    let pbr = ratio(Some(price), bps);
+    let per = ratio(Some(price), eps);
+
     let valuation = match yield_percentile {
         Some(p) if p >= CHEAP_PERCENTILE => Valuation::Cheap,
         Some(p) if p <= EXPENSIVE_PERCENTILE => Valuation::Expensive,
@@ -155,8 +174,8 @@ pub fn compute(
         dividend_ttm: ttm,
         dividend_yield,
         yield_percentile,
-        pbr: ratio(Some(price), bps),
-        per: ratio(Some(price), eps),
+        pbr,
+        per,
         payout_ratio: ratio(dps, eps),
         doe: ratio(dps, bps),
         consecutive_increases: (dps_series.len() >= 2).then(|| consecutive_increases(&dps_series)),
@@ -165,6 +184,14 @@ pub fn compute(
             .then(|| incomes.iter().all(|&v| v > 0.0) && profit_series.iter().all(|&v| v > 0.0)),
         profit_uptrend: is_uptrend(&profit_series),
         valuation,
+        dividend_every_year: crate::analysis::dividend_every_year(&dps_all, ANALYSIS_YEARS),
+        no_quarterly_loss: crate::analysis::no_quarterly_loss(
+            quarters,
+            ANALYSIS_QUARTERS,
+            MIN_KNOWN_QUARTERS,
+        ),
+        is_value: crate::analysis::is_value(pbr, per),
+        data_years: years.len().min(ANALYSIS_YEARS) as u32,
     })
 }
 
@@ -298,7 +325,7 @@ mod tests {
                 },
             ],
         };
-        let ind = compute(&market, Some(&fin)).unwrap();
+        let ind = compute(&market, Some(&fin), &[]).unwrap();
         // 最新の開示（2026年5月）の 44円を使う
         assert!((ind.dividend_ttm - 44.0).abs() < 1e-9);
         assert!((ind.payout_ratio.unwrap() - 0.4).abs() < 1e-9);
@@ -309,12 +336,20 @@ mod tests {
         assert!((ind.operating_margin.unwrap() - 0.12).abs() < 1e-9);
         // 株価が下がり配当が増えているので、利回りは過去の上位にいる
         assert_eq!(ind.valuation, Valuation::Cheap);
+        assert_eq!(
+            ind.dividend_every_year, None,
+            "3期しかないので5年の判定はできない"
+        );
+        assert_eq!(ind.no_quarterly_loss, None);
+        assert_eq!(ind.data_years, 3);
+        // 株価 900 円前後、BPS 1200、EPS 110 → PBR 0.75、PER 8 でバリュー
+        assert_eq!(ind.is_value, Some(true));
     }
 
     #[test]
     fn compute_without_price() {
         assert_eq!(
-            compute(&MarketData::default(), None),
+            compute(&MarketData::default(), None, &[]),
             Err(IndicatorError::NoPrice)
         );
     }

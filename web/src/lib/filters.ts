@@ -28,7 +28,7 @@ const STOCK: Kind[] = ["stock"];
 
 export const METRICS: { key: MetricKey; label: string; unit: Unit; kinds: Kind[] }[] = [
   { key: "dividend_yield", label: "配当利回り", unit: "pct", kinds: ALL },
-  { key: "yield_percentile", label: "利回りの過去10年の位置", unit: "pct", kinds: ALL },
+  { key: "yield_percentile", label: "利回りの過去5年比", unit: "pct", kinds: ALL },
   { key: "pbr", label: "PBR", unit: "times", kinds: STOCK },
   { key: "per", label: "PER", unit: "times", kinds: STOCK },
   { key: "payout_ratio", label: "配当性向", unit: "pct", kinds: STOCK },
@@ -51,8 +51,88 @@ export const UNIT_SUFFIX: Record<Unit, string> = { pct: "%", times: "倍", yen: 
 
 export type Valuation = "" | "cheap" | "neutral" | "expensive";
 
+/** JPX の33業種（上場銘柄一覧の「33業種区分」と同じ表記） */
+export const SECTORS33 = [
+  "水産・農林業",
+  "鉱業",
+  "建設業",
+  "食料品",
+  "繊維製品",
+  "パルプ・紙",
+  "化学",
+  "医薬品",
+  "石油・石炭製品",
+  "ゴム製品",
+  "ガラス・土石製品",
+  "鉄鋼",
+  "非鉄金属",
+  "金属製品",
+  "機械",
+  "電気機器",
+  "輸送用機器",
+  "精密機器",
+  "その他製品",
+  "電気・ガス業",
+  "陸運業",
+  "海運業",
+  "空運業",
+  "倉庫・運輸関連業",
+  "情報・通信業",
+  "卸売業",
+  "小売業",
+  "銀行業",
+  "証券、商品先物取引業",
+  "保険業",
+  "その他金融業",
+  "不動産業",
+  "サービス業",
+] as const;
+
+export const MARKETS = ["プライム", "スタンダード", "グロース"] as const;
+export const SIZES: { key: string; label: string }[] = [
+  { key: "large", label: "大型" },
+  { key: "mid", label: "中型" },
+  { key: "small", label: "小型" },
+  { key: "none", label: "区分なし" },
+];
+
+/** 一覧のバッジ（株式だけ）。API のクエリ名と表示名 */
+export const FLAGS: { key: FlagKey; label: string; hint: string }[] = [
+  { key: "isValue", label: "バリュー株", hint: "PBR 1倍以下 かつ PER 15倍以下" },
+  { key: "dividendEveryYear", label: "5年連続で配当", hint: "直近5期すべてで配当がある" },
+  { key: "noLossYears", label: "通期で赤字なし", hint: "直近5期の純利益と営業利益がすべてプラス" },
+  {
+    key: "noQuarterlyLoss",
+    label: "四半期で赤字なし",
+    hint: "直近20四半期の単独の損益がすべてプラス",
+  },
+  { key: "profitUptrend", label: "営業利益が増加傾向", hint: "直近5期の営業利益の傾きがプラス" },
+];
+export type FlagKey =
+  | "isValue"
+  | "dividendEveryYear"
+  | "noLossYears"
+  | "noQuarterlyLoss"
+  | "profitUptrend";
+const FLAG_PARAM: Record<FlagKey, string> = {
+  isValue: "is_value",
+  dividendEveryYear: "dividend_every_year",
+  noLossYears: "no_loss_years",
+  noQuarterlyLoss: "no_quarterly_loss",
+  profitUptrend: "profit_uptrend",
+};
+
 export type Filters = {
   kind: Kind;
+  /** コードまたは銘柄名で検索 */
+  query: string;
+  /** 株式だけ: 33業種・市場・規模（複数選択） */
+  sectors: string[];
+  markets: string[];
+  sizes: string[];
+  isValue: boolean;
+  dividendEveryYear: boolean;
+  noQuarterlyLoss: boolean;
   /** 入力欄の文字列（人が読む単位）。キーは `${metric}_min` / `${metric}_max` */
   ranges: Partial<Record<`${MetricKey}_${"min" | "max"}`, string>>;
   valuation: Valuation;
@@ -65,6 +145,13 @@ export type Filters = {
 
 export const DEFAULT_FILTERS: Filters = {
   kind: "stock",
+  query: "",
+  sectors: [],
+  markets: [],
+  sizes: [],
+  isValue: false,
+  dividendEveryYear: false,
+  noQuarterlyLoss: false,
   ranges: {},
   valuation: "",
   noLossYears: false,
@@ -97,6 +184,12 @@ export function toQuery(f: Filters): URLSearchParams {
   const q = new URLSearchParams();
   // API の既定は株式だが、タブを明示しておく
   q.set("kind", f.kind);
+  if (f.query.trim()) q.set("q", f.query.trim());
+  if (f.kind === "stock") {
+    if (f.sectors.length) q.set("sector", f.sectors.join(","));
+    if (f.markets.length) q.set("market", f.markets.join(","));
+    if (f.sizes.length) q.set("size", f.sizes.join(","));
+  }
   for (const m of metricsFor(f.kind)) {
     for (const b of ["min", "max"] as const) {
       const v = f.ranges[`${m.key}_${b}`];
@@ -105,8 +198,9 @@ export function toQuery(f: Filters): URLSearchParams {
     }
   }
   if (f.valuation) q.set("valuation", f.valuation);
-  if (f.kind === "stock" && f.noLossYears) q.set("no_loss_years", "1");
-  if (f.kind === "stock" && f.profitUptrend) q.set("profit_uptrend", "1");
+  if (f.kind === "stock") {
+    for (const flag of FLAGS) if (f[flag.key]) q.set(FLAG_PARAM[flag.key], "1");
+  }
   if (f.sort !== DEFAULT_FILTERS.sort) q.set("sort", f.sort);
   if (f.order !== DEFAULT_FILTERS.order) q.set("order", f.order);
   if (f.page > 1) q.set("page", String(f.page));
@@ -118,6 +212,21 @@ export function fromQuery(q: URLSearchParams): Filters {
   const f: Filters = { ...DEFAULT_FILTERS, ranges: {} };
   const kind = q.get("kind");
   if (kind === "stock" || kind === "reit" || kind === "etf") f.kind = kind;
+  f.query = (q.get("q") ?? "").slice(0, 50);
+  const list = (key: string, allowed?: readonly string[]) =>
+    (q.get(key) ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s !== "" && (!allowed || allowed.includes(s)));
+  if (f.kind === "stock") {
+    f.sectors = list("sector", SECTORS33);
+    f.markets = list("market", MARKETS);
+    f.sizes = list(
+      "size",
+      SIZES.map((s) => s.key),
+    );
+    for (const flag of FLAGS) f[flag.key] = q.get(FLAG_PARAM[flag.key]) === "1";
+  }
   for (const m of metricsFor(f.kind)) {
     for (const b of ["min", "max"] as const) {
       const v = q.get(`${m.key}_${b}`);
@@ -129,8 +238,6 @@ export function fromQuery(q: URLSearchParams): Filters {
   }
   const val = q.get("valuation");
   if (val === "cheap" || val === "neutral" || val === "expensive") f.valuation = val;
-  f.noLossYears = q.get("no_loss_years") === "1";
-  f.profitUptrend = q.get("profit_uptrend") === "1";
   const sort = q.get("sort");
   if (sort === "code" || metricsFor(f.kind).some((m) => m.key === sort))
     f.sort = sort as Filters["sort"];
@@ -148,12 +255,19 @@ export function switchKind(f: Filters, kind: Kind): Filters {
     Object.entries(f.ranges).filter(([k]) => keys.has(k.replace(/_(min|max)$/, "") as MetricKey)),
   ) as Filters["ranges"];
   const sortOk = f.sort === "code" || keys.has(f.sort);
+  const stock = kind === "stock";
   return {
     ...f,
     kind,
     ranges,
-    noLossYears: kind === "stock" && f.noLossYears,
-    profitUptrend: kind === "stock" && f.profitUptrend,
+    sectors: stock ? f.sectors : [],
+    markets: stock ? f.markets : [],
+    sizes: stock ? f.sizes : [],
+    isValue: stock && f.isValue,
+    dividendEveryYear: stock && f.dividendEveryYear,
+    noQuarterlyLoss: stock && f.noQuarterlyLoss,
+    noLossYears: stock && f.noLossYears,
+    profitUptrend: stock && f.profitUptrend,
     sort: sortOk ? f.sort : DEFAULT_FILTERS.sort,
     order: sortOk ? f.order : DEFAULT_FILTERS.order,
     page: 1,

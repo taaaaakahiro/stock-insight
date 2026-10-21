@@ -20,7 +20,8 @@ pub struct Query {
 pub const LIST_COLUMNS: &str =
     "i.code, i.price, i.price_date, i.dividend_yield, i.yield_percentile, i.pbr, i.per, \
      i.payout_ratio, i.doe, i.consecutive_increases, i.operating_margin, i.no_loss_years, i.profit_uptrend, \
-     i.valuation, i.fetched_at, s.name, COALESCE(s.kind, 'stock') AS kind, s.market, s.sector33, s.size_class";
+     i.valuation, i.fetched_at, s.name, COALESCE(s.kind, 'stock') AS kind, s.market, s.sector33, s.size_class, \
+     i.dividend_every_year, i.no_quarterly_loss, i.is_value, i.data_years";
 
 /// マスタにまだない銘柄も消えないよう LEFT JOIN（種類は株式として扱う）
 const FROM: &str = "FROM indicators_latest i LEFT JOIN stocks s ON s.code = i.code";
@@ -43,11 +44,40 @@ fn where_clause(f: &ScreeningFilter) -> (String, Vec<Arg>) {
         conds.push("i.valuation = ?".to_string());
         args.push(Arg::Text(v.as_str().to_string()));
     }
+    for (col, values) in [
+        ("s.sector33", &f.sectors),
+        ("s.market", &f.markets),
+        ("s.size_class", &f.sizes),
+    ] {
+        if !values.is_empty() {
+            conds.push(format!("{col} IN ({})", vec!["?"; values.len()].join(", ")));
+            args.extend(values.iter().map(|v| Arg::Text(v.clone())));
+        }
+    }
+    if let Some(q) = &f.query {
+        // LIKE の特殊文字をエスケープし、コードは前方一致・名前は部分一致で探す
+        let escaped = q
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        conds.push("(i.code LIKE ? ESCAPE '\\' OR s.name LIKE ? ESCAPE '\\')".to_string());
+        args.push(Arg::Text(format!("{escaped}%")));
+        args.push(Arg::Text(format!("%{escaped}%")));
+    }
     if f.no_loss_years {
         conds.push("i.no_loss_years = 1".to_string());
     }
     if f.profit_uptrend {
         conds.push("i.profit_uptrend = 1".to_string());
+    }
+    if f.is_value {
+        conds.push("i.is_value = 1".to_string());
+    }
+    if f.dividend_every_year {
+        conds.push("i.dividend_every_year = 1".to_string());
+    }
+    if f.no_quarterly_loss {
+        conds.push("i.no_quarterly_loss = 1".to_string());
     }
     (format!(" WHERE {}", conds.join(" AND ")), args)
 }
@@ -136,6 +166,39 @@ mod tests {
             .sql
             .contains("ORDER BY i.dividend_yield IS NULL, i.dividend_yield DESC"));
         assert_eq!(q.args[0], Arg::Text("stock".into()));
+    }
+
+    #[test]
+    fn search_matches_code_prefix_or_name_substring() {
+        let f = ScreeningFilter::from_pairs([("q", "72%")]).unwrap();
+        let q = list(&f);
+        assert!(q
+            .sql
+            .contains("(i.code LIKE ? ESCAPE '\\' OR s.name LIKE ? ESCAPE '\\')"));
+        assert_eq!(
+            q.args[1],
+            Arg::Text("72\\%%".into()),
+            "% はエスケープ、コードは前方一致"
+        );
+        assert_eq!(q.args[2], Arg::Text("%72\\%%".into()), "名前は部分一致");
+    }
+
+    #[test]
+    fn master_filters_use_in_lists() {
+        let f =
+            ScreeningFilter::from_pairs([("sector", "銀行業,保険業"), ("size", "large")]).unwrap();
+        let q = list(&f);
+        assert!(q
+            .sql
+            .contains("s.sector33 IN (?, ?) AND s.size_class IN (?)"));
+        assert_eq!(
+            q.args[1..4],
+            [
+                Arg::Text("銀行業".into()),
+                Arg::Text("保険業".into()),
+                Arg::Text("large".into())
+            ]
+        );
     }
 
     #[test]

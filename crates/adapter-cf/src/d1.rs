@@ -58,6 +58,10 @@ struct Row {
     market: Option<String>,
     sector33: Option<String>,
     size_class: Option<String>,
+    dividend_every_year: Option<i64>,
+    no_quarterly_loss: Option<i64>,
+    is_value: Option<i64>,
+    data_years: Option<i64>,
 }
 
 impl From<Row> for StockRow {
@@ -83,6 +87,10 @@ impl From<Row> for StockRow {
             market: r.market,
             sector33: r.sector33,
             size_class: r.size_class,
+            dividend_every_year: r.dividend_every_year.map(|v| v != 0),
+            no_quarterly_loss: r.no_quarterly_loss.map(|v| v != 0),
+            is_value: r.is_value.map(|v| v != 0),
+            data_years: r.data_years,
         }
     }
 }

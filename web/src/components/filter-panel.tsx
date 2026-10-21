@@ -1,4 +1,4 @@
-import { RotateCcw } from "lucide-react";
+import { ChevronDown, RotateCcw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -13,9 +13,13 @@ import {
 import {
   DEFAULT_FILTERS,
   type Filters,
+  FLAGS,
   isInvalidInput,
+  MARKETS,
   metricLabel,
   metricsFor,
+  SECTORS33,
+  SIZES,
   UNIT_SUFFIX,
   type Valuation,
 } from "@/lib/filters";
@@ -27,11 +31,16 @@ type Props = {
 
 const ALL = "all";
 
+function toggle(list: string[], item: string, on: boolean): string[] {
+  return on ? [...new Set([...list, item])] : list.filter((x) => x !== item);
+}
+
 export function FilterPanel({ value, onChange }: Props) {
   // 条件を変えたら1ページ目に戻す
   const set = (patch: Partial<Filters>) => onChange({ ...value, ...patch, page: 1 });
   const setRange = (key: keyof Filters["ranges"], v: string) =>
     set({ ranges: { ...value.ranges, [key]: v } });
+  const stock = value.kind === "stock";
 
   return (
     <form
@@ -54,8 +63,97 @@ export function FilterPanel({ value, onChange }: Props) {
         </Button>
       </div>
 
+      <div className="relative">
+        <Search
+          aria-hidden
+          className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+        />
+        <Input
+          type="search"
+          placeholder="コードまたは銘柄名"
+          aria-label="コードまたは銘柄名で検索"
+          value={value.query}
+          onChange={(e) => set({ query: e.target.value })}
+          className="pl-8"
+        />
+      </div>
+
+      {stock && (
+        <fieldset className="flex flex-col gap-2">
+          <legend className="mb-2 text-sm font-medium">判定</legend>
+          {FLAGS.map((f) => (
+            <Label key={f.key} className="font-normal" title={f.hint}>
+              <Checkbox
+                checked={value[f.key]}
+                onCheckedChange={(c) => set({ [f.key]: c === true })}
+              />
+              {f.label}
+            </Label>
+          ))}
+        </fieldset>
+      )}
+
+      {stock && (
+        <>
+          <fieldset className="flex flex-col gap-2">
+            <legend className="mb-2 text-sm font-medium">市場</legend>
+            {MARKETS.map((m) => (
+              <Label key={m} className="font-normal">
+                <Checkbox
+                  checked={value.markets.includes(m)}
+                  onCheckedChange={(c) => set({ markets: toggle(value.markets, m, c === true) })}
+                />
+                {m}
+              </Label>
+            ))}
+          </fieldset>
+          <fieldset className="flex flex-col gap-2">
+            <legend className="mb-2 text-sm font-medium">
+              規模
+              <span className="ml-1 font-normal text-muted-foreground">（TOPIX の区分）</span>
+            </legend>
+            {SIZES.map((s) => (
+              <Label key={s.key} className="font-normal">
+                <Checkbox
+                  checked={value.sizes.includes(s.key)}
+                  onCheckedChange={(c) => set({ sizes: toggle(value.sizes, s.key, c === true) })}
+                />
+                {s.label}
+              </Label>
+            ))}
+          </fieldset>
+          <details className="group" open={value.sectors.length > 0}>
+            <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-medium">
+              <span>
+                業種
+                {value.sectors.length > 0 && (
+                  <span className="ml-1 font-normal text-muted-foreground">
+                    {value.sectors.length}件選択
+                  </span>
+                )}
+              </span>
+              <ChevronDown
+                aria-hidden
+                className="size-4 transition-transform group-open:rotate-180"
+              />
+            </summary>
+            <div className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1.5">
+              {SECTORS33.map((s) => (
+                <Label key={s} className="font-normal text-xs">
+                  <Checkbox
+                    checked={value.sectors.includes(s)}
+                    onCheckedChange={(c) => set({ sectors: toggle(value.sectors, s, c === true) })}
+                  />
+                  {s}
+                </Label>
+              ))}
+            </div>
+          </details>
+        </>
+      )}
+
       <div className="flex flex-col gap-2">
-        <Label htmlFor="valuation">割安・割高</Label>
+        <Label htmlFor="valuation">{stock ? "配当" : "分配金"}利回りの過去5年比</Label>
         <Select
           value={value.valuation || ALL}
           onValueChange={(v) => set({ valuation: (v === ALL ? "" : v) as Valuation })}
@@ -65,9 +163,9 @@ export function FilterPanel({ value, onChange }: Props) {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value={ALL}>すべて</SelectItem>
-            <SelectItem value="cheap">割安のみ</SelectItem>
-            <SelectItem value="neutral">中立のみ</SelectItem>
-            <SelectItem value="expensive">割高のみ</SelectItem>
+            <SelectItem value="cheap">高い（上位20%。株価は過去と比べて安い）</SelectItem>
+            <SelectItem value="neutral">ふつう</SelectItem>
+            <SelectItem value="expensive">低い（下位20%。株価は過去と比べて高い）</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -77,15 +175,16 @@ export function FilterPanel({ value, onChange }: Props) {
         {metricsFor(value.kind).map((m) => {
           const minKey = `${m.key}_min` as const;
           const maxKey = `${m.key}_max` as const;
+          const label = metricLabel(m.key, value.kind);
           return (
             <div key={m.key} className="grid grid-cols-[1fr_auto_1fr] items-center gap-x-2 gap-y-1">
               <span className="col-span-3 text-xs text-muted-foreground">
-                {metricLabel(m.key, value.kind)}（{UNIT_SUFFIX[m.unit]}）
+                {label}（{UNIT_SUFFIX[m.unit]}）
               </span>
               <Input
                 inputMode="decimal"
                 placeholder="下限"
-                aria-label={`${metricLabel(m.key, value.kind)}の下限`}
+                aria-label={`${label}の下限`}
                 aria-invalid={isInvalidInput(value.ranges[minKey]) || undefined}
                 value={value.ranges[minKey] ?? ""}
                 onChange={(e) => setRange(minKey, e.target.value)}
@@ -97,7 +196,7 @@ export function FilterPanel({ value, onChange }: Props) {
               <Input
                 inputMode="decimal"
                 placeholder="上限"
-                aria-label={`${metricLabel(m.key, value.kind)}の上限`}
+                aria-label={`${label}の上限`}
                 aria-invalid={isInvalidInput(value.ranges[maxKey]) || undefined}
                 value={value.ranges[maxKey] ?? ""}
                 onChange={(e) => setRange(maxKey, e.target.value)}
@@ -107,27 +206,6 @@ export function FilterPanel({ value, onChange }: Props) {
           );
         })}
       </fieldset>
-
-      {/* 業績の条件は財務がある株式だけ */}
-      {value.kind === "stock" && (
-        <fieldset className="flex flex-col gap-3">
-          <legend className="mb-2 text-sm font-medium">業績</legend>
-          <Label className="font-normal">
-            <Checkbox
-              checked={value.noLossYears}
-              onCheckedChange={(c) => set({ noLossYears: c === true })}
-            />
-            直近5期に赤字なし
-          </Label>
-          <Label className="font-normal">
-            <Checkbox
-              checked={value.profitUptrend}
-              onCheckedChange={(c) => set({ profitUptrend: c === true })}
-            />
-            営業利益が増加傾向
-          </Label>
-        </fieldset>
-      )}
     </form>
   );
 }

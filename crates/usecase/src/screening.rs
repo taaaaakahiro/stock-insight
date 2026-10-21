@@ -29,6 +29,11 @@ pub struct StockRow {
     pub sector33: Option<String>,
     /// large / mid / small / none
     pub size_class: Option<String>,
+    /// 5年分の判定（期数が足りなければ None）
+    pub dividend_every_year: Option<bool>,
+    pub no_quarterly_loss: Option<bool>,
+    pub is_value: Option<bool>,
+    pub data_years: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

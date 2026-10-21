@@ -1,7 +1,8 @@
 //! D1（SQLite）に書き込むSQL文の組み立て。値は必ずプレースホルダで渡す。
 
+use domain::analysis::PeriodType;
 use domain::stock_master::ListedStock;
-use usecase::fins::AnnualReport;
+use usecase::fins::{AnnualReport, PeriodReport};
 use usecase::{BatchRun, Snapshot};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -103,7 +104,7 @@ fn multi_row(
 
 const INDICATOR_COLUMNS: &str = "code, run_id, fetched_at, price, price_date, dividend_ttm, dividend_yield, \
      yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin, no_loss_years, \
-     profit_uptrend, valuation, fin_doc_id, fin_submitted";
+     profit_uptrend, valuation, fin_doc_id, fin_submitted, dividend_every_year, no_quarterly_loss, is_value, data_years";
 
 /// 一覧用の最新指標（1銘柄1行）を upsert する
 pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
@@ -133,19 +134,25 @@ pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
                 s.fin_doc_id.clone().map_or(Val::Null, Val::Text),
                 s.fin_submitted
                     .map_or(Val::Null, |d| Val::Text(d.to_string())),
+                Val::opt_b(i.dividend_every_year),
+                Val::opt_b(i.no_quarterly_loss),
+                Val::opt_b(i.is_value),
+                Val::Int(i.data_years as i64),
             ]
         })
         .collect();
     multi_row(
         &format!("INSERT INTO indicators_latest ({INDICATOR_COLUMNS})"),
-        19,
+        23,
         "ON CONFLICT(code) DO UPDATE SET run_id = excluded.run_id, fetched_at = excluded.fetched_at, \
          price = excluded.price, price_date = excluded.price_date, dividend_ttm = excluded.dividend_ttm, \
          dividend_yield = excluded.dividend_yield, yield_percentile = excluded.yield_percentile, pbr = excluded.pbr, \
          per = excluded.per, payout_ratio = excluded.payout_ratio, doe = excluded.doe, \
          consecutive_increases = excluded.consecutive_increases, operating_margin = excluded.operating_margin, \
          no_loss_years = excluded.no_loss_years, profit_uptrend = excluded.profit_uptrend, \
-         valuation = excluded.valuation, fin_doc_id = excluded.fin_doc_id, fin_submitted = excluded.fin_submitted",
+         valuation = excluded.valuation, fin_doc_id = excluded.fin_doc_id, fin_submitted = excluded.fin_submitted, \
+         dividend_every_year = excluded.dividend_every_year, no_quarterly_loss = excluded.no_quarterly_loss, \
+         is_value = excluded.is_value, data_years = excluded.data_years",
         rows,
         usize::MAX,
     )
@@ -184,6 +191,41 @@ pub fn annual_reports_stmts(reports: &[AnnualReport], fetched_at: i64) -> Vec<St
          net_income = excluded.net_income, equity = excluded.equity, eps = excluded.eps, bps = excluded.bps, \
          dps = excluded.dps, operating_cf = excluded.operating_cf, fetched_at = excluded.fetched_at, \
          disclosed = excluded.disclosed",
+        rows,
+        usize::MAX,
+    )
+}
+
+/// 四半期の累計値（1Q/2Q/3Q だけ。FY は financials_annual にある）を upsert する
+pub fn period_reports_stmts(reports: &[PeriodReport], fetched_at: i64) -> Vec<Stmt> {
+    let rows = reports
+        .iter()
+        .filter(|r| r.period.period_type != PeriodType::FY)
+        .map(|r| {
+            let p = &r.period;
+            vec![
+                Val::Text(r.code.as_str().into()),
+                Val::Text(p.fiscal_year_end.to_string()),
+                Val::Text(p.period_type.as_str().into()),
+                Val::Text(p.period_end.to_string()),
+                Val::Text(r.doc_id.clone()),
+                r.disclosed.map_or(Val::Null, |d| Val::Text(d.to_string())),
+                Val::opt_f(p.net_sales),
+                Val::opt_f(p.operating_income),
+                Val::opt_f(p.ordinary_income),
+                Val::opt_f(p.net_income),
+                Val::Int(fetched_at),
+            ]
+        })
+        .collect();
+    multi_row(
+        "INSERT INTO financials_quarterly (code, fiscal_year_end, period_type, period_end, doc_id, disclosed, \
+         net_sales, operating_income, ordinary_income, net_income, fetched_at)",
+        11,
+        "ON CONFLICT(code, fiscal_year_end, period_type) DO UPDATE SET period_end = excluded.period_end, \
+         doc_id = excluded.doc_id, disclosed = excluded.disclosed, net_sales = excluded.net_sales, \
+         operating_income = excluded.operating_income, ordinary_income = excluded.ordinary_income, \
+         net_income = excluded.net_income, fetched_at = excluded.fetched_at",
         rows,
         usize::MAX,
     )
@@ -309,15 +351,19 @@ mod tests {
                 no_loss_years: None,
                 profit_uptrend: None,
                 valuation: Valuation::Unknown,
+                dividend_every_year: None,
+                no_quarterly_loss: None,
+                is_value: None,
+                data_years: 0,
             },
             fin_doc_id: None,
             fin_submitted: None,
         };
         let snaps: Vec<_> = (0..12).map(|i| snap(&format!("{}", 1300 + i))).collect();
         let stmts = snapshots_stmts(&snaps);
-        assert_eq!(stmts.len(), 3, "19列なので1文5行まで");
+        assert_eq!(stmts.len(), 3, "23列なので1文4行まで");
         assert!(stmts.iter().all(|s| s.params.len() <= 100));
-        assert_eq!(stmts[0].sql.matches("(?, ").count(), 5);
+        assert_eq!(stmts[0].sql.matches("(?, ").count(), 4);
         let h = price_history_stmts(
             &vec![("7203".into(), "x".into(), "2026-07-01".into()); 25],
             1,

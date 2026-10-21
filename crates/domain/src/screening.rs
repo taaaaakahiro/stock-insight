@@ -83,11 +83,22 @@ const MAX_PAGE: u32 = 1000;
 pub struct ScreeningFilter {
     /// 一覧のタブ（株式 / REIT / ETF）
     pub kind: crate::stock_master::AssetKind,
+    /// コードまたは銘柄名の部分一致（半角に正規化済み、最大50文字）
+    pub query: Option<String>,
+    /// 33業種（複数選択。空なら絞らない）
+    pub sectors: Vec<String>,
+    /// 市場区分（プライム / スタンダード / グロース）
+    pub markets: Vec<String>,
+    /// 規模区分（large / mid / small / none）
+    pub sizes: Vec<String>,
     pub ranges: Vec<Range>,
     /// 割安などのバッジで絞る（Valuation::as_str の値）
     pub valuation: Option<crate::Valuation>,
     pub no_loss_years: bool,
     pub profit_uptrend: bool,
+    pub is_value: bool,
+    pub dividend_every_year: bool,
+    pub no_quarterly_loss: bool,
     pub sort: SortKey,
     pub order: SortOrder,
     /// 1始まり
@@ -98,10 +109,17 @@ impl Default for ScreeningFilter {
     fn default() -> Self {
         Self {
             kind: crate::stock_master::AssetKind::Stock,
+            query: None,
+            sectors: vec![],
+            markets: vec![],
+            sizes: vec![],
             ranges: vec![],
             valuation: None,
             no_loss_years: false,
             profit_uptrend: false,
+            is_value: false,
+            dividend_every_year: false,
+            no_quarterly_loss: false,
             sort: SortKey::Metric(Metric::DividendYield),
             order: SortOrder::Desc,
             page: 1,
@@ -157,12 +175,25 @@ impl ScreeningFilter {
                         _ => return Err(FilterError(format!("bad valuation: {v}"))),
                     })
                 }
+                "q" => {
+                    let q = crate::stock_master::halfwidth_ascii(v);
+                    let q: String = q.chars().take(50).collect();
+                    f.query = Some(q.trim().to_string()).filter(|s| !s.is_empty());
+                }
+                "sector" => f.sectors = parse_list(v, 40, None)?,
+                "market" => {
+                    f.markets = parse_list(v, 3, Some(&["プライム", "スタンダード", "グロース"]))?
+                }
+                "size" => f.sizes = parse_list(v, 4, Some(&["large", "mid", "small", "none"]))?,
                 "kind" => {
                     f.kind = crate::stock_master::AssetKind::from_key(v)
                         .ok_or_else(|| FilterError(format!("bad kind: {v}")))?
                 }
                 "no_loss_years" => f.no_loss_years = parse_flag(v)?,
                 "profit_uptrend" => f.profit_uptrend = parse_flag(v)?,
+                "is_value" => f.is_value = parse_flag(v)?,
+                "dividend_every_year" => f.dividend_every_year = parse_flag(v)?,
+                "no_quarterly_loss" => f.no_quarterly_loss = parse_flag(v)?,
                 _ => {
                     let Some((name, bound)) = k.rsplit_once('_') else {
                         continue;
@@ -214,6 +245,30 @@ impl ScreeningFilter {
     }
 }
 
+/// カンマ区切りの選択肢。`allowed` があればその中の値だけ、なければ長さだけを見る
+fn parse_list(
+    v: &str,
+    max_items: usize,
+    allowed: Option<&[&str]>,
+) -> Result<Vec<String>, FilterError> {
+    let mut out: Vec<String> = vec![];
+    for item in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if item.chars().count() > 30 {
+            return Err(FilterError(format!("value too long: {item}")));
+        }
+        if allowed.is_some_and(|a| !a.contains(&item)) {
+            return Err(FilterError(format!("bad value: {item}")));
+        }
+        if !out.iter().any(|x| x == item) {
+            out.push(item.to_string());
+        }
+    }
+    if out.len() > max_items {
+        return Err(FilterError("too many values".into()));
+    }
+    Ok(out)
+}
+
 fn parse_flag(v: &str) -> Result<bool, FilterError> {
     match v {
         "1" | "true" => Ok(true),
@@ -238,6 +293,10 @@ mod tests {
             ("order", "asc"),
             ("page", "2"),
             ("kind", "reit"),
+            ("q", " ＮＴＴ "),
+            ("sector", "銀行業,保険業, 銀行業"),
+            ("market", "プライム"),
+            ("size", "large,mid"),
             ("unknown", "x"),
         ])
         .unwrap();
@@ -256,6 +315,14 @@ mod tests {
         assert_eq!(f.order, SortOrder::Asc);
         assert_eq!(f.offset(), 50);
         assert_eq!(f.kind, crate::stock_master::AssetKind::Reit);
+        assert_eq!(
+            f.query.as_deref(),
+            Some("NTT"),
+            "全角英数字は半角にして前後の空白を除く"
+        );
+        assert_eq!(f.sectors, vec!["銀行業", "保険業"], "重複は除く");
+        assert_eq!(f.markets, vec!["プライム"]);
+        assert_eq!(f.sizes, vec!["large", "mid"]);
     }
 
     #[test]
@@ -265,6 +332,8 @@ mod tests {
         assert!(ScreeningFilter::from_pairs([("sort", "name; DROP TABLE x")]).is_err());
         assert!(ScreeningFilter::from_pairs([("page", "0")]).is_err());
         assert!(ScreeningFilter::from_pairs([("kind", "fund")]).is_err());
+        assert!(ScreeningFilter::from_pairs([("size", "huge")]).is_err());
+        assert!(ScreeningFilter::from_pairs([("market", "ナスダック")]).is_err());
         assert!(ScreeningFilter::from_pairs([("pbr_min", "NaN")]).is_err());
     }
 

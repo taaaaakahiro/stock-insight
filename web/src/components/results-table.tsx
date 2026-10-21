@@ -8,7 +8,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ValuationBadge } from "@/components/valuation-badge";
 import type { StockRow } from "@/lib/api";
 import { type Filters, type Kind, type MetricKey, metricLabel, metricsFor } from "@/lib/filters";
 import { count, pct, times, yen } from "@/lib/format";
@@ -79,6 +78,54 @@ function NameCell({ r }: { r: StockRow }) {
         <SizeBadge size={r.size_class} />
       </span>
     </div>
+  );
+}
+
+/** 一覧のバッジ。当てはまるものだけ出す（判定できない＝null は出さない）。色だけに意味を持たせない */
+const BADGES: { key: keyof StockRow; label: string; hint: string; className: string }[] = [
+  {
+    key: "is_value",
+    label: "バリュー",
+    hint: "PBR 1倍以下 かつ PER 15倍以下",
+    className: "border-cheap/40 bg-cheap/10 text-cheap",
+  },
+  {
+    key: "dividend_every_year",
+    label: "5年配当",
+    hint: "直近5期すべてで配当がある",
+    className: "",
+  },
+  {
+    key: "no_loss_years",
+    label: "通期黒字",
+    hint: "直近5期の純利益と営業利益がすべてプラス",
+    className: "",
+  },
+  {
+    key: "no_quarterly_loss",
+    label: "四半期黒字",
+    hint: "直近20四半期の単独の損益がすべてプラス",
+    className: "",
+  },
+];
+
+function Flags({ r }: { r: StockRow }) {
+  const on = BADGES.filter((b) => r[b.key] === true);
+  if (on.length === 0) {
+    return (
+      <span className="text-xs text-muted-foreground" title="判定できる財務データがまだ足りません">
+        —
+      </span>
+    );
+  }
+  return (
+    <span className="flex flex-wrap gap-1">
+      {on.map((b) => (
+        <Badge key={b.key} variant="outline" title={b.hint} className={b.className}>
+          {b.label}
+        </Badge>
+      ))}
+    </span>
   );
 }
 
@@ -158,7 +205,7 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
                   />
                 </TableHead>
               ))}
-              <TableHead>判定</TableHead>
+              {kind === "stock" && <TableHead>判定</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -172,9 +219,11 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
                     {c.render(r)}
                   </TableCell>
                 ))}
-                <TableCell>
-                  <ValuationBadge valuation={r.valuation} percentile={r.yield_percentile} />
-                </TableCell>
+                {kind === "stock" && (
+                  <TableCell>
+                    <Flags r={r} />
+                  </TableCell>
+                )}
               </TableRow>
             ))}
           </TableBody>
@@ -186,7 +235,7 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
           <li key={r.code} className="rounded-xl border p-4">
             <div className="mb-3 flex items-start justify-between gap-2">
               <NameCell r={r} />
-              <ValuationBadge valuation={r.valuation} percentile={r.yield_percentile} />
+              {kind === "stock" && <Flags r={r} />}
             </div>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
               {columns.map((c) => (

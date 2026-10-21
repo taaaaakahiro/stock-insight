@@ -50,7 +50,9 @@ cd web && VITE_MOCK_CLERK_URL=http://localhost:9871 pnpm dev   # http://localhos
 
 ## ドキュメント
 
-仕様書は [docs/](docs/README.md) にあります（要件定義・非機能要件・システム構成図・基本設計・詳細設計・シークレット運用）。
+仕様書は [docs/](docs/README.md) にあります（要件定義・非機能要件・システム構成図・基本設計・詳細設計・シークレット運用・デプロイ手順・指標の取得元）。
+
+版は `Cargo.toml` の `workspace.package.version` が元で、GitHub のタグ `v<version>` と一致させます（画面のフッターと `/api/status` に出ます）。
 
 ## 使い方
 

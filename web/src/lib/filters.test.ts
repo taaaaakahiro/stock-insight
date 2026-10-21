@@ -41,6 +41,31 @@ describe("filters", () => {
     expect(f).toEqual({ ...DEFAULT_FILTERS, ranges: {} });
   });
 
+  it("round-trips search and master filters", () => {
+    const f = {
+      ...DEFAULT_FILTERS,
+      query: "トヨタ",
+      sectors: ["銀行業", "保険業"],
+      markets: ["プライム"],
+      sizes: ["large"],
+      isValue: true,
+      noQuarterlyLoss: true,
+    };
+    const q = toQuery(f);
+    expect(q.toString()).toBe(
+      "kind=stock&q=%E3%83%88%E3%83%A8%E3%82%BF&sector=%E9%8A%80%E8%A1%8C%E6%A5%AD%2C%E4%BF%9D%E9%99%BA%E6%A5%AD&market=%E3%83%97%E3%83%A9%E3%82%A4%E3%83%A0&size=large&is_value=1&no_quarterly_loss=1",
+    );
+    expect(fromQuery(q)).toEqual(f);
+    // 知らない業種・規模は捨てる。REIT では業種などを持たない
+    expect(fromQuery(new URLSearchParams("sector=銀行業,宇宙業&size=huge,mid")).sectors).toEqual([
+      "銀行業",
+    ]);
+    expect(fromQuery(new URLSearchParams("kind=reit&sector=銀行業&is_value=1")).sectors).toEqual(
+      [],
+    );
+    expect(switchKind(f, "etf").isValue).toBe(false);
+  });
+
   it("drops stock-only conditions when switching to REIT", () => {
     const f = {
       ...DEFAULT_FILTERS,
@@ -60,6 +85,7 @@ describe("filters", () => {
     // REIT の URL に株式だけの条件が混ざっていても無視する
     expect(fromQuery(new URLSearchParams("kind=reit&pbr_max=1&sort=pbr")).ranges).toEqual({});
     expect(metricLabel("dividend_yield", "reit")).toBe("分配金利回り");
+    expect(metricLabel("yield_percentile", "etf")).toBe("利回りの過去5年比");
     expect(metricLabel("price", "etf")).toBe("価格");
   });
 

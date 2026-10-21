@@ -46,4 +46,7 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+      # 本番ビルドは Clerk の公開キーがないと失敗する（画面が消えた空のバンドルを防ぐため）。公開キーは Variables に置く
       - run: pnpm build
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.CLERK_PUBLISHABLE_KEY }}

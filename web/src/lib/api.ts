@@ -24,6 +24,11 @@ export type StockRow = {
   market: string | null;
   sector33: string | null;
   size_class: "large" | "mid" | "small" | "none" | null;
+  /** 5年分の判定。期数が足りなければ null */
+  dividend_every_year: boolean | null;
+  no_quarterly_loss: boolean | null;
+  is_value: boolean | null;
+  data_years: number | null;
 };
 
 export type StockPage = { rows: StockRow[]; total: number; page: number; page_size: number };

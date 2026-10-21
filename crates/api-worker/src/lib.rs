@@ -185,6 +185,8 @@ async fn status(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> 
     let repo = D1Indicators::new(ctx.env.d1(DB_BINDING)?);
     match data_status(&repo).await {
         Ok(s) => json_ok(&json!({
+            // リポジトリの Cargo.toml（workspace.package.version）。画面の表示と GitHub のタグに合わせる
+            "version": env!("CARGO_PKG_VERSION"),
             "latest_run": s.map(|s| json!({
                 "run_id": s.run_id,
                 "started_at": s.started_at,
@@ -219,6 +221,10 @@ fn row_json(r: &StockRow) -> Value {
         "market": r.market,
         "sector33": r.sector33,
         "size_class": r.size_class,
+        "dividend_every_year": r.dividend_every_year,
+        "no_quarterly_loss": r.no_quarterly_loss,
+        "is_value": r.is_value,
+        "data_years": r.data_years,
     })
 }
 
