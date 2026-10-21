@@ -7,8 +7,8 @@
 
 10銘柄で次の流れを通すことが目的です。
 
-1. Yahoo Finance（非公式）から10年分の日次終値と配当履歴を取得
-2. EDINET API v2 から最新の有価証券報告書（CSV版）を取得し、5期分の財務を抽出
+1. J-Quants API（Light プラン）から日付ごとに全銘柄の終値と本決算の財務（年間配当を含む）を取得。初回だけ過去5年分、以後は前回の続きだけ
+2. 終値の履歴は1銘柄1行にまとめて D1 に保存
 3. 指標を計算（配当利回り・過去10年の利回りパーセンタイル・PBR・PER・配当性向・DOE・連続増配・赤字有無・営業利益の傾向）
 4. Cloudflare D1 に保存（HTTP API）
 
@@ -18,7 +18,7 @@
 | --- | --- | --- |
 | `domain` | 銘柄・株価・財務のモデルと指標計算（純粋関数） | なし |
 | `usecase` | 取り込みユースケースとポート（トレイト内 async fn） | なし |
-| `adapter-batch` | Yahoo・EDINET・D1 との接続、XBRL CSV の解析 | reqwest, tokio(time), zip, serde_json |
+| `adapter-batch` | J-Quants・JPX・D1 との接続、xlsx の解析 | reqwest, tokio(time), zip, serde_json |
 | `batch-cli` | バッチの入口（並列実行・シャード分割） | tokio |
 | `adapter-cf` | Worker 用: D1 の読み取り、スクリーニングの SQL 組み立て | worker（wasm32 のみ）, serde |
 | `api-worker` | 画面向け API（workers-rs のルーター）。wasm32 専用 | worker, serde_json |
@@ -108,7 +108,7 @@ curl -H "Authorization: Bearer $(curl -s localhost:9871/token/user_member)" loca
 
 | キー名 | 設定先 | 用途 |
 | --- | --- | --- |
-| `EDINET_API_KEY` | GitHub Actions Secrets | EDINET API |
+| `JQUANTS_API_KEY` | GitHub Actions Secrets | J-Quants API（Light プラン） |
 | `CLOUDFLARE_ACCOUNT_ID` | GitHub Actions Secrets | D1 HTTP API の宛先 |
 | `D1_DATABASE_ID` | GitHub Actions Secrets | 書き込み先の D1 |
 | `CLOUDFLARE_API_TOKEN` | GitHub Actions Secrets | D1 への書き込み（権限は D1 編集のみ） |
@@ -122,7 +122,7 @@ D1・R2 などのリソースは wrangler コマンドで作成します（一�
 - DOE は簡易版（1株配当 ÷ BPS）
 - 利回りパーセンタイルは配当履歴が1年以上・週次52点以上ある場合のみ算出
 - D1 への書き込みは1文ずつ（全銘柄化の際にバッチ化する）
-- Yahoo Finance は非公式のため、仕様変更で取得できなくなる可能性がある（代替候補: J-Quants 有料プラン）
+- J-Quants の規約により、データの配布と分析結果の継続提供は不可（当面は管理者1人で使う）
 
 ## 免責
 

@@ -12,7 +12,7 @@
 | CLOUDFLARE_API_TOKEN | GitHub Actions Secrets | `wrangler deploy`・D1のマイグレーションとバッチの書き込み（権限はWorkers編集・D1編集のみに絞る） |
 | D1_DATABASE_ID | GitHub Actions Secrets | 書き込み先のD1 |
 | R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY | GitHub Actions Secrets | R2への書き込み（対象バケットのみ） |
-| EDINET_API_KEY | GitHub Actions Secrets | EDINET API |
+| JQUANTS_API_KEY | GitHub Actions Secrets | J-Quants API（Light プラン。ダッシュボードで発行） |
 | BATCH_TRIGGER_SECRET | GitHub Actions Secrets と Worker Secret | バッチ完了時に内部エンドポイントを呼ぶときの署名（HMAC） |
 | GITHUB_DISPATCH_TOKEN | Worker Secret | Cron Triggerから日次バッチを起動（対象リポジトリのActions実行権限のみ） |
 | CLERK_SECRET_KEY | Worker Secret | ClerkのAPI呼び出し |
@@ -36,7 +36,7 @@
 | D1_DATABASE_ID | `wrangler d1 info maaun-stock-insight --json`の`uuid` | `gh secret set D1_DATABASE_ID` |
 | CLOUDFLARE_API_TOKEN | ダッシュボードで発行（権限はD1編集。デプロイを始めたらWorkers編集を追加） | `gh secret set CLOUDFLARE_API_TOKEN`（対話入力） |
 | R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY | ダッシュボードでR2のAPIトークンを発行（対象バケットのみ） | `gh secret set`（対話入力） |
-| EDINET_API_KEY | EDINETで発行 | `gh secret set EDINET_API_KEY`（対話入力） |
+| JQUANTS_API_KEY | J-Quantsのダッシュボードで発行 | `gh secret set JQUANTS_API_KEY`（対話入力） |
 | BATCH_TRIGGER_SECRET | `openssl rand -hex 32`で生成し、両方へ渡す | `gh secret set` と `wrangler secret put` |
 | GITHUB_DISPATCH_TOKEN | GitHubのFine-grained token（対象リポジトリのActions書き込みのみ） | `wrangler secret put GITHUB_DISPATCH_TOKEN` |
 | CLERK_SECRET_KEY / CLERK_WEBHOOK_SIGNING_SECRET | Clerkで発行 | `wrangler secret put` |

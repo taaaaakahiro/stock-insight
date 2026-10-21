@@ -146,7 +146,7 @@ function Footer() {
   return (
     <footer className="mx-auto max-w-7xl px-4 py-8 text-xs text-muted-foreground">
       情報提供のみを目的としており、投資助言ではありません。投資判断はご自身の責任で行ってください。
-      株価・配当は Yahoo Finance（非公式）、財務は EDINET（金融庁）から取得しています。
+      株価・財務は J-Quants API（日本取引所グループ）、銘柄一覧は JPX から取得しています。
     </footer>
   );
 }
