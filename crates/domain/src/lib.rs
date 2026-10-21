@@ -2,6 +2,7 @@
 //! 外部クレートには依存しない。
 
 pub mod access;
+pub mod analysis;
 pub mod calendar;
 pub mod indicators;
 pub mod model;

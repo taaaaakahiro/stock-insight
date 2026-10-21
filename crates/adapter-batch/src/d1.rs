@@ -3,15 +3,16 @@
 //! - SqlFileStore: 同じSQLをファイルに書き出す（ドライラン・ローカル検証）
 
 use crate::sql::{
-    annual_reports_stmts, price_history_stmts, run_stmt, set_state_stmt, snapshots_stmts,
-    stocks_stmts, Stmt, Val,
+    annual_reports_stmts, period_reports_stmts, price_history_stmts, run_stmt, set_state_stmt,
+    snapshots_stmts, stocks_stmts, Stmt, Val,
 };
+use domain::analysis::{CumulativePeriod, PeriodType};
 use domain::stock_master::ListedStock;
 use domain::{AnnualFinancial, Date, PriceBar};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use usecase::daily::StoredAnnual;
-use usecase::fins::{AnnualReport, FinancialStore};
+use usecase::fins::{AnnualReport, FinancialStore, PeriodReport};
 use usecase::master::StockMasterStore;
 use usecase::{BatchRun, PortError, Snapshot, SnapshotStore};
 
@@ -212,6 +213,53 @@ impl D1Store {
     }
 }
 
+impl D1Store {
+    /// 全銘柄の四半期の累計値（rowid 順に少しずつ読む）
+    pub async fn load_quarterlies(
+        &self,
+    ) -> Result<HashMap<String, Vec<CumulativePeriod>>, PortError> {
+        let mut out: HashMap<String, Vec<CumulativePeriod>> = HashMap::new();
+        let mut after = 0i64;
+        loop {
+            let rows = self
+                .query(&Stmt {
+                    sql: "SELECT rowid AS rid, code, fiscal_year_end, period_type, period_end, net_sales, \
+                          operating_income, ordinary_income, net_income \
+                          FROM financials_quarterly WHERE rowid > ? ORDER BY rowid LIMIT 2000"
+                        .into(),
+                    params: vec![Val::Int(after)],
+                })
+                .await?;
+            let Some(last) = rows.last().and_then(|r| r["rid"].as_i64()) else {
+                return Ok(out);
+            };
+            after = last;
+            for r in &rows {
+                let (Some(code), Some(fy), Some(pt), Some(pe)) = (
+                    r["code"].as_str(),
+                    r["fiscal_year_end"].as_str().and_then(Date::parse),
+                    r["period_type"].as_str().and_then(PeriodType::from_jquants),
+                    r["period_end"].as_str().and_then(Date::parse),
+                ) else {
+                    continue;
+                };
+                let f = |k: &str| r[k].as_f64();
+                out.entry(code.to_string())
+                    .or_default()
+                    .push(CumulativePeriod {
+                        fiscal_year_end: fy,
+                        period_end: pe,
+                        period_type: pt,
+                        net_sales: f("net_sales"),
+                        operating_income: f("operating_income"),
+                        ordinary_income: f("ordinary_income"),
+                        net_income: f("net_income"),
+                    });
+            }
+        }
+    }
+}
+
 fn is_add_column(sql: &str) -> bool {
     let s = sql.to_ascii_uppercase();
     s.starts_with("ALTER TABLE") && s.contains("ADD COLUMN")
@@ -224,6 +272,16 @@ impl FinancialStore for D1Store {
         fetched_at: i64,
     ) -> Result<(), PortError> {
         for s in annual_reports_stmts(reports, fetched_at) {
+            self.exec(&s).await?;
+        }
+        Ok(())
+    }
+    async fn save_period_reports(
+        &self,
+        reports: &[PeriodReport],
+        fetched_at: i64,
+    ) -> Result<(), PortError> {
+        for s in period_reports_stmts(reports, fetched_at) {
             self.exec(&s).await?;
         }
         Ok(())
@@ -276,6 +334,16 @@ impl FinancialStore for SqlFileStore {
         fetched_at: i64,
     ) -> Result<(), PortError> {
         annual_reports_stmts(reports, fetched_at)
+            .iter()
+            .for_each(|s| self.push(s));
+        Ok(())
+    }
+    async fn save_period_reports(
+        &self,
+        reports: &[PeriodReport],
+        fetched_at: i64,
+    ) -> Result<(), PortError> {
+        period_reports_stmts(reports, fetched_at)
             .iter()
             .for_each(|s| self.push(s));
         Ok(())

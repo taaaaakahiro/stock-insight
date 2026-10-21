@@ -73,7 +73,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: probe-sql
-          path: probe.sql
+          path: |
+            probe.sql
+            raw/
           retention-days: 3
 
   guard:
@@ -103,5 +105,18 @@ jobs:
       - run: chmod +x batch-cli
       - run: ./batch-cli migrate
       - run: ./batch-cli sync-master
-      - run: ./batch-cli sync-jq --rate 60 --max-minutes "${{ github.event.inputs.max_minutes || '300' }}"
+      - run: ./batch-cli sync-jq --rate 60 --max-minutes "${{ github.event.inputs.max_minutes || '300' }}" --raw-dir raw
       - run: ./batch-cli compute --label daily
+      # J-Quants の応答（全項目）を日付ごとの gzip JSON で R2 に残す。後からの分析用。
+      # 指標の計算より後に置き、ここが失敗しても一覧の更新は止めない（CLOUDFLARE_API_TOKEN に R2 の編集権限が要る）
+      - name: upload raw data to R2
+        run: |
+          shopt -s nullglob
+          files=(raw/bars/*.json.gz raw/fins/*.json.gz)
+          echo "${#files[@]} files to upload"
+          [ "${#files[@]}" -eq 0 ] && exit 0
+          npm install -g --silent wrangler@4.151.3
+          for f in "${files[@]}"; do
+            wrangler r2 object put "maaun-stock-insight-raw/jquants/${f#raw/}" --file "$f" --remote >/dev/null
+          done
+          echo "uploaded ${#files[@]} files"

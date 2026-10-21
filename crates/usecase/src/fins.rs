@@ -1,10 +1,11 @@
-//! 年次の財務の取り込み（J-Quants の財務情報サマリー → financials_annual）。
-//! 指標の計算（ingest）は、ここで保存した財務を D1 から読んで使う。
+//! 財務の取り込み（J-Quants の財務情報サマリー → financials_annual / financials_quarterly）。
+//! 指標の計算（daily）は、ここで保存した財務を D1 から読んで使う。
 
 use crate::PortError;
+use domain::analysis::CumulativePeriod;
 use domain::{AnnualFinancial, Date, StockCode};
 
-/// 本決算の1件
+/// 本決算の1件（年次の指標と配当に使う）
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnnualReport {
     pub code: StockCode,
@@ -14,9 +15,13 @@ pub struct AnnualReport {
     pub financial: AnnualFinancial,
 }
 
-pub trait FinancialSummarySource {
-    /// 指定日に開示された本決算（全銘柄）
-    async fn annual_reports_on(&self, date: Date) -> Result<Vec<AnnualReport>, PortError>;
+/// 決算短信の1行（1Q/2Q/3Q/FY の累計値。四半期の赤字判定と詳細ページに使う）
+#[derive(Debug, Clone, PartialEq)]
+pub struct PeriodReport {
+    pub code: StockCode,
+    pub doc_id: String,
+    pub disclosed: Option<Date>,
+    pub period: CumulativePeriod,
 }
 
 pub trait FinancialStore {
@@ -25,30 +30,11 @@ pub trait FinancialStore {
         reports: &[AnnualReport],
         fetched_at: i64,
     ) -> Result<(), PortError>;
-}
-
-/// 平日の開示日を順に取り込み、保存した本決算の件数を返す
-pub async fn sync_fins<S, T>(
-    source: &S,
-    store: &T,
-    dates: &[Date],
-    fetched_at: i64,
-    mut on_day: impl FnMut(Date, usize),
-) -> Result<usize, PortError>
-where
-    S: FinancialSummarySource,
-    T: FinancialStore,
-{
-    let mut total = 0;
-    for &date in dates {
-        let reports = source.annual_reports_on(date).await?;
-        if !reports.is_empty() {
-            store.save_annual_reports(&reports, fetched_at).await?;
-        }
-        total += reports.len();
-        on_day(date, reports.len());
-    }
-    Ok(total)
+    async fn save_period_reports(
+        &self,
+        reports: &[PeriodReport],
+        fetched_at: i64,
+    ) -> Result<(), PortError>;
 }
 
 /// from〜to（両端を含む）の平日。祝日は開示がないだけなので除かない

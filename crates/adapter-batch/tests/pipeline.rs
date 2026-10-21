@@ -55,7 +55,16 @@ async fn offline_pipeline_writes_sql() {
         .iter()
         .map(|c| StockCode::parse(c).unwrap())
         .collect();
-    let (snaps, skipped) = compute_all(&codes, histories, &annuals, "offline", 1_792_500_000);
+    let periods = jquants::period_reports(v["data"].as_array().unwrap());
+    store.save_period_reports(&periods, 1).await.unwrap();
+    let (snaps, skipped) = compute_all(
+        &codes,
+        histories,
+        &annuals,
+        &HashMap::new(),
+        "offline",
+        1_792_500_000,
+    );
     assert_eq!(snaps.len(), 1);
     assert_eq!(skipped, 1, "8951 は株価の履歴がない");
     let i = &snaps[0].indicators;
@@ -78,6 +87,10 @@ async fn offline_pipeline_writes_sql() {
     let sql = store.into_string();
     assert!(sql.contains("INSERT INTO indicators_latest"));
     assert!(sql.contains("INSERT INTO financials_annual"));
+    assert!(
+        sql.contains("INSERT INTO financials_quarterly"),
+        "3Q の行が入る"
+    );
     let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/poc_offline.sql");
     std::fs::write(out, sql).unwrap();
 }

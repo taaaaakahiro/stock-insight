@@ -1,6 +1,7 @@
-//! 日次の指標計算。保存済みの株価の履歴と年次財務から、全銘柄の指標を作る（取得はしない）。
+//! 日次の指標計算。保存済みの株価の履歴と財務から、全銘柄の指標を作る（取得はしない）。
 
 use crate::Snapshot;
+use domain::analysis::{standalone_quarters, CumulativePeriod, PeriodType, QuarterResult};
 use domain::{
     compute, AnnualFinancial, Date, Dividend, FinancialData, MarketData, PriceBar, StockCode,
 };
@@ -27,37 +28,61 @@ fn effective_date(a: &StoredAnnual) -> Option<Date> {
     })
 }
 
-/// 1銘柄分の入力を組み立てる
+/// 本決算の行を、四半期の差分計算に使う累計値（FY）の形にする
+fn annual_as_period(a: &StoredAnnual) -> Option<CumulativePeriod> {
+    let end = a.financial.period_end?;
+    Some(CumulativePeriod {
+        fiscal_year_end: end,
+        period_end: end,
+        period_type: PeriodType::FY,
+        net_sales: a.financial.net_sales,
+        operating_income: a.financial.operating_income,
+        ordinary_income: a.financial.ordinary_income,
+        net_income: a.financial.net_income,
+    })
+}
+
+/// 1銘柄分の入力を組み立てる: 株価と配当、年次財務（新しい期が先頭）、四半期単独の損益（古い順）
 pub fn build_inputs(
     bars: Vec<PriceBar>,
     annuals: &[StoredAnnual],
-) -> (MarketData, Option<FinancialData>, Option<&StoredAnnual>) {
-    let mut sorted: Vec<&StoredAnnual> = annuals
+    quarterlies: &[CumulativePeriod],
+) -> (
+    MarketData,
+    Option<FinancialData>,
+    Vec<QuarterResult>,
+    Option<usize>,
+) {
+    let mut sorted: Vec<(usize, &StoredAnnual)> = annuals
         .iter()
-        .filter(|a| a.financial.period_end.is_some())
+        .enumerate()
+        .filter(|(_, a)| a.financial.period_end.is_some())
         .collect();
     // 新しい期が先頭
-    sorted.sort_by_key(|a| std::cmp::Reverse(a.financial.period_end));
+    sorted.sort_by_key(|(_, a)| std::cmp::Reverse(a.financial.period_end));
     let dividends = sorted
         .iter()
-        .filter_map(|a| {
+        .filter_map(|(_, a)| {
             Some(Dividend {
                 effective: effective_date(a)?,
                 annual: a.financial.dps?,
             })
         })
         .collect();
-    let latest = sorted.first().copied();
-    let fin = latest.map(|l| FinancialData {
+    let latest = sorted.first().map(|(i, _)| *i);
+    let fin = sorted.first().map(|(_, l)| FinancialData {
         doc_id: l.doc_id.clone(),
         submitted: l.disclosed,
         years: sorted
             .iter()
             .take(MAX_YEARS)
-            .map(|a| a.financial.clone())
+            .map(|(_, a)| a.financial.clone())
             .collect(),
     });
-    (MarketData { bars, dividends }, fin, latest)
+    let mut periods: Vec<CumulativePeriod> = quarterlies.to_vec();
+    periods.extend(sorted.iter().filter_map(|(_, a)| annual_as_period(a)));
+    let quarters = standalone_quarters(&periods);
+    (MarketData { bars, dividends }, fin, quarters, latest)
 }
 
 /// 全銘柄の指標を計算する。株価の履歴がない銘柄は飛ばす
@@ -65,17 +90,24 @@ pub fn compute_all(
     codes: &[StockCode],
     mut histories: HashMap<String, Vec<PriceBar>>,
     annuals: &HashMap<String, Vec<StoredAnnual>>,
+    quarterlies: &HashMap<String, Vec<CumulativePeriod>>,
     run_id: &str,
     now: i64,
 ) -> (Vec<Snapshot>, usize) {
     let mut snaps = vec![];
     let mut skipped = 0;
-    let empty = vec![];
+    let no_annuals = vec![];
+    let no_quarters = vec![];
     for code in codes {
         let bars = histories.remove(code.as_str()).unwrap_or_default();
-        let (market, fin, latest) =
-            build_inputs(bars, annuals.get(code.as_str()).unwrap_or(&empty));
-        match compute(&market, fin.as_ref()) {
+        let anns = annuals.get(code.as_str()).unwrap_or(&no_annuals);
+        let (market, fin, quarters, latest) = build_inputs(
+            bars,
+            anns,
+            quarterlies.get(code.as_str()).unwrap_or(&no_quarters),
+        );
+        let latest = latest.map(|i| &anns[i]);
+        match compute(&market, fin.as_ref(), &quarters) {
             Ok(indicators) => snaps.push(Snapshot {
                 code: code.clone(),
                 run_id: run_id.to_string(),
@@ -106,8 +138,21 @@ mod tests {
                 period_end: Some(d(period_end)),
                 dps: Some(dps),
                 eps: Some(eps),
+                net_income: Some(100.0),
                 ..Default::default()
             },
+        }
+    }
+
+    fn quarter(fy: &str, pe: &str, t: PeriodType, net: f64) -> CumulativePeriod {
+        CumulativePeriod {
+            fiscal_year_end: d(fy),
+            period_end: d(pe),
+            period_type: t,
+            net_sales: None,
+            operating_income: None,
+            ordinary_income: None,
+            net_income: Some(net),
         }
     }
 
@@ -117,7 +162,7 @@ mod tests {
             annual("2025-03-31", Some("2025-05-10"), 40.0, 100.0),
             annual("2026-03-31", None, 44.0, 110.0),
         ];
-        let (m, fin, latest) = build_inputs(vec![], &annuals);
+        let (m, fin, _, latest) = build_inputs(vec![], &annuals, &[]);
         assert_eq!(m.dividends.len(), 2);
         assert_eq!(
             m.dividends[0].effective,
@@ -126,7 +171,20 @@ mod tests {
         );
         assert_eq!(m.dividends[1].effective, d("2025-05-10"));
         assert_eq!(fin.unwrap().years[0].dps, Some(44.0), "新しい期が先頭");
-        assert_eq!(latest.unwrap().doc_id, "doc-2026-03-31");
+        assert_eq!(latest, Some(1));
+    }
+
+    #[test]
+    fn fourth_quarter_comes_from_annual_minus_3q() {
+        let annuals = [annual("2026-03-31", Some("2026-05-10"), 44.0, 110.0)];
+        let qs = [
+            quarter("2026-03-31", "2025-06-30", PeriodType::Q1, 20.0),
+            quarter("2026-03-31", "2025-09-30", PeriodType::Q2, 50.0),
+            quarter("2026-03-31", "2025-12-31", PeriodType::Q3, 70.0),
+        ];
+        let (_, _, quarters, _) = build_inputs(vec![], &annuals, &qs);
+        let nets: Vec<Option<f64>> = quarters.iter().map(|q| q.net_income).collect();
+        assert_eq!(nets, vec![Some(20.0), Some(30.0), Some(20.0), Some(30.0)]);
     }
 
     #[test]
@@ -146,7 +204,7 @@ mod tests {
             vec![annual("2026-03-31", Some("2026-05-10"), 40.0, 100.0)],
         );
         let missing = StockCode::parse("9999").unwrap();
-        let (snaps, skipped) = compute_all(&[code, missing], hist, &ann, "r1", 0);
+        let (snaps, skipped) = compute_all(&[code, missing], hist, &ann, &HashMap::new(), "r1", 0);
         assert_eq!(skipped, 1, "株価の履歴がない銘柄は飛ばす");
         let i = &snaps[0].indicators;
         assert!((i.dividend_yield.unwrap() - 0.04).abs() < 1e-9);

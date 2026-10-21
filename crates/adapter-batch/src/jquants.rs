@@ -4,11 +4,12 @@
 //! 呼び出しの上限はプランごとに違う（Free 5件/分、Light 60件/分）ので、間隔は設定で渡す。
 
 use crate::http;
+use domain::analysis::{CumulativePeriod, PeriodType};
 use domain::{AnnualFinancial, Date, PriceBar, StockCode};
 use serde_json::Value;
 use std::cell::Cell;
 use std::time::{Duration, Instant};
-use usecase::fins::{AnnualReport, FinancialSummarySource};
+use usecase::fins::{AnnualReport, PeriodReport};
 use usecase::PortError;
 
 const BASE: &str = "https://api.jquants.com/v2";
@@ -86,15 +87,26 @@ impl JQuantsClient {
         self.fetch_all(&format!("/fins/summary?date={date}")).await
     }
 
-    /// 指定日の全上場銘柄の終値（分割調整前）。休場日は空
-    pub async fn closes_on(&self, date: Date) -> Result<Vec<(StockCode, PriceBar)>, PortError> {
-        Ok(self
-            .fetch_all(&format!("/equities/bars/daily?date={date}"))
-            .await?
-            .iter()
-            .filter_map(close_bar)
-            .collect())
+    /// 指定日の全上場銘柄の日足（全項目そのまま）。休場日は空
+    pub async fn bars_on(&self, date: Date) -> Result<Vec<Value>, PortError> {
+        self.fetch_all(&format!("/equities/bars/daily?date={date}"))
+            .await
     }
+}
+
+/// 日足の行から終値（分割調整前）だけを取り出す
+pub fn closes(rows: &[Value]) -> Vec<(StockCode, PriceBar)> {
+    rows.iter().filter_map(close_bar).collect()
+}
+
+/// 財務情報サマリーの行から本決算だけを取り出す
+pub fn annual_reports(rows: &[Value]) -> Vec<AnnualReport> {
+    rows.iter().filter_map(annual_report).collect()
+}
+
+/// 財務情報サマリーの行から 1Q/2Q/3Q/FY の累計値を取り出す
+pub fn period_reports(rows: &[Value]) -> Vec<PeriodReport> {
+    rows.iter().filter_map(period_report).collect()
 }
 
 fn percent_encode(s: &str) -> String {
@@ -115,17 +127,6 @@ pub fn close_bar(r: &Value) -> Option<(StockCode, PriceBar)> {
     // 利回りの計算では、開示された（分割調整前の）配当と合わせるため調整前の終値を使う
     let close = r["C"].as_f64().filter(|c| c.is_finite() && *c > 0.0)?;
     Some((code, PriceBar { date, close }))
-}
-
-impl FinancialSummarySource for JQuantsClient {
-    async fn annual_reports_on(&self, date: Date) -> Result<Vec<AnnualReport>, PortError> {
-        Ok(self
-            .summaries_on(date)
-            .await?
-            .iter()
-            .filter_map(annual_report)
-            .collect())
-    }
 }
 
 /// J-Quants の5桁コード（末尾が 0）→ 4桁。英字入りのコード（例: 130A0）も同じ
@@ -149,6 +150,32 @@ fn num(v: &Value) -> Option<f64> {
         .parse()
         .ok()
         .filter(|x: &f64| x.is_finite())
+}
+
+/// 1Q/2Q/3Q/FY の行を累計値のまま取り出す（4Q・5Q などの変則決算は対象外）
+pub fn period_report(r: &Value) -> Option<PeriodReport> {
+    let period_type = PeriodType::from_jquants(r["CurPerType"].as_str()?)?;
+    let code = code_from_jquants(r["Code"].as_str()?)?;
+    let period_end = Date::parse(r["CurPerEn"].as_str()?)?;
+    let fiscal_year_end = r["CurFYEn"]
+        .as_str()
+        .and_then(Date::parse)
+        .unwrap_or(period_end);
+    let first = |keys: &[&str]| keys.iter().find_map(|k| num(&r[*k]));
+    Some(PeriodReport {
+        code,
+        doc_id: r["DiscNo"].as_str().unwrap_or_default().to_string(),
+        disclosed: r["DiscDate"].as_str().and_then(Date::parse),
+        period: CumulativePeriod {
+            fiscal_year_end,
+            period_end,
+            period_type,
+            net_sales: first(&["Sales", "NCSales"]),
+            operating_income: first(&["OP", "NCOP"]),
+            ordinary_income: first(&["OdP", "NCOdP"]),
+            net_income: first(&["NP", "NCNP"]),
+        },
+    })
 }
 
 /// 本決算（CurPerType = FY）の行だけを年次の財務にする。四半期の行は使わない
@@ -214,6 +241,21 @@ mod tests {
             "自己資本を優先"
         );
         assert_eq!(a.financial.operating_cf, None, "空文字は値なし");
+    }
+
+    #[test]
+    fn period_rows_keep_quarters() {
+        let v = rows();
+        let periods = period_reports(v["data"].as_array().unwrap());
+        assert_eq!(periods.len(), 3, "FY 2件 + 3Q 1件");
+        let q3 = periods
+            .iter()
+            .find(|p| p.period.period_type == PeriodType::Q3)
+            .unwrap();
+        assert_eq!(q3.code.as_str(), "7203");
+        assert_eq!(q3.period.fiscal_year_end.to_string(), "2025-03-31");
+        assert_eq!(q3.period.period_end.to_string(), "2024-12-31");
+        assert_eq!(q3.period.net_sales, Some(36_000_000_000_000.0));
     }
 
     #[test]

@@ -1,0 +1,27 @@
+name: release
+
+# タグ v<version> を押したら、Cargo.toml の version と一致することを確かめて GitHub Release を作る。
+# 画面のフッターと /api/status の version も同じ値（Cargo.toml が唯一の元）。
+# 本番への反映（wrangler deploy）は docs/07_deploy.md の手順で行う（CI からの自動デプロイは未設定）。
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tag must match Cargo.toml version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver="$(awk -F'"' '/^\[workspace\.package\]/{f=1} f && /^version = /{print $2; exit}' Cargo.toml)"
+          echo "tag=$tag cargo=$ver"
+          [ "$tag" = "$ver" ] || { echo "::error::タグ v$tag と Cargo.toml の version $ver が一致しません"; exit 1; }
+          echo "$tag" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::semver（MAJOR.MINOR.PATCH）ではありません"; exit 1; }
+      - run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

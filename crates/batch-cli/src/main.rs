@@ -18,16 +18,22 @@
 //!   --max-minutes <n>       この時間を過ぎたら、そこまでを保存して終わる（既定 300）
 //!   --persist-every <n>     何日分ごとに D1 へ保存するか（既定 120）
 //!   --dry-run <file>        D1 を読み書きせず、取得結果を SQL ファイルに書く（--from と --until が必要）
+//!   --raw-dir <dir>         J-Quants の応答を全項目そのまま gzip JSON で置く場所（既定 raw。あとで R2 に上げる）
 //!
 //! 環境変数（値はリポジトリに書かない）:
 //!   JQUANTS_API_KEY                                          sync-jq で必須
 //!   CLOUDFLARE_ACCOUNT_ID, D1_DATABASE_ID, CLOUDFLARE_API_TOKEN  D1 を使うコマンドで必須
 
-use adapter_batch::{d1, http, jpx, jquants::JQuantsClient};
+use adapter_batch::{
+    d1, http, jpx,
+    jquants::{self, JQuantsClient},
+    raw,
+};
 use domain::{Date, PriceBar, StockCode};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use usecase::fins::{AnnualReport, FinancialStore, FinancialSummarySource};
+use usecase::fins::{AnnualReport, FinancialStore, PeriodReport};
 use usecase::{BatchRun, Clock, SnapshotStore};
 
 struct SystemClock;
@@ -52,6 +58,7 @@ struct Args {
     rate: u32,
     max_minutes: u64,
     persist_every: usize,
+    raw_dir: String,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -70,6 +77,7 @@ fn parse_args() -> Result<Args, String> {
         rate: 60,
         max_minutes: 300,
         persist_every: 120,
+        raw_dir: "raw".into(),
     };
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or(format!("{flag} needs a value"));
@@ -85,6 +93,7 @@ fn parse_args() -> Result<Args, String> {
             "--persist-every" => {
                 a.persist_every = val()?.parse().map_err(|_| "bad persist-every")?
             }
+            "--raw-dir" => a.raw_dir = val()?,
             "--label" => {
                 a.label = val()?;
                 if !a.label.chars().all(|c| c.is_ascii_alphanumeric()) {
@@ -152,6 +161,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0004_jquants",
         include_str!("../../../migrations/0004_jquants.sql"),
+    ),
+    (
+        "0005_analysis",
+        include_str!("../../../migrations/0005_analysis.sql"),
     ),
 ];
 
@@ -247,6 +260,14 @@ const BACKFILL_DAYS: i64 = 5 * 365;
 /// 夕方以降の開示を取りこぼさないよう、財務は直近この日数を毎回取り直す
 const REFETCH_FIN_DAYS: i64 = 3;
 
+/// まだ D1 に書いていない取得結果
+#[derive(Default)]
+struct Pending {
+    changed: HashSet<String>,
+    annuals: Vec<AnnualReport>,
+    periods: Vec<PeriodReport>,
+}
+
 async fn sync_jq(args: Args) -> Result<(), String> {
     if let Some(path) = &args.dry_run {
         return sync_jq_dry_run(&args, path).await;
@@ -258,6 +279,7 @@ async fn sync_jq(args: Args) -> Result<(), String> {
     let now = SystemClock.now_unix();
     let today = Date::from_unix_jst(now);
     let until = args.until.unwrap_or(today);
+    let raw_dir = PathBuf::from(&args.raw_dir);
 
     let cursor = store
         .get_state(CURSOR_KEY)
@@ -281,18 +303,19 @@ async fn sync_jq(args: Args) -> Result<(), String> {
 
     let mut histories = store.load_price_histories().await.map_err(|e| e.0)?;
     println!("sync-jq: loaded {} price histories", histories.len());
-    let mut changed: HashSet<String> = HashSet::new();
-    let mut reports: Vec<AnnualReport> = vec![];
+    let mut pending = Pending::default();
     let mut done_until: Option<Date> = None;
     let mut since_persist = 0;
     let deadline = std::time::Duration::from_secs(args.max_minutes * 60);
 
     for (i, &day) in days.iter().enumerate() {
         if day >= start {
-            let closes = jq
-                .closes_on(day)
+            let rows = jq
+                .bars_on(day)
                 .await
                 .map_err(|e| format!("{day} prices: {}", e.0))?;
+            raw::write_day(&raw_dir, "bars", day, &rows).map_err(|e| e.0)?;
+            let closes = jquants::closes(&rows);
             let n = closes.len();
             let mut by_code: HashMap<String, Vec<PriceBar>> = HashMap::new();
             for (code, bar) in closes {
@@ -303,20 +326,28 @@ async fn sync_jq(args: Args) -> Result<(), String> {
             }
             for (code, bars) in by_code {
                 domain::price_history::merge(histories.entry(code.clone()).or_default(), &bars);
-                changed.insert(code);
+                pending.changed.insert(code);
             }
             if n > 0 {
                 println!("{day}: {n} closes");
             }
         }
-        let fins = jq
-            .annual_reports_on(day)
+        let rows = jq
+            .summaries_on(day)
             .await
             .map_err(|e| format!("{day} financials: {}", e.0))?;
-        if !fins.is_empty() {
-            println!("{day}: {} annual reports", fins.len());
+        raw::write_day(&raw_dir, "fins", day, &rows).map_err(|e| e.0)?;
+        let annuals = jquants::annual_reports(&rows);
+        let periods = jquants::period_reports(&rows);
+        if !periods.is_empty() {
+            println!(
+                "{day}: {} financial rows ({} annual)",
+                periods.len(),
+                annuals.len()
+            );
         }
-        reports.extend(fins);
+        pending.annuals.extend(annuals);
+        pending.periods.extend(periods);
         if day >= start {
             done_until = Some(day);
         }
@@ -325,15 +356,7 @@ async fn sync_jq(args: Args) -> Result<(), String> {
         let last = i + 1 == days.len();
         let timed_out = started.elapsed() > deadline;
         if last || timed_out || since_persist >= args.persist_every {
-            persist(
-                &store,
-                &histories,
-                &mut changed,
-                &mut reports,
-                done_until,
-                now,
-            )
-            .await?;
+            persist(&store, &histories, &mut pending, done_until, now).await?;
             since_persist = 0;
             if timed_out && !last {
                 println!("sync-jq: time limit reached; will resume after {done_until:?}");
@@ -354,22 +377,30 @@ async fn sync_jq(args: Args) -> Result<(), String> {
     Ok(())
 }
 
-/// D1 に触れずに、指定期間の取得結果を SQL にする（取得元の形の確認用）
+/// D1 に触れずに、指定期間の取得結果を SQL と生データにする（取得元の形の確認用）
 async fn sync_jq_dry_run(args: &Args, path: &str) -> Result<(), String> {
     let (Some(from), Some(until)) = (args.from, args.until) else {
         return Err("--dry-run needs --from and --until".into());
     };
     let jq = JQuantsClient::new(http::client(), env("JQUANTS_API_KEY")?, args.rate);
+    let raw_dir = PathBuf::from(&args.raw_dir);
     let file = d1::SqlFileStore::default();
     let mut histories: HashMap<String, Vec<PriceBar>> = HashMap::new();
-    let mut reports = vec![];
+    let mut annuals = vec![];
+    let mut periods = vec![];
     for day in usecase::fins::weekdays(from, until) {
-        let closes = jq.closes_on(day).await.map_err(|e| e.0)?;
-        let fins = jq.annual_reports_on(day).await.map_err(|e| e.0)?;
+        let bars = jq.bars_on(day).await.map_err(|e| e.0)?;
+        raw::write_day(&raw_dir, "bars", day, &bars).map_err(|e| e.0)?;
+        let fins = jq.summaries_on(day).await.map_err(|e| e.0)?;
+        raw::write_day(&raw_dir, "fins", day, &fins).map_err(|e| e.0)?;
+        let closes = jquants::closes(&bars);
+        let a = jquants::annual_reports(&fins);
+        let p = jquants::period_reports(&fins);
         println!(
-            "{day}: {} closes, {} annual reports",
+            "{day}: {} closes, {} financial rows ({} annual)",
             closes.len(),
-            fins.len()
+            p.len(),
+            a.len()
         );
         for (code, bar) in closes {
             domain::price_history::merge(
@@ -377,7 +408,8 @@ async fn sync_jq_dry_run(args: &Args, path: &str) -> Result<(), String> {
                 &[bar],
             );
         }
-        reports.extend(fins);
+        annuals.extend(a);
+        periods.extend(p);
     }
     let rows: Vec<(String, String, String)> = histories
         .iter()
@@ -389,7 +421,10 @@ async fn sync_jq_dry_run(args: &Args, path: &str) -> Result<(), String> {
             ))
         })
         .collect();
-    file.save_annual_reports(&reports, 0)
+    file.save_annual_reports(&annuals, 0)
+        .await
+        .map_err(|e| e.0)?;
+    file.save_period_reports(&periods, 0)
         .await
         .map_err(|e| e.0)?;
     let mut sql = file.into_string();
@@ -399,9 +434,11 @@ async fn sync_jq_dry_run(args: &Args, path: &str) -> Result<(), String> {
     }
     std::fs::write(path, sql).map_err(|e| e.to_string())?;
     println!(
-        "dry-run: {} codes, {} annual reports -> {path}",
+        "dry-run: {} codes, {} annual reports, {} period rows -> {path} (raw in {})",
         rows.len(),
-        reports.len()
+        annuals.len(),
+        periods.len(),
+        args.raw_dir
     );
     Ok(())
 }
@@ -409,12 +446,12 @@ async fn sync_jq_dry_run(args: &Args, path: &str) -> Result<(), String> {
 async fn persist(
     store: &d1::D1Store,
     histories: &HashMap<String, Vec<PriceBar>>,
-    changed: &mut HashSet<String>,
-    reports: &mut Vec<AnnualReport>,
+    pending: &mut Pending,
     done_until: Option<Date>,
     now: i64,
 ) -> Result<(), String> {
-    let rows: Vec<(String, String, String)> = changed
+    let rows: Vec<(String, String, String)> = pending
+        .changed
         .iter()
         .filter_map(|code| {
             let bars = histories.get(code)?;
@@ -431,16 +468,20 @@ async fn persist(
         .await
         .map_err(|e| e.0)?;
     store
-        .save_annual_reports(reports, now)
+        .save_annual_reports(&pending.annuals, now)
+        .await
+        .map_err(|e| e.0)?;
+    store
+        .save_period_reports(&pending.periods, now)
         .await
         .map_err(|e| e.0)?;
     println!(
-        "persist: {} price histories, {} annual reports",
+        "persist: {} price histories, {} annual reports, {} quarterly rows",
         rows.len(),
-        reports.len()
+        pending.annuals.len(),
+        pending.periods.len()
     );
-    changed.clear();
-    reports.clear();
+    *pending = Pending::default();
     if let Some(d) = done_until {
         store
             .set_state(CURSOR_KEY, &d.to_string(), now)
@@ -463,11 +504,13 @@ async fn compute(args: Args) -> Result<(), String> {
         .collect();
     let histories = store.load_price_histories().await.map_err(|e| e.0)?;
     let annuals = store.load_annuals().await.map_err(|e| e.0)?;
+    let quarterlies = store.load_quarterlies().await.map_err(|e| e.0)?;
     println!(
-        "compute: {} codes, {} price histories, {} with financials",
+        "compute: {} codes, {} price histories, {} with annual financials, {} with quarterly rows",
         codes.len(),
         histories.len(),
-        annuals.len()
+        annuals.len(),
+        quarterlies.len()
     );
     let mut run = BatchRun {
         run_id: run_id.clone(),
@@ -480,7 +523,7 @@ async fn compute(args: Args) -> Result<(), String> {
     };
     store.save_run(&run).await.map_err(|e| e.0)?;
     let (snaps, skipped) =
-        usecase::daily::compute_all(&codes, histories, &annuals, &run_id, started);
+        usecase::daily::compute_all(&codes, histories, &annuals, &quarterlies, &run_id, started);
     store.save_snapshots(&snaps).await.map_err(|e| e.0)?;
     run.succeeded = snaps.len();
     run.failed = skipped;

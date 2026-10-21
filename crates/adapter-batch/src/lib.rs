@@ -4,4 +4,5 @@ pub mod d1;
 pub mod http;
 pub mod jpx;
 pub mod jquants;
+pub mod raw;
 pub mod sql;
