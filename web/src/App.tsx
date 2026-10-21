@@ -1,11 +1,20 @@
 import { LogOut } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ApiError, apiGet, type Me, type Status } from "@/lib/api";
 import { useAuthState } from "@/lib/auth";
 import { jstDateTime, ymd } from "@/lib/format";
+import { PortfolioProvider, usePortfolio } from "@/lib/portfolio";
 import { cn } from "@/lib/utils";
+import { PortfolioPage } from "@/pages/portfolio-page";
 import { ScreeningPage } from "@/pages/screening-page";
+
+type View = "screening" | "portfolio";
+
+// 画面の切り替えは URL の # に残す（? はスクリーニングの条件が使う）
+const viewFromHash = (): View =>
+  window.location.hash === "#portfolio" ? "portfolio" : "screening";
 
 type Session =
   | { state: "checking" }
@@ -58,24 +67,54 @@ function SignedIn() {
   }
 
   return (
+    <PortfolioProvider>
+      <Shell me={session.me} onSignOut={() => void signOut()} />
+    </PortfolioProvider>
+  );
+}
+
+function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
+  const [view, setView] = useState<View>(viewFromHash);
+  const { codes } = usePortfolio();
+
+  useEffect(() => {
+    const onHash = () => setView(viewFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  const go = (v: View) => {
+    setView(v);
+    const url = `${window.location.pathname}${window.location.search}${v === "portfolio" ? "#portfolio" : ""}`;
+    window.history.replaceState(null, "", url);
+  };
+
+  return (
     <div className="min-h-svh">
       <header className="sticky top-0 z-10 border-b bg-background/90 backdrop-blur">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-1 px-4 py-3">
           <h1 className="text-base">増配期待株ダッシュボード</h1>
           <Freshness />
           <div className="ml-auto flex items-center gap-2 text-sm">
-            <span className="hidden text-muted-foreground sm:inline">
-              {session.me.display_name}
-            </span>
-            <Button variant="ghost" size="sm" onClick={() => void signOut()}>
+            <span className="hidden text-muted-foreground sm:inline">{me.display_name}</span>
+            <Button variant="ghost" size="sm" onClick={onSignOut}>
               <LogOut aria-hidden />
               ログアウト
             </Button>
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-7xl px-4 py-6">
-        <ScreeningPage />
+      <main className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-6">
+        <Tabs value={view} onValueChange={(v) => go(v as View)}>
+          <TabsList aria-label="画面">
+            <TabsTrigger value="screening">スクリーニング</TabsTrigger>
+            <TabsTrigger value="portfolio">
+              ポートフォリオ
+              {codes.size > 0 && <span className="ml-1 tabular-nums">({codes.size})</span>}
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+        {view === "screening" ? <ScreeningPage /> : <PortfolioPage />}
       </main>
       <Footer />
     </div>
@@ -147,7 +186,8 @@ function Footer() {
     <footer className="mx-auto max-w-7xl px-4 py-8 text-xs text-muted-foreground">
       <p className="mb-1 tabular-nums">v{__APP_VERSION__}</p>
       情報提供のみを目的としており、投資助言ではありません。投資判断はご自身の責任で行ってください。
-      株価・財務は J-Quants API（日本取引所グループ）、銘柄一覧は JPX から取得しています。
+      株価・財務は J-Quants API（日本取引所グループ）、配当方針の記述は EDINET（金融庁）、銘柄一覧は
+      JPX から取得しています。
     </footer>
   );
 }

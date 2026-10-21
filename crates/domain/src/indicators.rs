@@ -28,6 +28,9 @@ pub struct Indicators {
     pub is_value: Option<bool>,
     /// 判定に使えた年次財務の期数
     pub data_years: u32,
+    /// 売上高・営業利益の前年同期比（直近の期の累計。0.1 = 10% 増）。compute の後に analysis::yoy_growth で入れる
+    pub sales_growth: Option<f64>,
+    pub op_growth: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +195,8 @@ pub fn compute(
         ),
         is_value: crate::analysis::is_value(pbr, per),
         data_years: years.len().min(ANALYSIS_YEARS) as u32,
+        sales_growth: None,
+        op_growth: None,
     })
 }
 

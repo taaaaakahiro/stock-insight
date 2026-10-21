@@ -4,8 +4,10 @@
 pub mod access;
 pub mod analysis;
 pub mod calendar;
+pub mod disclosure;
 pub mod indicators;
 pub mod model;
+pub mod portfolio;
 pub mod price_history;
 pub mod screening;
 pub mod stock_master;

@@ -94,6 +94,7 @@ version = "0.2.0"
 dependencies = [
  "adapter-batch",
  "domain",
+ "serde_json",
  "tokio",
  "usecase",
 ]

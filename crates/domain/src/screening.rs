@@ -12,10 +12,13 @@ pub enum Metric {
     Doe,
     ConsecutiveIncreases,
     OperatingMargin,
+    /// 売上高・営業利益の前年同期比
+    SalesGrowth,
+    OpGrowth,
 }
 
 impl Metric {
-    pub const ALL: [Metric; 9] = [
+    pub const ALL: [Metric; 11] = [
         Metric::Price,
         Metric::DividendYield,
         Metric::YieldPercentile,
@@ -25,6 +28,8 @@ impl Metric {
         Metric::Doe,
         Metric::ConsecutiveIncreases,
         Metric::OperatingMargin,
+        Metric::SalesGrowth,
+        Metric::OpGrowth,
     ];
 
     /// APIのクエリ名・D1の列名
@@ -39,6 +44,8 @@ impl Metric {
             Metric::Doe => "doe",
             Metric::ConsecutiveIncreases => "consecutive_increases",
             Metric::OperatingMargin => "operating_margin",
+            Metric::SalesGrowth => "sales_growth",
+            Metric::OpGrowth => "op_growth",
         }
     }
 
@@ -99,6 +106,8 @@ pub struct ScreeningFilter {
     pub is_value: bool,
     pub dividend_every_year: bool,
     pub no_quarterly_loss: bool,
+    /// 有報などに累進配当・非減配の記述がある（EDINET）
+    pub dividend_policy: bool,
     pub sort: SortKey,
     pub order: SortOrder,
     /// 1始まり
@@ -120,6 +129,7 @@ impl Default for ScreeningFilter {
             is_value: false,
             dividend_every_year: false,
             no_quarterly_loss: false,
+            dividend_policy: false,
             sort: SortKey::Metric(Metric::DividendYield),
             order: SortOrder::Desc,
             page: 1,
@@ -194,6 +204,7 @@ impl ScreeningFilter {
                 "is_value" => f.is_value = parse_flag(v)?,
                 "dividend_every_year" => f.dividend_every_year = parse_flag(v)?,
                 "no_quarterly_loss" => f.no_quarterly_loss = parse_flag(v)?,
+                "dividend_policy" => f.dividend_policy = parse_flag(v)?,
                 _ => {
                     let Some((name, bound)) = k.rsplit_once('_') else {
                         continue;
@@ -297,10 +308,14 @@ mod tests {
             ("sector", "銀行業,保険業, 銀行業"),
             ("market", "プライム"),
             ("size", "large,mid"),
+            ("sales_growth_min", "0.1"),
+            ("dividend_policy", "1"),
             ("unknown", "x"),
         ])
         .unwrap();
-        assert_eq!(f.ranges.len(), 2);
+        assert_eq!(f.ranges.len(), 3);
+        assert_eq!(f.ranges[2].metric, Metric::SalesGrowth);
+        assert!(f.dividend_policy);
         assert_eq!(
             f.ranges[0],
             Range {

@@ -1,6 +1,6 @@
 # 08 指標の取得元と計算式
 
-一覧・詳細に出す各指標が、どの API のどの項目から、どう計算されているかの一覧。取得元は J-Quants API V2（Light プラン）と JPX の上場銘柄一覧だけ。Yahoo Finance と EDINET は使わない。
+一覧・詳細に出す各指標が、どの API のどの項目から、どう計算されているかの一覧。取得元は J-Quants API V2（Light プラン）、EDINET API v2（配当方針の文章だけ）と JPX の上場銘柄一覧。Yahoo Finance は使わない。
 
 ## 取得元の API
 
@@ -10,8 +10,17 @@
 | 財務情報サマリー | `GET /v2/fins/summary?date=YYYY-MM-DD` | 日付指定でその日に開示された全銘柄。同上 | 全項目: R2 `jquants/fins/<日付>.json.gz`。本決算（`CurPerType=FY`）: D1 `financials_annual`。四半期（1Q/2Q/3Q）: D1 `financials_quarterly` |
 | 上場銘柄一覧 | JPX `data_j.xlsx` | 日次バッチの最初に全件 | D1 `stocks`（名称・種類・市場・33業種・規模区分） |
 | 祝日 | 内閣府 `syukujitsu.csv` | バッチ起動時 | 保存しない（休場日の判定のみ） |
+| 書類一覧 | EDINET `GET /api/v2/documents.json?date=YYYY-MM-DD&type=2` | 日付指定で全社分（1日1回）。有報（`docTypeCode=120`）と半期報告書（`160`）で、CSV があり取下げでないものだけ。訂正（130・170）は使わない | 保存しない（取る書類を選ぶだけ） |
+| 書類 | EDINET `GET /api/v2/documents/<docID>?type=5` | 銘柄・種類ごとに最新の1通だけ、まだ持っていないものを取る | 文章: R2 `edinet/<コード>/annual.json.gz`・`semiannual.json.gz`（新しい書類で上書き）。手がかり: D1 `edinet_docs`（1銘柄・1種類1行） |
 
 取り込みは `batch-cli sync-jq`。初回だけ過去5年分、以後は前回の続き（`sync_state.jq_synced_until`）。財務は直近3日分を毎回取り直す。
+
+EDINET は `batch-cli sync-edinet`。初回は過去400日分の書類一覧（有報は年1回なので、提出の遅い会社も含めて1年強）、以後は前回の続き（`sync_state.edinet_listed_until`）。API キーは URL に載せずヘッダー（`Subscription-Key`）で渡す。古い書類の扱い:
+
+- 同じ銘柄・種類の新しい書類が出たら、D1 の行と R2 のファイルを上書きする（古い書類は残らない）
+- 新しい有報の期末が半期報告書の期末より後なら、その半期報告書は消す（初回の取り込みでは最初から取らない）
+- 上場していない銘柄（最新の JPX 一覧にない）の書類は消す
+- R2 から消すキーはバッチが `raw/edinet-delete.txt` に書き、ワークフローの最後に `wrangler r2 object delete` で消す
 
 ## 項目の対応
 
@@ -65,12 +74,36 @@ ETF は財務情報サマリーに載らないため、価格だけで利回り�
 | 四半期で赤字なし | 直近20四半期の四半期単独の純利益・営業利益がすべてプラス。判定できる四半期が4未満なら不明 | 四半期の累計値の差分 |
 | バリュー株 | PBR ≤ 1.0 かつ 0 < PER ≤ 15（基準は `analysis.rs` の定数） | PBR, PER |
 
+| 売上の伸び・営業利益の伸び | 直近の期（1Q〜FY の期首からの累計）と、1年前の同じ期の累計の比 − 1（前年同期比）。前年の値がないか 0 以下なら出さない | `Sales`, `OP`（四半期の行と本決算の行） |
+
 比率は小数で保存し（0.035 = 3.5%）、画面で % にする。
+
+### 配当方針の手がかり（EDINET、`domain/src/disclosure.rs`）
+
+有報・半期報告書の CSV（`XBRL_TO_CSV/jpcrp*.csv`、UTF-16LE の TSV）から、要素名が次で始まる `…TextBlock` の文章だけを取り出し、タグを除いて全角英数字を半角にする。
+
+| 項目 | 要素名（`jpcrp_cor:`） |
+|---|---|
+| 配当政策 | `DividendPolicyTextBlock` |
+| 経営方針、経営環境及び対処すべき課題等 | `BusinessPolicyBusinessEnvironmentIssuesToAddressEtcTextBlock` |
+| 経営者による財政状態、経営成績及びキャッシュ・フローの状況の分析 | `ManagementAnalysisOfFinancialPosition…TextBlock` |
+
+文（「。」区切り）ごとに次の言葉を探す。判定は言葉の有無だけなので、当てはまった文（最大5つ、各160文字まで）を `edinet_docs.phrases` に残し、画面で読めるようにする。
+
+| D1 の列 | 言葉 |
+|---|---|
+| `progressive_dividend` | 累進配当、累進的な配当、累進的に |
+| `no_dividend_cut` | 減配しない、減配を行わない、減配は行わない、減配を行わず、減配せず、非減配、維持または増配 など |
+| `dividend_raise` | 増配 |
+| `doe_target` | DOE、株主資本配当率、純資産配当率、自己資本配当率 |
+| `payout_target` | 「配当性向」の後ろ25文字以内の「30%」など（範囲なら下限） |
+
+一覧の「累進配当・非減配の方針」の絞り込みとバッジは、有報か半期報告書のどちらかで `progressive_dividend` か `no_dividend_cut` が 1 の銘柄。
 
 ## 一覧と詳細の分担
 
 | | 一覧（スクリーニング） | 詳細（銘柄ページ） |
 |---|---|---|
 | 目的 | 条件で候補を絞る | 1銘柄の5年の推移を見る |
-| 出すもの | 株価、利回り、過去5年比、PBR、PER、配当性向、DOE、連続増配、営業利益率と、バリュー・5年配当・通期黒字・四半期黒字のバッジ | 年次の売上・営業利益・純利益・EPS・BPS・配当・配当性向・営業CF の5年表、四半期単独の損益の表、利回りの5年の推移グラフ |
+| 出すもの | 株価、利回り、過去5年比、PBR、PER、配当性向、DOE、連続増配、営業利益率、売上・営業利益の伸び（前年同期比）と、バリュー・5年配当・通期黒字・四半期黒字・累進配当/非減配のバッジ（押すと有報などの該当文） | 年次の売上・営業利益・純利益・EPS・BPS・配当・配当性向・営業CF の5年表、四半期単独の損益の表、利回りの5年の推移グラフ |
 | 絞り込み | 種類（株式/REIT/ETF）、コード・名称の検索、33業種、市場、規模、各指標の範囲、バッジの有無 | — |

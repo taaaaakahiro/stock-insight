@@ -21,7 +21,9 @@ pub const LIST_COLUMNS: &str =
     "i.code, i.price, i.price_date, i.dividend_yield, i.yield_percentile, i.pbr, i.per, \
      i.payout_ratio, i.doe, i.consecutive_increases, i.operating_margin, i.no_loss_years, i.profit_uptrend, \
      i.valuation, i.fetched_at, s.name, COALESCE(s.kind, 'stock') AS kind, s.market, s.sector33, s.size_class, \
-     i.dividend_every_year, i.no_quarterly_loss, i.is_value, i.data_years";
+     i.dividend_every_year, i.no_quarterly_loss, i.is_value, i.data_years, i.sales_growth, i.op_growth, \
+     (SELECT MAX(e.progressive_dividend) FROM edinet_docs e WHERE e.code = i.code) AS progressive_dividend, \
+     (SELECT MAX(e.no_dividend_cut) FROM edinet_docs e WHERE e.code = i.code) AS no_dividend_cut";
 
 /// マスタにまだない銘柄も消えないよう LEFT JOIN（種類は株式として扱う）
 const FROM: &str = "FROM indicators_latest i LEFT JOIN stocks s ON s.code = i.code";
@@ -79,6 +81,13 @@ fn where_clause(f: &ScreeningFilter) -> (String, Vec<Arg>) {
     if f.no_quarterly_loss {
         conds.push("i.no_quarterly_loss = 1".to_string());
     }
+    if f.dividend_policy {
+        conds.push(
+            "EXISTS (SELECT 1 FROM edinet_docs e WHERE e.code = i.code \
+             AND (e.progressive_dividend = 1 OR e.no_dividend_cut = 1))"
+                .to_string(),
+        );
+    }
     (format!(" WHERE {}", conds.join(" AND ")), args)
 }
 
@@ -113,6 +122,26 @@ pub fn count(f: &ScreeningFilter) -> Query {
         args,
     }
 }
+
+/// ポートフォリオに登録した銘柄の最新指標（? はユーザーID）
+pub fn portfolio_rows() -> String {
+    format!(
+        "SELECT {LIST_COLUMNS} FROM portfolio_items p JOIN indicators_latest i ON i.code = p.code \
+         LEFT JOIN stocks s ON s.code = p.code WHERE p.user_id = ?"
+    )
+}
+
+/// 1銘柄の EDINET の書類と配当方針の手がかり（? は銘柄コード）
+pub const EDINET_DOCS: &str =
+    "SELECT doc_kind, doc_id, submitted, period_end, progressive_dividend, \
+     no_dividend_cut, dividend_raise, doe_target, payout_target, phrases \
+     FROM edinet_docs WHERE code = ? ORDER BY doc_kind";
+
+pub const PORTFOLIO_CODES: &str =
+    "SELECT code FROM portfolio_items WHERE user_id = ? ORDER BY added_at, code";
+pub const PORTFOLIO_ADD: &str =
+    "INSERT INTO portfolio_items (user_id, code, added_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING";
+pub const PORTFOLIO_REMOVE: &str = "DELETE FROM portfolio_items WHERE user_id = ? AND code = ?";
 
 pub const LATEST_RUN: &str = "SELECT r.run_id, r.started_at, r.finished_at, r.status, \
      (SELECT MAX(price_date) FROM indicators_latest) AS latest_price_date \
@@ -199,6 +228,28 @@ mod tests {
                 Arg::Text("large".into())
             ]
         );
+    }
+
+    #[test]
+    fn portfolio_rows_use_the_list_columns() {
+        assert!(
+            portfolio_rows().starts_with(&format!("SELECT {LIST_COLUMNS} FROM portfolio_items"))
+        );
+    }
+
+    #[test]
+    fn dividend_policy_filter_uses_edinet_docs() {
+        let f = ScreeningFilter::from_pairs([("dividend_policy", "1"), ("sort", "sales_growth")])
+            .unwrap();
+        let q = list(&f);
+        assert!(q.sql.contains(
+            "EXISTS (SELECT 1 FROM edinet_docs e WHERE e.code = i.code \
+             AND (e.progressive_dividend = 1 OR e.no_dividend_cut = 1))"
+        ));
+        assert!(q
+            .sql
+            .contains("ORDER BY i.sales_growth IS NULL, i.sales_growth DESC"));
+        assert_eq!(q.args.len(), 3, "kind と LIMIT・OFFSET だけ");
     }
 
     #[test]

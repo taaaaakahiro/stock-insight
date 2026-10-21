@@ -12,6 +12,8 @@ export type MetricKey =
   | "doe"
   | "consecutive_increases"
   | "operating_margin"
+  | "sales_growth"
+  | "op_growth"
   | "price";
 
 /** 一覧のタブ。株式以外は財務の指標がないので、使える指標を絞る */
@@ -35,6 +37,8 @@ export const METRICS: { key: MetricKey; label: string; unit: Unit; kinds: Kind[]
   { key: "doe", label: "DOE", unit: "pct", kinds: STOCK },
   { key: "consecutive_increases", label: "連続増配", unit: "years", kinds: STOCK },
   { key: "operating_margin", label: "営業利益率", unit: "pct", kinds: STOCK },
+  { key: "sales_growth", label: "売上の伸び", unit: "pct", kinds: STOCK },
+  { key: "op_growth", label: "営業利益の伸び", unit: "pct", kinds: STOCK },
   { key: "price", label: "株価", unit: "yen", kinds: ALL },
 ];
 
@@ -107,19 +111,26 @@ export const FLAGS: { key: FlagKey; label: string; hint: string }[] = [
     hint: "直近20四半期の単独の損益がすべてプラス",
   },
   { key: "profitUptrend", label: "営業利益が増加傾向", hint: "直近5期の営業利益の傾きがプラス" },
+  {
+    key: "dividendPolicy",
+    label: "累進配当・非減配の方針",
+    hint: "有価証券報告書・半期報告書（EDINET）に累進配当や「減配しない」の記述がある",
+  },
 ];
 export type FlagKey =
   | "isValue"
   | "dividendEveryYear"
   | "noLossYears"
   | "noQuarterlyLoss"
-  | "profitUptrend";
+  | "profitUptrend"
+  | "dividendPolicy";
 const FLAG_PARAM: Record<FlagKey, string> = {
   isValue: "is_value",
   dividendEveryYear: "dividend_every_year",
   noLossYears: "no_loss_years",
   noQuarterlyLoss: "no_quarterly_loss",
   profitUptrend: "profit_uptrend",
+  dividendPolicy: "dividend_policy",
 };
 
 export type Filters = {
@@ -138,6 +149,7 @@ export type Filters = {
   valuation: Valuation;
   noLossYears: boolean;
   profitUptrend: boolean;
+  dividendPolicy: boolean;
   sort: MetricKey | "code";
   order: "asc" | "desc";
   page: number;
@@ -156,6 +168,7 @@ export const DEFAULT_FILTERS: Filters = {
   valuation: "",
   noLossYears: false,
   profitUptrend: false,
+  dividendPolicy: false,
   sort: "dividend_yield",
   order: "desc",
   page: 1,
@@ -268,6 +281,7 @@ export function switchKind(f: Filters, kind: Kind): Filters {
     noQuarterlyLoss: stock && f.noQuarterlyLoss,
     noLossYears: stock && f.noLossYears,
     profitUptrend: stock && f.profitUptrend,
+    dividendPolicy: stock && f.dividendPolicy,
     sort: sortOk ? f.sort : DEFAULT_FILTERS.sort,
     order: sortOk ? f.order : DEFAULT_FILTERS.order,
     page: 1,

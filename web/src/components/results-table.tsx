@@ -1,4 +1,6 @@
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
+import { EdinetPolicy } from "@/components/edinet-policy";
+import { PortfolioToggle } from "@/components/portfolio-toggle";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -10,7 +12,7 @@ import {
 } from "@/components/ui/table";
 import type { StockRow } from "@/lib/api";
 import { type Filters, type Kind, type MetricKey, metricLabel, metricsFor } from "@/lib/filters";
-import { count, pct, times, yen } from "@/lib/format";
+import { count, growth, pct, times, yen } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 type Column = {
@@ -29,6 +31,8 @@ const RENDER: Record<MetricKey, (r: StockRow) => string> = {
   doe: (r) => pct(r.doe),
   consecutive_increases: (r) => count(r.consecutive_increases),
   operating_margin: (r) => pct(r.operating_margin, 1),
+  sales_growth: (r) => growth(r.sales_growth),
+  op_growth: (r) => growth(r.op_growth),
 };
 
 // 表の列の並び（株価を先頭に）
@@ -42,6 +46,8 @@ const ORDER: MetricKey[] = [
   "doe",
   "consecutive_increases",
   "operating_margin",
+  "sales_growth",
+  "op_growth",
 ];
 
 function columnsFor(kind: Kind): Column[] {
@@ -66,7 +72,7 @@ function SizeBadge({ size }: { size: StockRow["size_class"] }) {
 }
 
 /** 名称（なければコードだけ）と、コード・業種・規模 */
-function NameCell({ r }: { r: StockRow }) {
+export function NameCell({ r }: { r: StockRow }) {
   const sub = [r.code, r.kind === "stock" ? r.sector33 : null].filter(Boolean).join("・");
   return (
     <div className="flex min-w-0 flex-col">
@@ -111,7 +117,8 @@ const BADGES: { key: keyof StockRow; label: string; hint: string; className: str
 
 function Flags({ r }: { r: StockRow }) {
   const on = BADGES.filter((b) => r[b.key] === true);
-  if (on.length === 0) {
+  const policy = r.progressive_dividend === true || r.no_dividend_cut === true;
+  if (on.length === 0 && !policy) {
     return (
       <span className="text-xs text-muted-foreground" title="判定できる財務データがまだ足りません">
         —
@@ -125,6 +132,7 @@ function Flags({ r }: { r: StockRow }) {
           {b.label}
         </Badge>
       ))}
+      {policy && <EdinetPolicy r={r} />}
     </span>
   );
 }
@@ -211,8 +219,11 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
           <TableBody>
             {rows.map((r) => (
               <TableRow key={r.code}>
-                <TableCell className="max-w-64">
-                  <NameCell r={r} />
+                <TableCell className="max-w-72">
+                  <div className="flex items-center gap-1">
+                    <PortfolioToggle code={r.code} name={r.name ?? r.code} />
+                    <NameCell r={r} />
+                  </div>
                 </TableCell>
                 {columns.map((c) => (
                   <TableCell key={c.key} className="text-right tabular-nums">
@@ -234,7 +245,10 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
         {rows.map((r) => (
           <li key={r.code} className="rounded-xl border p-4">
             <div className="mb-3 flex items-start justify-between gap-2">
-              <NameCell r={r} />
+              <div className="flex min-w-0 items-center gap-1">
+                <PortfolioToggle code={r.code} name={r.name ?? r.code} />
+                <NameCell r={r} />
+              </div>
               {kind === "stock" && <Flags r={r} />}
             </div>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">

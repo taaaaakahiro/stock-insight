@@ -1,7 +1,9 @@
 //! 日次の指標計算。保存済みの株価の履歴と財務から、全銘柄の指標を作る（取得はしない）。
 
 use crate::Snapshot;
-use domain::analysis::{standalone_quarters, CumulativePeriod, PeriodType, QuarterResult};
+use domain::analysis::{
+    standalone_quarters, yoy_growth, CumulativePeriod, PeriodType, QuarterResult,
+};
 use domain::{
     compute, AnnualFinancial, Date, Dividend, FinancialData, MarketData, PriceBar, StockCode,
 };
@@ -108,14 +110,19 @@ pub fn compute_all(
         );
         let latest = latest.map(|i| &anns[i]);
         match compute(&market, fin.as_ref(), &quarters) {
-            Ok(indicators) => snaps.push(Snapshot {
-                code: code.clone(),
-                run_id: run_id.to_string(),
-                fetched_at: now,
-                indicators,
-                fin_doc_id: latest.map(|l| l.doc_id.clone()),
-                fin_submitted: latest.and_then(|l| l.disclosed),
-            }),
+            Ok(mut indicators) => {
+                let mut periods = quarterlies.get(code.as_str()).cloned().unwrap_or_default();
+                periods.extend(anns.iter().filter_map(annual_as_period));
+                (indicators.sales_growth, indicators.op_growth) = yoy_growth(&periods);
+                snaps.push(Snapshot {
+                    code: code.clone(),
+                    run_id: run_id.to_string(),
+                    fetched_at: now,
+                    indicators,
+                    fin_doc_id: latest.map(|l| l.doc_id.clone()),
+                    fin_submitted: latest.and_then(|l| l.disclosed),
+                })
+            }
             Err(_) => skipped += 1,
         }
     }

@@ -1,0 +1,214 @@
+//! ポートフォリオ（保有銘柄の登録と、売り時のサインつきの一覧）のユースケース。
+
+use crate::screening::StockRow;
+use crate::PortError;
+use domain::portfolio::{sell_signals, SellSignal, SignalInput, MAX_ITEMS};
+use domain::StockCode;
+
+pub trait PortfolioRepository {
+    /// 登録した銘柄コード（登録の古い順）
+    async fn codes(&self, user_id: &str) -> Result<Vec<String>, PortError>;
+    /// 登録した銘柄の最新指標（指標がまだない銘柄は含まない）
+    async fn rows(&self, user_id: &str) -> Result<Vec<StockRow>, PortError>;
+    /// すでにあれば何もしない
+    async fn add(&self, user_id: &str, code: &str, now: i64) -> Result<(), PortError>;
+    async fn remove(&self, user_id: &str, code: &str) -> Result<(), PortError>;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HoldingRow {
+    pub stock: StockRow,
+    pub signals: Vec<SellSignal>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Portfolio {
+    pub codes: Vec<String>,
+    /// サインの多い順（同数なら銘柄コード順）
+    pub rows: Vec<HoldingRow>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PortfolioError {
+    BadCode,
+    TooMany,
+    Port(PortError),
+}
+
+impl From<PortError> for PortfolioError {
+    fn from(e: PortError) -> Self {
+        PortfolioError::Port(e)
+    }
+}
+
+pub fn signals_for(r: &StockRow) -> Vec<SellSignal> {
+    sell_signals(&SignalInput {
+        payout_ratio: r.payout_ratio,
+        valuation: &r.valuation,
+        consecutive_increases: r.consecutive_increases,
+        profit_uptrend: r.profit_uptrend,
+        no_loss_years: r.no_loss_years,
+        no_quarterly_loss: r.no_quarterly_loss,
+    })
+}
+
+pub async fn list<R: PortfolioRepository>(repo: &R, user_id: &str) -> Result<Portfolio, PortError> {
+    let codes = repo.codes(user_id).await?;
+    let mut rows: Vec<HoldingRow> = repo
+        .rows(user_id)
+        .await?
+        .into_iter()
+        .map(|stock| HoldingRow {
+            signals: signals_for(&stock),
+            stock,
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.signals
+            .len()
+            .cmp(&a.signals.len())
+            .then_with(|| a.stock.code.cmp(&b.stock.code))
+    });
+    Ok(Portfolio { codes, rows })
+}
+
+pub async fn add<R: PortfolioRepository>(
+    repo: &R,
+    user_id: &str,
+    code: &str,
+    now: i64,
+) -> Result<(), PortfolioError> {
+    let code = StockCode::parse(code).ok_or(PortfolioError::BadCode)?;
+    let codes = repo.codes(user_id).await?;
+    if codes.iter().any(|c| c == code.as_str()) {
+        return Ok(());
+    }
+    if codes.len() >= MAX_ITEMS {
+        return Err(PortfolioError::TooMany);
+    }
+    Ok(repo.add(user_id, code.as_str(), now).await?)
+}
+
+pub async fn remove<R: PortfolioRepository>(
+    repo: &R,
+    user_id: &str,
+    code: &str,
+) -> Result<(), PortfolioError> {
+    let code = StockCode::parse(code).ok_or(PortfolioError::BadCode)?;
+    Ok(repo.remove(user_id, code.as_str()).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests_support::block_on;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct Fake {
+        items: RefCell<Vec<(String, String)>>,
+        rows: Vec<StockRow>,
+    }
+
+    impl PortfolioRepository for Fake {
+        async fn codes(&self, user_id: &str) -> Result<Vec<String>, PortError> {
+            Ok(self
+                .items
+                .borrow()
+                .iter()
+                .filter(|(u, _)| u == user_id)
+                .map(|(_, c)| c.clone())
+                .collect())
+        }
+        async fn rows(&self, _user_id: &str) -> Result<Vec<StockRow>, PortError> {
+            Ok(self.rows.clone())
+        }
+        async fn add(&self, user_id: &str, code: &str, _now: i64) -> Result<(), PortError> {
+            self.items
+                .borrow_mut()
+                .push((user_id.to_string(), code.to_string()));
+            Ok(())
+        }
+        async fn remove(&self, user_id: &str, code: &str) -> Result<(), PortError> {
+            self.items
+                .borrow_mut()
+                .retain(|(u, c)| !(u == user_id && c == code));
+            Ok(())
+        }
+    }
+
+    fn row(code: &str, payout: f64, valuation: &str) -> StockRow {
+        StockRow {
+            code: code.into(),
+            price: 1000.0,
+            price_date: "2026-10-21".into(),
+            dividend_yield: Some(0.03),
+            yield_percentile: None,
+            pbr: None,
+            per: None,
+            payout_ratio: Some(payout),
+            doe: None,
+            consecutive_increases: None,
+            operating_margin: None,
+            no_loss_years: None,
+            profit_uptrend: None,
+            valuation: valuation.into(),
+            fetched_at: 0,
+            name: None,
+            kind: "stock".into(),
+            market: None,
+            sector33: None,
+            size_class: None,
+            dividend_every_year: None,
+            no_quarterly_loss: None,
+            is_value: None,
+            data_years: None,
+            sales_growth: None,
+            op_growth: None,
+            progressive_dividend: None,
+            no_dividend_cut: None,
+        }
+    }
+
+    #[test]
+    fn add_validates_and_ignores_duplicates() {
+        let repo = Fake::default();
+        assert_eq!(
+            block_on(add(&repo, "u1", "72; DROP", 0)),
+            Err(PortfolioError::BadCode)
+        );
+        block_on(add(&repo, "u1", "7203", 0)).unwrap();
+        block_on(add(&repo, "u1", "7203", 0)).unwrap();
+        assert_eq!(block_on(repo.codes("u1")).unwrap(), vec!["7203"]);
+        block_on(remove(&repo, "u1", "7203")).unwrap();
+        assert!(block_on(repo.codes("u1")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn add_rejects_over_limit() {
+        let repo = Fake::default();
+        for i in 0..MAX_ITEMS {
+            block_on(add(&repo, "u1", &format!("{:04}", 1000 + i), 0)).unwrap();
+        }
+        assert_eq!(
+            block_on(add(&repo, "u1", "9999", 0)),
+            Err(PortfolioError::TooMany)
+        );
+    }
+
+    #[test]
+    fn list_puts_signalled_rows_first() {
+        let repo = Fake {
+            rows: vec![
+                row("1001", 0.3, "cheap"),
+                row("1002", 0.6, "expensive"),
+                row("1003", 0.6, "neutral"),
+            ],
+            ..Default::default()
+        };
+        let p = block_on(list(&repo, "u1")).unwrap();
+        let order: Vec<&str> = p.rows.iter().map(|r| r.stock.code.as_str()).collect();
+        assert_eq!(order, vec!["1002", "1003", "1001"]);
+        assert_eq!(p.rows[0].signals.len(), 2);
+    }
+}

@@ -1,0 +1,28 @@
+{
+ "metadata": {
+  "title": "提出された書類を把握するためのAPI",
+  "status": "200",
+  "message": "OK",
+  "resultset": { "count": 6 }
+ },
+ "results": [
+  { "seqNumber": 1, "docID": "S100AAAA", "edinetCode": "E99999", "secCode": "99990", "filerName": "サンプル株式会社",
+    "docTypeCode": "120", "periodStart": "2025-04-01", "periodEnd": "2026-03-31",
+    "submitDateTime": "2026-06-20 15:00", "withdrawalStatus": "0", "csvFlag": "1" },
+  { "seqNumber": 2, "docID": "S100BBBB", "edinetCode": "E99998", "secCode": "130A0", "filerName": "サンプル二号株式会社",
+    "docTypeCode": "160", "periodStart": "2026-04-01", "periodEnd": "2026-09-30",
+    "submitDateTime": "2026-11-10 15:00", "withdrawalStatus": "0", "csvFlag": "1" },
+  { "seqNumber": 3, "docID": "S100NOCSV", "edinetCode": "E88888", "secCode": "88880",
+    "docTypeCode": "120", "periodEnd": "2026-03-31", "submitDateTime": "2026-06-21 15:00",
+    "withdrawalStatus": "0", "csvFlag": "0" },
+  { "seqNumber": 4, "docID": "S100WDRW", "edinetCode": "E77777", "secCode": "77770",
+    "docTypeCode": "120", "periodEnd": "2026-03-31", "submitDateTime": "2026-06-21 15:00",
+    "withdrawalStatus": "1", "csvFlag": "1" },
+  { "seqNumber": 5, "docID": "S100CORR", "edinetCode": "E99999", "secCode": "99990",
+    "docTypeCode": "130", "periodEnd": "2026-03-31", "submitDateTime": "2026-06-25 15:00",
+    "withdrawalStatus": "0", "csvFlag": "1" },
+  { "seqNumber": 6, "docID": "S100FUND", "edinetCode": "G00001", "secCode": null,
+    "docTypeCode": "120", "periodEnd": "2026-03-31", "submitDateTime": "2026-06-21 15:00",
+    "withdrawalStatus": "0", "csvFlag": "1" }
+ ]
+}

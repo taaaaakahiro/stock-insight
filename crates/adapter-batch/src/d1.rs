@@ -3,15 +3,17 @@
 //! - SqlFileStore: 同じSQLをファイルに書き出す（ドライラン・ローカル検証）
 
 use crate::sql::{
-    annual_reports_stmts, period_reports_stmts, price_history_stmts, run_stmt, set_state_stmt,
-    snapshots_stmts, stocks_stmts, Stmt, Val,
+    annual_reports_stmts, delete_edinet_doc_stmt, edinet_docs_stmts, period_reports_stmts,
+    price_history_stmts, run_stmt, set_state_stmt, snapshots_stmts, stocks_stmts, Stmt, Val,
 };
 use domain::analysis::{CumulativePeriod, PeriodType};
+use domain::disclosure::DocKind;
 use domain::stock_master::ListedStock;
 use domain::{AnnualFinancial, Date, PriceBar};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use usecase::daily::StoredAnnual;
+use usecase::edinet::{DocKey, DocRef, EdinetDoc};
 use usecase::fins::{AnnualReport, FinancialStore, PeriodReport};
 use usecase::master::StockMasterStore;
 use usecase::{BatchRun, PortError, Snapshot, SnapshotStore};
@@ -81,6 +83,61 @@ impl D1Store {
             .iter()
             .filter_map(|r| r["code"].as_str().map(str::to_string))
             .collect())
+    }
+
+    /// いま上場している銘柄（最新の JPX 一覧にある銘柄）のコード。上場廃止の銘柄はマスタに古い as_of で残る
+    pub async fn current_codes(&self, kinds: &[&str]) -> Result<Vec<String>, PortError> {
+        let placeholders = vec!["?"; kinds.len()].join(", ");
+        let rows = self
+            .query(&Stmt {
+                sql: format!(
+                    "SELECT code FROM stocks WHERE kind IN ({placeholders}) \
+                     AND as_of = (SELECT MAX(as_of) FROM stocks) ORDER BY code"
+                ),
+                params: kinds.iter().map(|k| Val::Text(k.to_string())).collect(),
+            })
+            .await?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| r["code"].as_str().map(str::to_string))
+            .collect())
+    }
+
+    /// 保存済みの EDINET の書類（銘柄・種類ごとに1件）
+    pub async fn load_edinet_docs(&self) -> Result<HashMap<DocKey, DocRef>, PortError> {
+        let rows = self
+            .query(&Stmt {
+                sql: "SELECT code, doc_kind, doc_id, submitted, period_end FROM edinet_docs".into(),
+                params: vec![],
+            })
+            .await?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| {
+                let doc = DocRef {
+                    code: r["code"].as_str()?.to_string(),
+                    kind: DocKind::parse(r["doc_kind"].as_str()?)?,
+                    doc_id: r["doc_id"].as_str()?.to_string(),
+                    submitted: Date::parse(r["submitted"].as_str()?)?,
+                    period_end: r["period_end"].as_str().and_then(Date::parse),
+                };
+                Some(((doc.code.clone(), doc.kind), doc))
+            })
+            .collect())
+    }
+
+    pub async fn save_edinet_docs(&self, docs: &[EdinetDoc], now: i64) -> Result<(), PortError> {
+        for s in edinet_docs_stmts(docs, now) {
+            self.exec(&s).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn delete_edinet_docs(&self, keys: &[DocKey]) -> Result<(), PortError> {
+        for k in keys {
+            self.exec(&delete_edinet_doc_stmt(k)).await?;
+        }
+        Ok(())
     }
 
     /// 今日（日本時間）の、指定ラベルのバッチで成功したものがあるか

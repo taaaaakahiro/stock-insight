@@ -8,6 +8,12 @@ export function pct(ratio: number | null | undefined, digits = 2): string {
   return `${(ratio * 100).toFixed(digits)}%`;
 }
 
+/** 伸び率。0.123 → "+12.3%"、-0.05 → "-5.0%" */
+export function growth(ratio: number | null | undefined): string {
+  if (ratio == null || !Number.isFinite(ratio)) return NONE;
+  return `${ratio > 0 ? "+" : ""}${(ratio * 100).toFixed(1)}%`;
+}
+
 /** 1.234 → "1.23倍" */
 export function times(x: number | null | undefined): string {
   if (x == null || !Number.isFinite(x)) return NONE;
