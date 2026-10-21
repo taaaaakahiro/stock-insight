@@ -2,8 +2,10 @@
 //! - D1Store: Cloudflare D1 の HTTP API に書き込む（本番）
 //! - SqlFileStore: 同じSQLをファイルに書き出す（ドライラン・ローカル検証）
 
-use crate::sql::{run_stmt, snapshot_stmts, Stmt};
+use crate::sql::{run_stmt, snapshot_stmts, stocks_stmts, Stmt};
+use domain::stock_master::ListedStock;
 use std::cell::RefCell;
+use usecase::master::StockMasterStore;
 use usecase::{BatchRun, PortError, Snapshot, SnapshotStore};
 
 pub struct D1Store {
@@ -97,6 +99,34 @@ impl SnapshotStore for SqlFileStore {
     }
     async fn save_snapshot(&self, snap: &Snapshot) -> Result<(), PortError> {
         snapshot_stmts(snap).iter().for_each(|s| self.push(s));
+        Ok(())
+    }
+}
+
+impl StockMasterStore for D1Store {
+    async fn save_stocks(
+        &self,
+        as_of: &str,
+        stocks: &[ListedStock],
+        now: i64,
+    ) -> Result<(), PortError> {
+        for s in stocks_stmts(as_of, stocks, now) {
+            self.exec(&s).await?;
+        }
+        Ok(())
+    }
+}
+
+impl StockMasterStore for SqlFileStore {
+    async fn save_stocks(
+        &self,
+        as_of: &str,
+        stocks: &[ListedStock],
+        now: i64,
+    ) -> Result<(), PortError> {
+        stocks_stmts(as_of, stocks, now)
+            .iter()
+            .for_each(|s| self.push(s));
         Ok(())
     }
 }

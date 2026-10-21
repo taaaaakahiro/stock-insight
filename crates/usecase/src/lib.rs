@@ -6,6 +6,7 @@
 use domain::{compute, FinancialData, Indicators, MarketData, StockCode};
 
 pub mod auth;
+pub mod master;
 pub mod screening;
 
 #[derive(Debug, Clone, PartialEq)]

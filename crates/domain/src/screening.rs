@@ -81,6 +81,8 @@ const MAX_PAGE: u32 = 1000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScreeningFilter {
+    /// 一覧のタブ（株式 / REIT / ETF）
+    pub kind: crate::stock_master::AssetKind,
     pub ranges: Vec<Range>,
     /// 割安などのバッジで絞る（Valuation::as_str の値）
     pub valuation: Option<crate::Valuation>,
@@ -95,6 +97,7 @@ pub struct ScreeningFilter {
 impl Default for ScreeningFilter {
     fn default() -> Self {
         Self {
+            kind: crate::stock_master::AssetKind::Stock,
             ranges: vec![],
             valuation: None,
             no_loss_years: false,
@@ -153,6 +156,10 @@ impl ScreeningFilter {
                         "expensive" => crate::Valuation::Expensive,
                         _ => return Err(FilterError(format!("bad valuation: {v}"))),
                     })
+                }
+                "kind" => {
+                    f.kind = crate::stock_master::AssetKind::from_key(v)
+                        .ok_or_else(|| FilterError(format!("bad kind: {v}")))?
                 }
                 "no_loss_years" => f.no_loss_years = parse_flag(v)?,
                 "profit_uptrend" => f.profit_uptrend = parse_flag(v)?,
@@ -230,6 +237,7 @@ mod tests {
             ("sort", "pbr"),
             ("order", "asc"),
             ("page", "2"),
+            ("kind", "reit"),
             ("unknown", "x"),
         ])
         .unwrap();
@@ -247,6 +255,7 @@ mod tests {
         assert_eq!(f.sort, SortKey::Metric(Metric::Pbr));
         assert_eq!(f.order, SortOrder::Asc);
         assert_eq!(f.offset(), 50);
+        assert_eq!(f.kind, crate::stock_master::AssetKind::Reit);
     }
 
     #[test]
@@ -255,6 +264,7 @@ mod tests {
         assert!(ScreeningFilter::from_pairs([("pbr_min", "2"), ("pbr_max", "1")]).is_err());
         assert!(ScreeningFilter::from_pairs([("sort", "name; DROP TABLE x")]).is_err());
         assert!(ScreeningFilter::from_pairs([("page", "0")]).is_err());
+        assert!(ScreeningFilter::from_pairs([("kind", "fund")]).is_err());
         assert!(ScreeningFilter::from_pairs([("pbr_min", "NaN")]).is_err());
     }
 

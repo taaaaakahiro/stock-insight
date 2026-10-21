@@ -5,6 +5,7 @@ pub mod access;
 pub mod indicators;
 pub mod model;
 pub mod screening;
+pub mod stock_master;
 
 pub use indicators::*;
 pub use model::*;

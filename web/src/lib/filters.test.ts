@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_FILTERS, fromQuery, isInvalidInput, toApiNumber, toQuery } from "./filters";
+import {
+  DEFAULT_FILTERS,
+  fromQuery,
+  isInvalidInput,
+  metricLabel,
+  switchKind,
+  toApiNumber,
+  toQuery,
+} from "./filters";
 import { jstDateTime, pct, times, yen, ymd } from "./format";
 
 describe("filters", () => {
@@ -22,15 +30,37 @@ describe("filters", () => {
     };
     const q = toQuery(f);
     expect(q.toString()).toBe(
-      "dividend_yield_min=0.035&pbr_max=1.2&valuation=cheap&no_loss_years=1&sort=pbr&order=asc&page=2",
+      "kind=stock&dividend_yield_min=0.035&pbr_max=1.2&valuation=cheap&no_loss_years=1&sort=pbr&order=asc&page=2",
     );
     expect(fromQuery(q)).toEqual(f);
   });
 
   it("omits defaults and ignores bad values", () => {
-    expect(toQuery(DEFAULT_FILTERS).toString()).toBe("");
+    expect(toQuery(DEFAULT_FILTERS).toString()).toBe("kind=stock");
     const f = fromQuery(new URLSearchParams("sort=drop&order=up&page=-1&valuation=x&pbr_min=abc"));
     expect(f).toEqual({ ...DEFAULT_FILTERS, ranges: {} });
+  });
+
+  it("drops stock-only conditions when switching to REIT", () => {
+    const f = {
+      ...DEFAULT_FILTERS,
+      ranges: { dividend_yield_min: "4", pbr_max: "1" },
+      noLossYears: true,
+      sort: "pbr" as const,
+      order: "asc" as const,
+      page: 3,
+    };
+    const r = switchKind(f, "reit");
+    expect(r).toEqual({
+      ...DEFAULT_FILTERS,
+      kind: "reit",
+      ranges: { dividend_yield_min: "4" },
+    });
+    expect(toQuery(r).toString()).toBe("kind=reit&dividend_yield_min=0.04");
+    // REIT の URL に株式だけの条件が混ざっていても無視する
+    expect(fromQuery(new URLSearchParams("kind=reit&pbr_max=1&sort=pbr")).ranges).toEqual({});
+    expect(metricLabel("dividend_yield", "reit")).toBe("分配金利回り");
+    expect(metricLabel("price", "etf")).toBe("価格");
   });
 
   it("flags inputs that are not numbers", () => {

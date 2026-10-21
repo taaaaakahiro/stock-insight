@@ -14,23 +14,45 @@ export type MetricKey =
   | "operating_margin"
   | "price";
 
-export const METRICS: { key: MetricKey; label: string; unit: Unit }[] = [
-  { key: "dividend_yield", label: "配当利回り", unit: "pct" },
-  { key: "yield_percentile", label: "利回りの過去10年の位置", unit: "pct" },
-  { key: "pbr", label: "PBR", unit: "times" },
-  { key: "per", label: "PER", unit: "times" },
-  { key: "payout_ratio", label: "配当性向", unit: "pct" },
-  { key: "doe", label: "DOE", unit: "pct" },
-  { key: "consecutive_increases", label: "連続増配", unit: "years" },
-  { key: "operating_margin", label: "営業利益率", unit: "pct" },
-  { key: "price", label: "株価", unit: "yen" },
+/** 一覧のタブ。株式以外は財務の指標がないので、使える指標を絞る */
+export type Kind = "stock" | "reit" | "etf";
+
+export const KINDS: { key: Kind; label: string }[] = [
+  { key: "stock", label: "株式" },
+  { key: "reit", label: "REIT" },
+  { key: "etf", label: "ETF" },
 ];
+
+const ALL: Kind[] = ["stock", "reit", "etf"];
+const STOCK: Kind[] = ["stock"];
+
+export const METRICS: { key: MetricKey; label: string; unit: Unit; kinds: Kind[] }[] = [
+  { key: "dividend_yield", label: "配当利回り", unit: "pct", kinds: ALL },
+  { key: "yield_percentile", label: "利回りの過去10年の位置", unit: "pct", kinds: ALL },
+  { key: "pbr", label: "PBR", unit: "times", kinds: STOCK },
+  { key: "per", label: "PER", unit: "times", kinds: STOCK },
+  { key: "payout_ratio", label: "配当性向", unit: "pct", kinds: STOCK },
+  { key: "doe", label: "DOE", unit: "pct", kinds: STOCK },
+  { key: "consecutive_increases", label: "連続増配", unit: "years", kinds: STOCK },
+  { key: "operating_margin", label: "営業利益率", unit: "pct", kinds: STOCK },
+  { key: "price", label: "株価", unit: "yen", kinds: ALL },
+];
+
+/** REIT・ETF は「配当」ではなく「分配金」、株価は「価格」と呼ぶ */
+export function metricLabel(key: MetricKey, kind: Kind): string {
+  const label = METRICS.find((m) => m.key === key)?.label ?? key;
+  if (kind === "stock") return label;
+  return label.replace("配当", "分配金").replace("株価", "価格");
+}
+
+export const metricsFor = (kind: Kind) => METRICS.filter((m) => m.kinds.includes(kind));
 
 export const UNIT_SUFFIX: Record<Unit, string> = { pct: "%", times: "倍", yen: "円", years: "年" };
 
 export type Valuation = "" | "cheap" | "neutral" | "expensive";
 
 export type Filters = {
+  kind: Kind;
   /** 入力欄の文字列（人が読む単位）。キーは `${metric}_min` / `${metric}_max` */
   ranges: Partial<Record<`${MetricKey}_${"min" | "max"}`, string>>;
   valuation: Valuation;
@@ -42,6 +64,7 @@ export type Filters = {
 };
 
 export const DEFAULT_FILTERS: Filters = {
+  kind: "stock",
   ranges: {},
   valuation: "",
   noLossYears: false,
@@ -72,7 +95,9 @@ export function fromApiNumber(value: string, unit: Unit): string {
 /** 条件 → クエリ文字列（既定値は省く） */
 export function toQuery(f: Filters): URLSearchParams {
   const q = new URLSearchParams();
-  for (const m of METRICS) {
+  // API の既定は株式だが、タブを明示しておく
+  q.set("kind", f.kind);
+  for (const m of metricsFor(f.kind)) {
     for (const b of ["min", "max"] as const) {
       const v = f.ranges[`${m.key}_${b}`];
       const api = v === undefined ? undefined : toApiNumber(v, m.unit);
@@ -80,8 +105,8 @@ export function toQuery(f: Filters): URLSearchParams {
     }
   }
   if (f.valuation) q.set("valuation", f.valuation);
-  if (f.noLossYears) q.set("no_loss_years", "1");
-  if (f.profitUptrend) q.set("profit_uptrend", "1");
+  if (f.kind === "stock" && f.noLossYears) q.set("no_loss_years", "1");
+  if (f.kind === "stock" && f.profitUptrend) q.set("profit_uptrend", "1");
   if (f.sort !== DEFAULT_FILTERS.sort) q.set("sort", f.sort);
   if (f.order !== DEFAULT_FILTERS.order) q.set("order", f.order);
   if (f.page > 1) q.set("page", String(f.page));
@@ -91,7 +116,9 @@ export function toQuery(f: Filters): URLSearchParams {
 /** クエリ文字列 → 条件。おかしな値は既定値に戻す */
 export function fromQuery(q: URLSearchParams): Filters {
   const f: Filters = { ...DEFAULT_FILTERS, ranges: {} };
-  for (const m of METRICS) {
+  const kind = q.get("kind");
+  if (kind === "stock" || kind === "reit" || kind === "etf") f.kind = kind;
+  for (const m of metricsFor(f.kind)) {
     for (const b of ["min", "max"] as const) {
       const v = q.get(`${m.key}_${b}`);
       if (v !== null) {
@@ -105,12 +132,32 @@ export function fromQuery(q: URLSearchParams): Filters {
   f.noLossYears = q.get("no_loss_years") === "1";
   f.profitUptrend = q.get("profit_uptrend") === "1";
   const sort = q.get("sort");
-  if (sort === "code" || METRICS.some((m) => m.key === sort)) f.sort = sort as Filters["sort"];
+  if (sort === "code" || metricsFor(f.kind).some((m) => m.key === sort))
+    f.sort = sort as Filters["sort"];
   const order = q.get("order");
   if (order === "asc" || order === "desc") f.order = order;
   const page = Number(q.get("page"));
   if (Number.isInteger(page) && page >= 1 && page <= 1000) f.page = page;
   return f;
+}
+
+/** タブを切り替える。そのタブで使えない条件は外す */
+export function switchKind(f: Filters, kind: Kind): Filters {
+  const keys = new Set(metricsFor(kind).map((m) => m.key));
+  const ranges = Object.fromEntries(
+    Object.entries(f.ranges).filter(([k]) => keys.has(k.replace(/_(min|max)$/, "") as MetricKey)),
+  ) as Filters["ranges"];
+  const sortOk = f.sort === "code" || keys.has(f.sort);
+  return {
+    ...f,
+    kind,
+    ranges,
+    noLossYears: kind === "stock" && f.noLossYears,
+    profitUptrend: kind === "stock" && f.profitUptrend,
+    sort: sortOk ? f.sort : DEFAULT_FILTERS.sort,
+    order: sortOk ? f.order : DEFAULT_FILTERS.order,
+    page: 1,
+  };
 }
 
 /** 入力欄の値が数として読めないか（赤枠を出す） */

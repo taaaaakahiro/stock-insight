@@ -3,6 +3,8 @@
 //! 使い方:
 //!   batch-cli migrate                                  D1 にスキーマを適用
 //!   batch-cli ingest --codes 7203,8058 [options]       取得 → 指標計算 → 保存
+//!   batch-cli sync-master [--dry-run <file>] [--from-file <xlsx>]
+//!                                                      JPX の上場銘柄一覧 → stocks（名称・種類・業種・規模）
 //!
 //! ingest のオプション:
 //!   --dry-run <file>     D1 に書かず、SQL をファイルに出力
@@ -14,7 +16,7 @@
 //!   EDINET_API_KEY                                       未設定なら財務はスキップ
 //!   CLOUDFLARE_ACCOUNT_ID, D1_DATABASE_ID, CLOUDFLARE_API_TOKEN   --dry-run 以外で必須
 
-use adapter_batch::{d1, edinet::EdinetClient, http, yahoo::YahooClient};
+use adapter_batch::{d1, edinet::EdinetClient, http, jpx, yahoo::YahooClient};
 use domain::{Date, StockCode};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -39,11 +41,14 @@ struct Args {
     shard: (usize, usize),
     concurrency: usize,
     edinet_days: i64,
+    from_file: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
-    let cmd = it.next().ok_or("command required: migrate | ingest")?;
+    let cmd = it
+        .next()
+        .ok_or("command required: migrate | ingest | sync-master")?;
     let mut a = Args {
         cmd,
         codes: vec![],
@@ -51,6 +56,7 @@ fn parse_args() -> Result<Args, String> {
         shard: (0, 1),
         concurrency: 8,
         edinet_days: 400,
+        from_file: None,
     };
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or(format!("{flag} needs a value"));
@@ -62,6 +68,7 @@ fn parse_args() -> Result<Args, String> {
                     .collect::<Result<_, _>>()?
             }
             "--dry-run" => a.dry_run = Some(val()?),
+            "--from-file" => a.from_file = Some(val()?),
             "--shard" => {
                 let v = val()?;
                 let (i, n) = v.split_once('/').ok_or("--shard i/n")?;
@@ -109,6 +116,7 @@ async fn main() {
     let code = match args.cmd.as_str() {
         "migrate" => migrate().await,
         "ingest" => tokio::task::LocalSet::new().run_until(ingest(args)).await,
+        "sync-master" => sync_master(args).await,
         other => Err(format!("unknown command: {other}")),
     };
     if let Err(e) = code {
@@ -126,7 +134,35 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0002_users",
         include_str!("../../../migrations/0002_users.sql"),
     ),
+    (
+        "0003_stocks",
+        include_str!("../../../migrations/0003_stocks.sql"),
+    ),
 ];
+
+async fn sync_master(args: Args) -> Result<(), String> {
+    let client = http::client();
+    let source = jpx::JpxSource {
+        client: client.clone(),
+        from_file: args.from_file.clone(),
+    };
+    let n = match &args.dry_run {
+        Some(path) => {
+            let store = d1::SqlFileStore::default();
+            let n = usecase::master::sync_master(&source, &store, &SystemClock)
+                .await
+                .map_err(|e| e.0)?;
+            std::fs::write(path, store.into_string()).map_err(|e| e.to_string())?;
+            println!("dry-run: wrote {path}");
+            n
+        }
+        None => usecase::master::sync_master(&source, &d1_store(client)?, &SystemClock)
+            .await
+            .map_err(|e| e.0)?,
+    };
+    println!("sync-master: {n} stocks");
+    Ok(())
+}
 
 async fn migrate() -> Result<(), String> {
     let store = d1_store(http::client())?;
