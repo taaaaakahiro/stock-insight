@@ -1,6 +1,8 @@
 //! AIレコメンド（F7）の純粋な部分: ルールで候補を絞ることと、AI の答えを検証すること。
 //! 数字の計算はここ（と indicators / analysis）で済ませ、AI には説明と優先順位付けだけを任せる。
 
+use crate::portfolio::{PAYOUT_WARN, PBR_WARN};
+
 /// AI に渡す候補の上限
 pub const MAX_CANDIDATES: usize = 50;
 /// AI に返させる（画面に出す）銘柄数
@@ -23,16 +25,21 @@ pub struct Candidate {
     pub no_loss_years: Option<bool>,
     pub no_quarterly_loss: Option<bool>,
     pub profit_uptrend: Option<bool>,
+    pub payout_ratio: Option<f64>,
+    pub pbr: Option<f64>,
 }
 
 impl Candidate {
-    /// ルールに合うか: 利回りが分かっていて MAX_YIELD 未満、バリュー株、または「5年連続で配当あり かつ 通期で赤字なし」
+    /// ルールに合うか: 利回りが分かっていて MAX_YIELD 未満、バリュー株、または「5年連続で配当あり かつ 通期で赤字なし」。
+    /// 保有していれば売りサイン（配当性向50%超・PBR1.5倍超。portfolio と同じ基準）が出る銘柄はすすめない
     pub fn is_eligible(&self) -> bool {
         let yield_known = self
             .dividend_yield
             .is_some_and(|y| y > 0.0 && y < MAX_YIELD);
         let steady = self.dividend_every_year == Some(true) && self.no_loss_years == Some(true);
-        yield_known && (self.is_value == Some(true) || steady)
+        let sell_signal = self.payout_ratio.is_some_and(|p| p > PAYOUT_WARN)
+            || self.pbr.is_some_and(|p| p > PBR_WARN);
+        yield_known && (self.is_value == Some(true) || steady) && !sell_signal
     }
 
     /// 満たしている条件の数（候補が多いときに上から取るための目安）
@@ -184,6 +191,8 @@ mod tests {
             no_loss_years: Some(no_loss),
             no_quarterly_loss: None,
             profit_uptrend: None,
+            payout_ratio: None,
+            pbr: None,
         }
     }
 
@@ -199,6 +208,17 @@ mod tests {
         );
         assert!(!cand("1006", Some(0.0), true, true, true).is_eligible());
         assert!(cand("1008", Some(0.0799), true, true, true).is_eligible());
+        let mut high_payout = cand("1010", Some(0.04), true, true, true);
+        high_payout.payout_ratio = Some(0.51);
+        assert!(
+            !high_payout.is_eligible(),
+            "配当性向50%超は売りサインなのですすめない"
+        );
+        high_payout.payout_ratio = Some(0.5);
+        assert!(high_payout.is_eligible(), "ちょうど50%は売りサインではない");
+        let mut expensive = cand("1011", Some(0.04), false, true, true);
+        expensive.pbr = Some(1.6);
+        assert!(!expensive.is_eligible(), "PBR1.5倍超は売りサイン");
         assert!(
             !cand("1009", Some(MAX_YIELD), true, true, true).is_eligible(),
             "利回りが高すぎる銘柄は特別配当や株価の急落を疑い、候補にしない"
@@ -211,6 +231,8 @@ mod tests {
             no_loss_years: None,
             no_quarterly_loss: None,
             profit_uptrend: None,
+            payout_ratio: None,
+            pbr: None,
         };
         assert!(!unknown.is_eligible(), "5年分の判定がなければ候補にしない");
     }
