@@ -7,6 +7,9 @@ pub const MAX_CANDIDATES: usize = 50;
 pub const PICK_COUNT: usize = 10;
 /// 壊れた答えを捨てたあと、保存するのに最低限ほしい銘柄数
 pub const MIN_PICKS: usize = 5;
+/// これ以上の配当利回りは候補にしない。特別配当や株価の急落で一時的に高く見えていることが多く、
+/// 「増配が期待できて割安」とは別の話になるため（2026-10-22 の本番では 10.4% の銘柄が1位になった）
+pub const MAX_YIELD: f64 = 0.08;
 /// 理由の長さの上限（文字数）。長すぎる答えは壊れているとみなす
 pub const MAX_REASON_CHARS: usize = 200;
 
@@ -23,9 +26,11 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    /// ルールに合うか: 利回りが分かっていて、バリュー株、または「5年連続で配当あり かつ 通期で赤字なし」
+    /// ルールに合うか: 利回りが分かっていて MAX_YIELD 未満、バリュー株、または「5年連続で配当あり かつ 通期で赤字なし」
     pub fn is_eligible(&self) -> bool {
-        let yield_known = self.dividend_yield.is_some_and(|y| y > 0.0);
+        let yield_known = self
+            .dividend_yield
+            .is_some_and(|y| y > 0.0 && y < MAX_YIELD);
         let steady = self.dividend_every_year == Some(true) && self.no_loss_years == Some(true);
         yield_known && (self.is_value == Some(true) || steady)
     }
@@ -193,6 +198,11 @@ mod tests {
             "利回りが分からなければ候補にしない"
         );
         assert!(!cand("1006", Some(0.0), true, true, true).is_eligible());
+        assert!(cand("1008", Some(0.0799), true, true, true).is_eligible());
+        assert!(
+            !cand("1009", Some(MAX_YIELD), true, true, true).is_eligible(),
+            "利回りが高すぎる銘柄は特別配当や株価の急落を疑い、候補にしない"
+        );
         let unknown = Candidate {
             code: "1007".into(),
             dividend_yield: Some(0.03),

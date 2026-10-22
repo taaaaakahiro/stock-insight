@@ -1,6 +1,7 @@
 //! Workers AI に渡す依頼（JSON）の組み立てと、答え（JSON）の解釈。ネイティブでテストできる部分。
 //! 実際の呼び出しは ai.rs（wasm32 専用）。
 
+use domain::indicators::CHEAP_PERCENTILE;
 use domain::recommend::{RawPick, PICK_COUNT};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -14,35 +15,107 @@ pub const MODEL: &str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const SYSTEM_PROMPT: &str = "\
 あなたは日本株の配当投資を手伝うアシスタントです。\
 渡されるのは、ルールで絞り込んだ候補銘柄の最新の指標（JSON）です。\
-数字の計算はせず、与えられた指標だけを根拠に、増配が期待できて割安な銘柄を上位10件選び、順位をつけてください。\
-各銘柄の理由は日本語で1〜2文、指標の値に触れて具体的に書いてください。\
+各銘柄には「良い点」（こちらで判定済みの、値つきの短い文）がついています。\
+「良い点」の多さと中身を見て、増配が期待できて割安な銘柄を上位10件選び、順位をつけてください。\
+理由の書き方:\
+(1) 日本語で1〜2文、全体で50〜110文字。銘柄名やコードから書き始めない（画面に銘柄名は出ている）。\
+(2) その銘柄の「良い点」から2〜3個を選び、括弧の中の説明も含めて文言と値をそのまま使い、「〜で、〜。」のような文にする。値は書き換えない。\
+書き方の例（値は例なので使わない）: 利回りが過去5年で上位10%（株価は過去と比べて安い）で、4年連続で増配している。配当性向は30.0%（50%以下で、増配に回す余力がある）。\
+(3) 「良い点」に書かれていない評価（高い・低い・安い・余地がある など）を自分で付け足さない。「良い点」にないことには触れない。\
+(4) 増配の根拠（連続増配・方針・配当性向・利益の伸び）が「良い点」にあれば、1つは入れる。\
+(5) 10件で同じ書き出しや同じ項目の並びを使い回さない。\
+「注意」がある銘柄は選ばないでください。\
 候補にない銘柄や同じ銘柄を2回入れてはいけません。\
 答えは指定した JSON だけを返し、他の文章は書かないでください。\
 これは参考情報であり投資助言ではありません。";
 
-/// 候補の1銘柄分。比率は % にし、桁を落としてトークンを節約する
+/// 小数の比率を「4.8%」の形に（小数第1位まで）
+fn pct(x: f64) -> String {
+    format!("{:.1}%", x * 100.0)
+}
+
+/// 前年同期比を「+5.0%」の形に
+fn growth(x: f64) -> String {
+    format!("{:+.1}%", x * 100.0)
+}
+
+/// 候補の1銘柄分。AI に値の良し悪しを判断させると「PBR 1.20倍と低い」のような誤りが出るので、
+/// こちらで判定した良い点だけを、値つきの日本語の短い文にして渡す（基準は一覧のバッジと同じ）。
+/// 分からない値・当てはまらない点は入れない
 fn candidate_json(r: &StockRow) -> Value {
-    let pct = |x: Option<f64>| x.map(|v| (v * 1000.0).round() / 10.0);
-    let times = |x: Option<f64>| x.map(|v| (v * 100.0).round() / 100.0);
-    json!({
-        "code": r.code,
-        "name": r.name,
-        "sector": r.sector33,
-        "price": r.price,
-        "dividend_yield_pct": pct(r.dividend_yield),
-        "yield_percentile_5y_pct": pct(r.yield_percentile),
-        "pbr": times(r.pbr),
-        "per": times(r.per),
-        "payout_ratio_pct": pct(r.payout_ratio),
-        "doe_pct": pct(r.doe),
-        "consecutive_dividend_increases": r.consecutive_increases,
-        "operating_margin_pct": pct(r.operating_margin),
-        "is_value": r.is_value,
-        "dividend_every_year_5y": r.dividend_every_year,
-        "no_loss_5y": r.no_loss_years,
-        "no_quarterly_loss_5y": r.no_quarterly_loss,
-        "profit_uptrend": r.profit_uptrend,
-    })
+    let yes = |b: Option<bool>| b == Some(true);
+    let mut good: Vec<String> = Vec::new();
+    if let Some(p) = r.yield_percentile.filter(|p| *p >= CHEAP_PERCENTILE) {
+        // yield_percentile は「過去5年の中で今の利回りが下から何割か」。上位の割合に直す
+        let top = ((1.0 - p) * 100.0).round().max(1.0) as i64;
+        good.push(format!(
+            "利回りが過去5年で上位{top}%（株価は過去と比べて安い）"
+        ));
+    }
+    if let Some(pbr) = r.pbr.filter(|v| *v > 0.0 && *v <= 1.0) {
+        good.push(format!("PBR {pbr:.2}倍（1倍以下）"));
+    }
+    if let Some(per) = r.per.filter(|v| *v > 0.0 && *v <= 15.0) {
+        good.push(format!("PER {per:.1}倍（15倍以下）"));
+    }
+    if let Some(n) = r.consecutive_increases.filter(|n| *n > 0) {
+        good.push(format!("{n}年連続で増配"));
+    }
+    if yes(r.progressive_dividend) {
+        good.push("有報で累進配当を掲げている".into());
+    }
+    if yes(r.no_dividend_cut) {
+        good.push("有報で減配しない方針を掲げている".into());
+    }
+    if let Some(p) = r.payout_ratio.filter(|v| *v > 0.0 && *v <= 0.5) {
+        good.push(format!(
+            "配当性向 {}（50%以下で、増配に回す余力がある）",
+            pct(p)
+        ));
+    }
+    if let Some(g) = r.op_growth.filter(|g| *g > 0.0) {
+        good.push(format!("営業利益が前年同期比 {}", growth(g)));
+    }
+    if let Some(g) = r.sales_growth.filter(|g| *g > 0.0) {
+        good.push(format!("売上高が前年同期比 {}", growth(g)));
+    }
+    if yes(r.profit_uptrend) {
+        good.push("利益が増える傾向".into());
+    }
+    if yes(r.dividend_every_year) {
+        good.push("5年続けて配当を出している".into());
+    }
+    if yes(r.no_loss_years) {
+        good.push("通期で5年赤字がない".into());
+    }
+    if yes(r.no_quarterly_loss) {
+        good.push("四半期でも5年赤字がない".into());
+    }
+
+    let mut c = serde_json::Map::new();
+    c.insert("コード".into(), json!(r.code));
+    if let Some(n) = &r.name {
+        c.insert("銘柄名".into(), json!(n));
+    }
+    if let Some(s) = &r.sector33 {
+        c.insert("業種".into(), json!(s));
+    }
+    if let Some(y) = r.dividend_yield {
+        let basis = match r.dividend_basis.as_deref() {
+            Some("forecast") => "（会社予想の配当で計算）",
+            Some("actual") => "（実績の配当で計算）",
+            _ => "",
+        };
+        c.insert("配当利回り".into(), json!(format!("{}{basis}", pct(y))));
+    }
+    c.insert("良い点".into(), json!(good));
+    if yes(r.dividend_cut) {
+        c.insert(
+            "注意".into(),
+            json!(["直近で減配した、または減配の予想を出している"]),
+        );
+    }
+    Value::Object(c)
 }
 
 /// Workers AI（テキスト生成、messages 形式）への入力
@@ -175,16 +248,64 @@ mod tests {
         let user: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap())
             .expect("user content is json");
         let c = &user["candidates"][0];
-        assert_eq!(c["code"], "7203");
-        assert_eq!(c["name"], "テスト工業");
-        assert_eq!(c["dividend_yield_pct"], 4.1);
-        assert_eq!(c["pbr"], 0.88);
-        assert_eq!(c["per"], 9.88);
-        assert_eq!(c["doe_pct"], Value::Null);
+        assert_eq!(c["コード"], "7203");
+        assert_eq!(c["銘柄名"], "テスト工業");
+        assert_eq!(c["配当利回り"], "4.1%");
+        assert_eq!(
+            c["良い点"],
+            json!([
+                "利回りが過去5年で上位20%（株価は過去と比べて安い）",
+                "PBR 0.88倍（1倍以下）",
+                "PER 9.9倍（15倍以下）",
+                "3年連続で増配",
+                "配当性向 30.0%（50%以下で、増配に回す余力がある）",
+                "利益が増える傾向",
+                "5年続けて配当を出している",
+                "通期で5年赤字がない"
+            ])
+        );
+        assert!(c.get("注意").is_none());
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(
             body["response_format"]["json_schema"]["properties"]["picks"]["maxItems"],
             10
+        );
+    }
+
+    #[test]
+    fn candidate_lists_only_what_passes_the_bar() {
+        let mut r = row("8306");
+        r.consecutive_increases = Some(0);
+        r.yield_percentile = Some(0.5);
+        r.pbr = Some(1.2);
+        r.per = Some(16.0);
+        r.payout_ratio = Some(0.7);
+        r.profit_uptrend = Some(false);
+        r.op_growth = Some(-0.05);
+        r.sales_growth = Some(0.031);
+        r.dividend_basis = Some("forecast".into());
+        r.dividend_cut = Some(true);
+        let c = candidate_json(&r);
+        assert_eq!(c["配当利回り"], "4.1%（会社予想の配当で計算）");
+        assert_eq!(
+            c["良い点"],
+            json!([
+                "売上高が前年同期比 +3.1%",
+                "5年続けて配当を出している",
+                "通期で5年赤字がない"
+            ]),
+            "0年の増配・基準に届かない値・減益は良い点にしない"
+        );
+        assert_eq!(
+            c["注意"],
+            json!(["直近で減配した、または減配の予想を出している"])
+        );
+
+        r.yield_percentile = Some(0.996);
+        assert_eq!(
+            candidate_json(&r)["良い点"][0],
+            "利回りが過去5年で上位1%（株価は過去と比べて安い）",
+            "上位0%とは書かない"
         );
     }
 
