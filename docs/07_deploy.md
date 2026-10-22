@@ -10,7 +10,7 @@ stock.insight.maa-un.com に API Worker と画面を公開する手順。初回�
 |---|---|---|
 | wrangler のログイン先 | `wrangler whoami` | maa'un japan の Cloudflare アカウント |
 | main が最新で CI が通っている | `git pull` / GitHub の Actions | `ci` が成功 |
-| 本番 D1 の現在のテーブル | `wrangler d1 execute maaun-stock-insight --remote --command "SELECT name FROM sqlite_master WHERE type='table'"` | 初回は `batch_runs`、`indicators_latest`、`financials_annual`。今は `migrations/0001`〜`0007` のテーブルすべて（[05](05_detailed_design.md#テーブル定義)） |
+| 本番 D1 の現在のテーブル | `wrangler d1 execute maaun-stock-insight --remote --command "SELECT name FROM sqlite_master WHERE type='table'"` | 初回は `batch_runs`、`indicators_latest`、`financials_annual`。今は `migrations/0001`〜`0008` のテーブルすべて（[05](05_detailed_design.md#テーブル定義)） |
 | Worker の状態 | `wrangler deployments list --name maaun-stock-insight` | 初回は見つからない。2回目以降は今のバージョン ID を控える（切り戻し先） |
 
 ## 1. 宣言と影響範囲

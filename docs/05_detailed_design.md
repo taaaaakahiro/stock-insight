@@ -63,12 +63,16 @@
 - 管理者（シークレット`ADMIN_NOTIFY_EMAIL`と一致するユーザー）にだけ、管理者の保有株の警告・売り時とバッチの結果をまとめて1通送る。該当がなければ送らない
 - 本文: 銘柄名、当たった条件、現在値、データ取得日、銘柄詳細へのリンク、免責表示
 
-### AIレコメンド（F7、未実装）
+### AIレコメンド（F7、実装済み）
 
-1. その日の株価で、ルールにより候補を約50銘柄に絞る（例: 利回りの過去5年比が高い、通期黒字、5年配当、累進配当・非減配）
-2. 候補の指標をWorkers AI（Llama 3.1 8B）に渡し、上位10銘柄と理由（1〜2文）を出させる
-3. 根拠の数字と出典を併記して`recommendations`に保存（90日保持）
-4. AIが失敗した日はルールによる候補だけを表示する
+`usecase::recommend::generate`。API Worker の Cron Trigger（平日21:00 JST、`0 12 * * 1-5`）から呼ぶ。候補の条件・モデル・検証の詳細は [08](08_indicator_sources.md#aiレコメンドf7の候補と使うモデル)。
+
+1. 最新の batch_runs が今日終わった `succeeded` でなければ何もしない。同じ株価の日付の結果がすでにあっても何もしない
+2. ルールで候補を50銘柄に絞る（株式・利回りあり・「バリュー株」または「5年配当かつ通期黒字」。満たす条件の多い順、同点は利回りの高い順）
+3. 候補の指標を Workers AI に JSON で渡し、上位10銘柄と理由（1〜2文）を JSON Schema で返させる
+4. ちょうど10件・候補の銘柄だけ・重複なし・理由200文字以内を確かめ、`recommendations` に保存する。外れたら保存せずログに出す
+
+未実装: AIが失敗した日にルールの候補だけを出すこと、90日より古い行の削除。
 
 ## 認証の処理（F1）
 
@@ -137,7 +141,7 @@ CloudflareのCron Trigger（`30 9 * * 1-5` = 平日18:30 JST）は呼び出し�
 
 ### マイグレーション
 
-- `migrations/`に連番のSQL（`0001`〜`0007`）を置き、日次バッチの最初に`batch-cli migrate`（D1 HTTP API）で適用する。手で適用するときも同じコマンドか `wrangler d1 execute --remote --file`（[07](07_deploy.md)）
+- `migrations/`に連番のSQL（`0001`〜`0008`）を置き、日次バッチの最初に`batch-cli migrate`（D1 HTTP API）で適用する。手で適用するときも同じコマンドか `wrangler d1 execute --remote --file`（[07](07_deploy.md)）
 - `CREATE ... IF NOT EXISTS` と `ALTER TABLE ... ADD COLUMN` だけで後方互換を保つ。列の削除は2段階で行う
 
 ## テーブル定義
@@ -155,6 +159,7 @@ CloudflareのCron Trigger（`30 9 * * 1-5` = 平日18:30 JST）は呼び出し�
 | price_history | code (PK), closes（`YYYYMMDD,終値;…`）, last_date, updated_at | 0004 |
 | edinet_docs | code, doc_kind (PK: code+doc_kind。annual/semiannual), doc_id, submitted, period_end, r2_key, progressive_dividend, no_dividend_cut, dividend_raise, doe_target, payout_target, phrases（JSON の文字列配列）, fetched_at | 0007 |
 | sync_state | key (PK。`jq_synced_until`・`edinet_listed_until`), value, updated_at | 0004 |
+| recommendations | date（株価の日付）, rank (PK: date+rank), code, reason, model, created_at | 0008 |
 | batch_runs | run_id (PK), started_at, finished_at, target, succeeded, failed, status（running/succeeded/failed） | 0001 |
 
 索引: indicators_latest の dividend_yield・pbr・payout_ratio・valuation、stocks の kind。
@@ -176,7 +181,6 @@ CloudflareのCron Trigger（`30 9 * * 1-5` = 平日18:30 JST）は呼び出し�
 | alert_settings | user_id (PK), payout_ratio_threshold, op_income_decline_periods, ほか各しきい値 |
 | saved_filters | id, user_id, name, filter_json, is_exclusion, updated_at |
 | notifications | id, user_id, code, kind（警告/売り時）, condition, value, data_date, created_at |
-| recommendations | date, rank, code, reason, created_at |
 
 ## キャッシュ
 

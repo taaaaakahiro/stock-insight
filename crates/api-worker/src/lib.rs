@@ -8,14 +8,18 @@
 //!   GET /api/portfolio              登録した銘柄と売り時のサイン
 //!   PUT /api/portfolio/:code        銘柄を登録
 //!   DELETE /api/portfolio/:code     登録を外す
+//!   GET /api/recommendations        最新日の AIレコメンド（F7）
 //!
 //! 一覧・配当方針・状態は、データの版（最新バッチと EDINET の取り込み）をキーに Cache API へ置く。
 //! D1 の無料枠（読み取り 500万行/日）を画面の操作で使い切らないため。
 //!
 //! Cron Trigger（平日18:30 JST）では、GitHub Actions の日次バッチ（daily-batch.yml）を起動する。
+//! もう1つの Cron（平日21:00 JST）では、その日のバッチが成功していれば Workers AI でレコメンドを作って保存する。
 
+use adapter_cf::ai::WorkersAi;
 use adapter_cf::clerk::{ClerkDirectory, ClerkVerifier};
 use adapter_cf::d1::{D1Indicators, D1Portfolio};
+use adapter_cf::d1_recommend::D1Recommendations;
 use adapter_cf::users::D1Users;
 use domain::access::Access;
 use domain::screening::ScreeningFilter;
@@ -33,6 +37,9 @@ use worker::{
 };
 
 const DB_BINDING: &str = "DB";
+const AI_BINDING: &str = "AI";
+/// wrangler.jsonc の triggers.crons のうち、AIレコメンドを作るほう
+const RECOMMEND_CRON: &str = "0 12 * * 1-5";
 
 /// ブラウザに持たせる時間（一覧・配当方針・状態）
 const BROWSER_CACHE: &str = "private, max-age=300";
@@ -91,9 +98,14 @@ impl AuthConfig {
     }
 }
 
-/// 日次バッチの起動。重複や休場日の判定は GitHub 側（batch-cli should-run）で行う
+/// 日次バッチの起動。重複や休場日の判定は GitHub 側（batch-cli should-run）で行う。
+/// AIレコメンドの Cron はここで分岐する
 #[event(scheduled)]
 async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    if event.cron() == RECOMMEND_CRON {
+        recommend_cron(&env).await;
+        return;
+    }
     let repo = env
         .var("GITHUB_REPO")
         .map(|v| v.to_string())
@@ -122,6 +134,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/api/portfolio", portfolio)
         .put_async("/api/portfolio/:code", portfolio_add)
         .delete_async("/api/portfolio/:code", portfolio_remove)
+        .get_async("/api/recommendations", recommendations)
         .or_else_any_method("/api/*path", |_, _| {
             json_error(404, "not_found", "no such endpoint")
         })
@@ -386,6 +399,48 @@ fn portfolio_result(r: std::result::Result<(), PortfolioError>) -> Result<Respon
             &format!("up to {} stocks", domain::portfolio::MAX_ITEMS),
         ),
         Err(PortfolioError::Port(e)) => internal(&e.0),
+    }
+}
+
+/// F7: その日のバッチが成功していて、まだ結果がなければ AI に上位10銘柄を選ばせて保存する
+async fn recommend_cron(env: &Env) {
+    let (db, ai) = match (env.d1(DB_BINDING), env.ai(AI_BINDING)) {
+        (Ok(db), Ok(ai)) => (db, ai),
+        (Err(e), _) | (_, Err(e)) => {
+            worker::console_error!("cron {RECOMMEND_CRON}: binding: {e}");
+            return;
+        }
+    };
+    let repo = D1Recommendations::new(db);
+    let now = WorkerClock.now_unix();
+    match usecase::recommend::generate(&repo, &WorkersAi::new(ai), now).await {
+        Ok(usecase::recommend::Outcome::Saved { date, picks }) => {
+            worker::console_log!("cron {RECOMMEND_CRON}: saved {picks} recommendations for {date}")
+        }
+        Ok(usecase::recommend::Outcome::Skipped(why)) => {
+            worker::console_log!("cron {RECOMMEND_CRON}: skipped ({why})")
+        }
+        Err(e) => worker::console_error!("cron {RECOMMEND_CRON}: {e}"),
+    }
+}
+
+async fn recommendations(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let repo = D1Recommendations::new(ctx.env.d1(DB_BINDING)?);
+    match usecase::recommend::latest(&repo).await {
+        Ok(day) => json_ok(&json!({
+            "day": day.map(|d| json!({
+                "date": d.date,
+                "model": d.model,
+                "created_at": d.created_at,
+                "rows": d.rows.iter().map(|r| {
+                    let mut v = row_json(&r.stock);
+                    v["rank"] = json!(r.rank);
+                    v["reason"] = json!(r.reason);
+                    v
+                }).collect::<Vec<_>>(),
+            })),
+        })),
+        Err(e) => internal(&e.0),
     }
 }
 

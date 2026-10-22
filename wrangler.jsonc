@@ -38,7 +38,10 @@
     // 日次バッチ（GitHub Actions）のリポジトリ。起動用のトークンは Worker Secret の GITHUB_DISPATCH_TOKEN
     "GITHUB_REPO": "taaaaakahiro/stock-insight"
   },
-  // 平日 18:30 JST（= 09:30 UTC）に日次バッチを起動する。休場日の判定はバッチ側で行う
-  "triggers": { "crons": ["30 9 * * 1-5"] },
+  // AIレコメンド（F7）に使う Workers AI。設定だけで有効になる（ダッシュボードの操作は不要）
+  "ai": { "binding": "AI" },
+  // 平日 18:30 JST（= 09:30 UTC）に日次バッチを起動する。休場日の判定はバッチ側で行う。
+  // 平日 21:00 JST（= 12:00 UTC）はバッチが終わったあとの AIレコメンド（その日のバッチが成功していなければ何もしない）
+  "triggers": { "crons": ["30 9 * * 1-5", "0 12 * * 1-5"] },
   "observability": { "enabled": true }
 }
