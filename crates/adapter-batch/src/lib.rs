@@ -3,6 +3,7 @@
 pub mod d1;
 pub mod edinet;
 pub mod http;
+pub mod ixbrl;
 pub mod jpx;
 pub mod jquants;
 pub mod raw;

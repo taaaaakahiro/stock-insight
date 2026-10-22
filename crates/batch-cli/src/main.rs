@@ -9,6 +9,8 @@
 //!   batch-cli sync-edinet [options]       EDINET から有報・半期報告書（銘柄・種類ごとに最新の1通）を取り、
 //!                                         配当政策などの文章を R2 用に書き出し、配当方針の手がかりを D1 に保存する。
 //!                                         前回の続きから今日まで。初回は過去400日分の書類一覧から
+//!   batch-cli reit-probe [options]        EDINET の REIT の有報から借入金明細と物件一覧を読み、BS・表の合計と
+//!                                         突き合わせて読み取りの精度を出す（D1 には触れない）
 //!   batch-cli compute [--label daily]     保存済みの株価と財務から、全銘柄の指標を計算して保存
 //!   batch-cli should-run [--label daily] [--force]
 //!                                         今日バッチを動かすか（休場日・当日成功済みなら false）。
@@ -30,6 +32,11 @@
 //!   --dry-run <file>        D1 を読み書きせず、--from〜--until の一覧から --limit 件だけ取って SQL と文章を書く
 //!   --limit <n>             --dry-run で取る書類の数（既定 5）
 //!   R2 から消すファイルのキーは {raw-dir}/edinet-delete.txt に1行ずつ書く（ワークフローが消す）
+//!
+//! reit-probe のオプション（--from / --until / --rate / --raw-dir は sync-jq と同じ）:
+//!   --from <YYYY-MM-DD>     書類一覧を読む開始日（既定: 200日前。REIT の決算は半年ごとなので全銘柄が入る）
+//!   --out <file>            読んだ結果の JSON（既定 {raw-dir}/reit-probe.json）
+//!   書類一覧と書類の zip は {raw-dir}/reit/ に置き、次からはそれを使う
 //!
 //! 環境変数（値はリポジトリに書かない）:
 //!   JQUANTS_API_KEY                                          sync-jq で必須
@@ -76,12 +83,13 @@ struct Args {
     raw_dir: String,
     limit: usize,
     refill_prices: bool,
+    out: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     let cmd = it.next().ok_or(
-        "command required: migrate | sync-master | sync-jq | sync-edinet | compute | should-run",
+        "command required: migrate | sync-master | sync-jq | sync-edinet | reit-probe | compute | should-run",
     )?;
     let mut a = Args {
         cmd,
@@ -97,6 +105,7 @@ fn parse_args() -> Result<Args, String> {
         raw_dir: "raw".into(),
         limit: 5,
         refill_prices: false,
+        out: None,
     };
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or(format!("{flag} needs a value"));
@@ -115,6 +124,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--raw-dir" => a.raw_dir = val()?,
             "--limit" => a.limit = val()?.parse().map_err(|_| "bad limit")?,
+            "--out" => a.out = Some(val()?),
             "--label" => {
                 a.label = val()?;
                 if !a.label.chars().all(|c| c.is_ascii_alphanumeric()) {
@@ -157,6 +167,8 @@ async fn main() {
         "sync-master" => sync_master(args).await,
         "sync-jq" => sync_jq(args).await,
         "sync-edinet" => sync_edinet(args).await,
+        "reit-probe" => reit_probe(args).await,
+        "reit-dump" => reit_dump(args),
         "compute" => compute(args).await,
         "should-run" => should_run(args).await,
         other => Err(format!("unknown command: {other}")),
@@ -792,6 +804,308 @@ async fn sync_edinet_dry_run(args: &Args, path: &str) -> Result<(), String> {
         docs.len(),
         plan.fetch.len(),
         args.raw_dir
+    );
+    Ok(())
+}
+
+/// 書類一覧（1日分）。{raw-dir}/reit/list-{日付}.json があればそれを使う
+async fn reit_list_day(
+    ed: &EdinetClient,
+    dir: &std::path::Path,
+    day: Date,
+) -> Result<Vec<adapter_batch::edinet::ReitDocRef>, String> {
+    let path = dir.join(format!("list-{day}.json"));
+    if let Ok(body) = std::fs::read(&path) {
+        let v: Vec<(String, String, String, String, Option<String>)> =
+            serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+        return Ok(v
+            .into_iter()
+            .filter_map(|(doc_id, edinet_code, filer_name, sub, pe)| {
+                Some(adapter_batch::edinet::ReitDocRef {
+                    doc_id,
+                    edinet_code,
+                    filer_name,
+                    submitted: Date::parse(&sub)?,
+                    period_end: pe.as_deref().and_then(Date::parse),
+                })
+            })
+            .collect());
+    }
+    let docs = ed
+        .list_reit_day(day)
+        .await
+        .map_err(|e| format!("{day} list: {}", e.0))?;
+    let v: Vec<_> = docs
+        .iter()
+        .map(|d| {
+            (
+                &d.doc_id,
+                &d.edinet_code,
+                &d.filer_name,
+                d.submitted.to_string(),
+                d.period_end.map(|p| p.to_string()),
+            )
+        })
+        .collect();
+    std::fs::write(&path, serde_json::to_vec(&v).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    Ok(docs)
+}
+
+/// 読めた額と答え（BS・合計行）の比べ方: 一致 / 端数（0.1% 以内。百万円未満の切り捨てが行の数だけ積もるなど）/ ずれ
+fn agree(got: f64, want: f64) -> &'static str {
+    if (got - want).abs() < 0.5 {
+        "一致"
+    } else if want != 0.0 && ((got - want) / want).abs() <= 0.001 {
+        "端数"
+    } else {
+        "ずれ"
+    }
+}
+
+async fn reit_probe(args: Args) -> Result<(), String> {
+    use domain::reit::{rate_mix, LoanKind};
+    let ed = EdinetClient::new(http::client(), env("EDINET_API_KEY")?, args.rate);
+    let today = Date::from_unix_jst(SystemClock.now_unix());
+    let until = args.until.unwrap_or(today);
+    let from = args.from.unwrap_or(until.add_days(-200));
+    let dir = PathBuf::from(&args.raw_dir).join("reit");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    // 1. 書類一覧から、投資法人ごとに最新の有報
+    let mut latest: HashMap<String, adapter_batch::edinet::ReitDocRef> = HashMap::new();
+    for day in usecase::fins::weekdays(from, until) {
+        for d in reit_list_day(&ed, &dir, day).await? {
+            let newer = latest
+                .get(&d.edinet_code)
+                .is_none_or(|old| old.submitted < d.submitted);
+            if newer {
+                latest.insert(d.edinet_code.clone(), d);
+            }
+        }
+    }
+    let mut docs: Vec<_> = latest.into_values().collect();
+    docs.sort_by(|a, b| a.edinet_code.cmp(&b.edinet_code));
+    println!("reit-probe: {} reports ({from}..{until})", docs.len());
+
+    // 2. 書類ごとに読んで突き合わせる
+    let mut out = vec![];
+    let mut tally: HashMap<&str, usize> = HashMap::new();
+    for d in &docs {
+        let path = dir.join(format!("{}.zip", d.doc_id));
+        let zip = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => {
+                let b = ed
+                    .fetch_ixbrl_zip(&d.doc_id)
+                    .await
+                    .map_err(|e| format!("{}: {}", d.doc_id, e.0))?;
+                std::fs::write(&path, &b).map_err(|e| e.to_string())?;
+                b
+            }
+        };
+        let r = match adapter_batch::edinet::read_reit_report(&zip) {
+            Ok(r) => r,
+            Err(e) => {
+                println!("{} {} 読めない: {}", d.edinet_code, d.filer_name, e.0);
+                *tally.entry("読めない").or_default() += 1;
+                continue;
+            }
+        };
+        let sum = |k: Option<LoanKind>| {
+            r.debt
+                .loans
+                .iter()
+                .filter(|l| l.kind == k)
+                .map(|l| l.balance_yen)
+                .sum::<i64>()
+        };
+        let (short, long, nokind) = (
+            sum(Some(LoanKind::Short)),
+            sum(Some(LoanKind::Long)),
+            sum(None),
+        );
+        let bs_loans = r.balance.short_loans + r.balance.long_loans;
+        let loans_total = short + long + nokind;
+        let total_check = if r.debt.loans.is_empty() {
+            "明細なし"
+        } else {
+            agree(loans_total as f64, bs_loans as f64)
+        };
+        let kind_check = if nokind > 0 {
+            "区分不明あり"
+        } else if agree(short as f64, r.balance.short_loans as f64) == "ずれ" {
+            "短期長期ずれ"
+        } else {
+            "区分OK"
+        };
+        let mix = rate_mix(&r.debt, r.balance.bonds);
+        let debt_all = (mix.fixed
+            + mix.swap_fixed
+            + mix.swap_amount_only
+            + mix.floating
+            + mix.unknown
+            + mix.bonds)
+            .max(1) as f64;
+        let pct = |v: i64| (v as f64 / debt_all * 1000.0).round() / 10.0;
+        let leasable: f64 = r.properties.iter().map(|p| p.leasable_m2).sum();
+        let prop_check = match (&r.property_total, r.properties.is_empty()) {
+            (_, true) => "物件なし",
+            (Some(t), false) => match agree(leasable, t.leasable_m2) {
+                "ずれ" if ((leasable - t.leasable_m2) / t.leasable_m2).abs() <= 0.001 => "端数",
+                a => a,
+            },
+            (None, false) => "合計行なし",
+        };
+        let occ_off = r
+            .properties
+            .iter()
+            .filter(|p| !p.occupancy_computed)
+            .filter(|p| match (p.leased_m2, p.occupancy_pct) {
+                (Some(l), Some(o)) if p.leasable_m2 > 0.0 => {
+                    (l / p.leasable_m2 * 100.0 - o).abs() > 0.15
+                }
+                _ => false,
+            })
+            .count();
+        let rents = r
+            .properties
+            .iter()
+            .filter(|p| p.annual_rent_yen.is_some())
+            .count();
+        for k in [total_check, kind_check, prop_check] {
+            *tally.entry(k).or_default() += 1;
+        }
+        if mix.unknown == 0 && mix.swap_amount_only == 0 {
+            *tally.entry("金利の種類が全額わかる").or_default() += 1;
+        }
+        println!(
+            "{} {:<6} {:<28} 借入 {:>3}件 {} {} | 固定 {}% スワップ {}%(額のみ {}%) 変動 {}% 記載なし {}% 債 {}% | 物件 {:>3}件 {} 稼働率ずれ {} 賃料 {}件{}",
+            d.edinet_code,
+            r.code.as_deref().unwrap_or("-"),
+            d.filer_name,
+            r.debt.loans.len(),
+            total_check,
+            kind_check,
+            pct(mix.fixed),
+            pct(mix.swap_fixed + mix.swap_amount_only),
+            pct(mix.swap_amount_only),
+            pct(mix.floating),
+            pct(mix.unknown),
+            pct(mix.bonds),
+            r.properties.len(),
+            prop_check,
+            occ_off,
+            rents,
+            if r.debt.rate_notes.is_empty() { String::new() } else { format!(" 注記[{}]", r.debt.rate_notes.join(", ")) },
+        );
+        out.push(serde_json::json!({
+            "edinet_code": d.edinet_code,
+            "code": r.code,
+            "name": d.filer_name,
+            "doc_id": d.doc_id,
+            "submitted": d.submitted.to_string(),
+            "period_end": d.period_end.map(|p| p.to_string()),
+            "checks": { "loans": total_check, "kind": kind_check, "properties": prop_check, "occupancy_off": occ_off },
+            "balance": { "short_loans": r.balance.short_loans, "long_loans": r.balance.long_loans, "bonds": r.balance.bonds },
+            "loans_total": loans_total,
+            "table_total": r.debt.table_total_yen,
+            "swap": r.debt.swap_yen,
+            "rate_mix": { "fixed": mix.fixed, "swap_fixed": mix.swap_fixed, "swap_amount_only": mix.swap_amount_only, "floating": mix.floating, "unknown": mix.unknown, "bonds": mix.bonds },
+            "rate_notes": r.debt.rate_notes,
+            "ladder": r.debt.ladder.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect::<serde_json::Map<_, _>>(),
+            "loans": r.debt.loans.iter().map(|l| serde_json::json!({
+                "kind": l.kind.map(|k| format!("{k:?}")), "lender": l.lender, "balance": l.balance_yen,
+                "rate": l.rate_pct, "due": l.due.map(|d| d.to_string()), "rate_type": l.rate_type.map(|t| format!("{t:?}")),
+            })).collect::<Vec<_>>(),
+            "properties": r.properties.iter().map(|p| serde_json::json!({
+                "id": p.id, "name": p.name, "leasable": p.leasable_m2, "leased": p.leased_m2,
+                "occupancy": p.occupancy_pct, "occupancy_computed": p.occupancy_computed,
+                "rent": p.annual_rent_yen, "rent_raw": p.rent_raw,
+            })).collect::<Vec<_>>(),
+            "property_total": r.property_total.as_ref().map(|t| serde_json::json!({ "leasable": t.leasable_m2, "leased": t.leased_m2 })),
+        }));
+    }
+    let path = args
+        .out
+        .clone()
+        .unwrap_or(format!("{}/reit-probe.json", args.raw_dir));
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&out).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut t: Vec<_> = tally.into_iter().collect();
+    t.sort();
+    println!(
+        "summary ({} reports): {}",
+        out.len(),
+        t.iter()
+            .map(|(k, v)| format!("{k} {v}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!("-> {path}");
+    Ok(())
+}
+
+/// 調べる用: --from-file の zip の借入金明細表と注記を出す（--limit 行まで。既定 5 は少ないので大きめに）。
+/// --label props なら、ファンドの状況の部分で見出しに 賃貸可能面積・稼働率 を含む表を、直前の文の末尾と一緒に出す
+fn reit_dump(args: Args) -> Result<(), String> {
+    let path = args.from_file.ok_or("--from-file <zip> required")?;
+    let zip = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let (fund, accounts) = adapter_batch::edinet::reit_blocks(&zip).map_err(|e| e.0)?;
+    if args.label == "props" {
+        let mut prev = String::new();
+        for (i, b) in fund.iter().enumerate() {
+            match b {
+                domain::reit::Block::Text(t) => {
+                    prev = t
+                        .chars()
+                        .rev()
+                        .take(80)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect()
+                }
+                domain::reit::Block::Table(t, _) => {
+                    let head: String = t.iter().take(3).flatten().cloned().collect();
+                    if head.contains("賃貸可能面積")
+                        || head.contains("稼働率")
+                        || head.contains("賃貸面積")
+                    {
+                        println!(
+                            "--- block {i} ({} rows, {} cols) prev: …{prev}",
+                            t.len(),
+                            t.iter().map(|r| r.len()).max().unwrap_or(0)
+                        );
+                        for r in t.iter().take(args.limit) {
+                            println!("{}", r.join(" | "));
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+    let (tables, notes, unit) = domain::reit::loan_tables(&accounts);
+    println!("unit {unit:?}, {} tables", tables.len());
+    for (i, (t, flags)) in tables.iter().enumerate() {
+        println!("--- table {i} ({} rows)", t.len());
+        for (r, f) in t.iter().zip(flags.iter()).take(args.limit) {
+            // 縦の結合の続きのマスは ^ を付ける
+            let cells: Vec<String> = r
+                .iter()
+                .zip(f)
+                .map(|(c, cont)| if *cont { format!("^{c}") } else { c.clone() })
+                .collect();
+            println!("{}", cells.join(" | "));
+        }
+    }
+    println!(
+        "--- notes: {}",
+        notes.chars().take(1500).collect::<String>()
     );
     Ok(())
 }
