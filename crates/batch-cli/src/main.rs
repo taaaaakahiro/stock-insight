@@ -29,6 +29,9 @@
 //!   --raw-dir <dir>         J-Quants の応答を全項目そのまま gzip JSON で置く場所（既定 raw。あとで R2 に上げる）
 //!   --refill-prices         取り込み済みの期間の株価（終値）も取り直して履歴を埋める（財務と進み具合はそのまま）。
 //!                           範囲は --from から（既定: 5年前）。新しい日の生データだけを --raw-dir に書く
+//!   --refill-forecasts      取り込み済みの期間の決算短信を読み直し、会社予想の配当（dividend_forecasts）だけを
+//!                           埋める（年次・四半期の財務、進み具合、R2 の生データはそのまま）。範囲は --from から
+//!                           （既定: 1年前）
 //!
 //! sync-edinet のオプション（--from / --until / --rate / --max-minutes / --raw-dir は sync-jq と同じ）:
 //!   --dry-run <file>        D1 を読み書きせず、--from〜--until の一覧から --limit 件だけ取って SQL と文章を書く
@@ -92,6 +95,7 @@ struct Args {
     limit: usize,
     refill_prices: bool,
     refetch_doe: bool,
+    refill_forecasts: bool,
     out: Option<String>,
 }
 
@@ -115,6 +119,7 @@ fn parse_args() -> Result<Args, String> {
         limit: 5,
         refill_prices: false,
         refetch_doe: false,
+        refill_forecasts: false,
         out: None,
     };
     while let Some(flag) = it.next() {
@@ -126,6 +131,7 @@ fn parse_args() -> Result<Args, String> {
             "--force" => a.force = true,
             "--refill-prices" => a.refill_prices = true,
             "--refetch-doe" => a.refetch_doe = true,
+            "--refill-forecasts" => a.refill_forecasts = true,
             "--from" => a.from = Some(date(val()?)?),
             "--until" => a.until = Some(date(val()?)?),
             "--rate" => a.rate = val()?.parse().map_err(|_| "bad rate")?,
@@ -337,6 +343,8 @@ const CURSOR_KEY: &str = "jq_synced_until";
 const BACKFILL_DAYS: i64 = 5 * 365;
 /// 夕方以降の開示を取りこぼさないよう、財務は直近この日数を毎回取り直す
 const REFETCH_FIN_DAYS: i64 = 3;
+/// --refill-forecasts で読み直す既定の期間。決算短信は3か月ごとなので、1年あれば各社の最新の予想が入る
+const FORECAST_REFILL_DAYS: i64 = 366;
 
 /// まだ D1 に書いていない取得結果
 #[derive(Default)]
@@ -377,7 +385,21 @@ async fn sync_jq(args: Args) -> Result<(), String> {
     let refill_from = (args.refill_prices && cursor.is_some())
         .then(|| args.from.unwrap_or(today.add_days(-BACKFILL_DAYS)))
         .filter(|&r| r < start);
-    let days = usecase::fins::weekdays(fin_start.min(refill_from.unwrap_or(fin_start)), until);
+    // 予想の配当を取り始める前（dividend_forecasts を足す前）の決算短信から、予想だけを読み直す
+    let forecast_from = (args.refill_forecasts && cursor.is_some())
+        .then(|| args.from.unwrap_or(today.add_days(-FORECAST_REFILL_DAYS)))
+        .filter(|&f| f < fin_start);
+    let first = [refill_from, forecast_from]
+        .into_iter()
+        .flatten()
+        .fold(fin_start, Date::min);
+    let days = usecase::fins::weekdays(first, until);
+    if let Some(f) = forecast_from {
+        println!(
+            "sync-jq: dividend forecasts {f}..{} (refill)",
+            fin_start.add_days(-1)
+        );
+    }
     match refill_from {
         Some(r) => println!(
             "sync-jq: prices {start}..{until} (refill from {r}), financials {fin_start}..{until} ({} weekdays)",
@@ -449,6 +471,17 @@ async fn sync_jq(args: Args) -> Result<(), String> {
             }
             pending.annuals.extend(annuals);
             pending.periods.extend(periods);
+        } else if forecast_from.is_some_and(|f| day >= f) {
+            // 前に取り込んだ日なので、財務と生データはそのまま。予想の配当だけを足す
+            let rows = jq
+                .summaries_on(day)
+                .await
+                .map_err(|e| format!("{day} forecasts: {}", e.0))?;
+            let forecasts = jquants::forecast_reports(&rows);
+            if !forecasts.is_empty() {
+                println!("{day}: {} dividend forecasts (refill)", forecasts.len());
+            }
+            pending.forecasts.extend(forecasts);
         }
         if day >= start {
             done_until = Some(day);

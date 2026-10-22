@@ -116,6 +116,7 @@ CloudflareのCron Trigger（`30 9 * * 1-5` = 平日18:30 JST）は呼び出し�
 | `max_minutes` | 300 | 取り込みの時間の上限（分）。過ぎたらそこまでを保存し、次回は続きから |
 | `persist_every` | 1500 | 何日分ごとに D1 へ保存するか |
 | `refill_prices` | false | 取り込み済みの過去5年分の株価も取り直して `price_history` を埋める（`sync-jq --refill-prices`）。財務と `sync_state` は変えない |
+| `refill_forecasts` | false | 取り込み済みの直近1年の決算短信を読み直し、会社予想の配当（`dividend_forecasts`）だけを埋める（`sync-jq --refill-forecasts`）。年次・四半期の財務、`sync_state`、R2 の生データは変えない |
 
 ### 日次バッチのステップ
 
@@ -133,6 +134,7 @@ CloudflareのCron Trigger（`30 9 * * 1-5` = 平日18:30 JST）は呼び出し�
    - 呼び出しは1分あたり `--rate` 回まで（Light は60）。429・5xx・通信エラーは指数バックオフで最大3回再試行し、J-Quants の 429 はさらに1分待って2回まで試す
    - 日足の `AdjFactor` が 1 でない日を株式分割・併合として `splits` に残す（取り直しの日も含む）
    - `--refill-prices` のときは、`--from`（既定は5年前）から前回の続きの前日までの株価も取り直して履歴に足す（同じ日付は上書き）。取り直した日の生データは R2 に上げ直さず、財務も取り直さない
+   - `--refill-forecasts` のときは、`--from`（既定は1年前）から財務の取り直しの前日までの決算短信を読み、予想の配当の行だけを `dividend_forecasts` に足す（同じ開示はキーで上書き）。予想を取り込み始める前（2026-10-19 より前）に開示した会社の予想を埋めるためのもの
    - 終値の履歴は直近5年＋1か月（`KEEP_DAYS`）を超えた分を捨てる
    - D1 への保存は `--persist-every` 日分ごと（既定では最後に1回）。保存のたびに全銘柄の `price_history` を書き直すので、回数は少なくする
    - 応答の全項目を `raw/bars/<日付>.json.gz`・`raw/fins/<日付>.json.gz` に書き出す
