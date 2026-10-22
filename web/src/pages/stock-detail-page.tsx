@@ -16,6 +16,7 @@ import { type AnnualRow, ApiError, apiGet, type QuarterRow, type StockDetail } f
 import { useAuthState } from "@/lib/auth";
 import { type Kind, metricLabel } from "@/lib/filters";
 import { count, growth, jstDateTime, oku, pct, times, yen, yen1, ymd } from "@/lib/format";
+import { groupByQuarter } from "@/lib/quarters";
 import { backToList } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
@@ -169,10 +170,10 @@ function Detail({ d }: { d: StockDetail }) {
       {stock && (
         <section aria-labelledby="quarters">
           <h3 id="quarters" className="mb-2 text-sm">
-            四半期ごとの損益（単独、最大20四半期）
+            四半期ごとの損益（単独、同じ四半期ごと・最大20四半期）
           </h3>
           <p className="mb-2 text-xs text-muted-foreground">
-            決算短信の累計値の差分。前の四半期の開示がない期間は「—」。
+            決算短信の累計値の差分。前の四半期の開示がない期間は「—」。下の段は前年度の同じ四半期との比較で、前年が赤字・ゼロのときは「—」。
           </p>
           {d.quarters.length > 0 ? (
             <QuarterTable rows={d.quarters} />
@@ -230,44 +231,73 @@ function AnnualTable({ rows, divWord }: { rows: AnnualRow[]; divWord: string }) 
   );
 }
 
-function QuarterTable({ rows }: { rows: QuarterRow[] }) {
-  // 新しい四半期を上に
-  const list = [...rows].reverse();
+const QUARTER_METRICS: {
+  label: string;
+  value: (q: QuarterRow) => number | null;
+  growth: (q: QuarterRow) => number | null;
+}[] = [
+  { label: "売上高", value: (q) => q.net_sales, growth: (q) => q.sales_growth },
+  { label: "営業利益", value: (q) => q.operating_income, growth: (q) => q.operating_growth },
+  { label: "経常利益", value: (q) => q.ordinary_income, growth: (q) => q.ordinary_growth },
+  { label: "純利益", value: (q) => q.net_income, growth: (q) => q.net_growth },
+];
+
+function Growth({ ratio }: { ratio: number | null }) {
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>期末</TableHead>
-          <TableHead>四半期</TableHead>
-          <TableHead className="text-right">売上高</TableHead>
-          <TableHead className="text-right">営業利益</TableHead>
-          <TableHead className="text-right">経常利益</TableHead>
-          <TableHead className="text-right">純利益</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {list.map((q) => (
-          <TableRow key={`${q.fiscal_year_end}-${q.quarter}`}>
-            <TableCell>{ymd(q.period_end)}</TableCell>
-            <TableCell className="text-muted-foreground">
-              {q.fiscal_year_end.slice(0, 4)}年度 Q{q.quarter}
-            </TableCell>
-            <TableCell className="text-right tabular-nums">
-              <Money v={q.net_sales} />
-            </TableCell>
-            <TableCell className="text-right tabular-nums">
-              <Money v={q.operating_income} />
-            </TableCell>
-            <TableCell className="text-right tabular-nums">
-              <Money v={q.ordinary_income} />
-            </TableCell>
-            <TableCell className="text-right tabular-nums">
-              <Money v={q.net_income} />
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+    <span
+      className={cn(
+        "block text-xs",
+        ratio == null && "text-muted-foreground",
+        ratio != null && ratio > 0 && "text-good",
+        ratio != null && ratio < 0 && "text-bad",
+      )}
+    >
+      {growth(ratio)}
+    </span>
+  );
+}
+
+/** 同じ四半期（1Q〜4Q）ごとに年度を並べ、各値の下に前年同期比を出す */
+function QuarterTable({ rows }: { rows: QuarterRow[] }) {
+  return (
+    <div className="flex flex-col gap-4">
+      {groupByQuarter(rows).map((g) => (
+        <section key={g.quarter} aria-label={`Q${g.quarter}`}>
+          <h4 className="mb-1 text-sm font-medium">Q{g.quarter}</h4>
+          {/* Q1〜Q4 の表で列の位置をそろえる */}
+          <Table className="min-w-[32rem] table-fixed">
+            <TableHeader>
+              <TableRow>
+                <TableHead>年度</TableHead>
+                {QUARTER_METRICS.map((m) => (
+                  <TableHead key={m.label} className="text-right">
+                    {m.label}
+                  </TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {g.rows.map((q) => (
+                <TableRow key={q.fiscal_year_end}>
+                  <TableCell>
+                    {q.fiscal_year_end.slice(0, 4)}年度
+                    <span className="block text-xs text-muted-foreground">
+                      〜{ymd(q.period_end)}
+                    </span>
+                  </TableCell>
+                  {QUARTER_METRICS.map((m) => (
+                    <TableCell key={m.label} className="text-right tabular-nums">
+                      <Money v={m.value(q)} />
+                      <Growth ratio={m.growth(q)} />
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </section>
+      ))}
+    </div>
   );
 }
 

@@ -80,6 +80,11 @@ export type QuarterRow = {
   operating_income: number | null;
   ordinary_income: number | null;
   net_income: number | null;
+  /** 前年度の同じ四半期からの伸び率（前年がない・赤字・ゼロなら null） */
+  sales_growth: number | null;
+  operating_growth: number | null;
+  ordinary_growth: number | null;
+  net_growth: number | null;
 };
 export type StockDetail = {
   stock: StockRow;

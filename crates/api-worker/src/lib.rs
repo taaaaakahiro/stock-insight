@@ -481,15 +481,22 @@ fn detail_json(d: &StockDetail) -> Value {
             "payout_ratio": ratio(y.dps, y.eps),
             "operating_margin": ratio(y.operating_income, y.net_sales),
         })).collect::<Vec<_>>(),
-        "quarters": d.quarters.iter().map(|q| json!({
-            "fiscal_year_end": q.fiscal_year_end.to_string(),
-            "quarter": q.quarter,
-            "period_end": q.period_end.to_string(),
-            "net_sales": q.net_sales,
-            "operating_income": q.operating_income,
-            "ordinary_income": q.ordinary_income,
-            "net_income": q.net_income,
-        })).collect::<Vec<_>>(),
+        "quarters": d.quarters.iter().map(|g| {
+            let q = &g.result;
+            json!({
+                "fiscal_year_end": q.fiscal_year_end.to_string(),
+                "quarter": q.quarter,
+                "period_end": q.period_end.to_string(),
+                "net_sales": q.net_sales,
+                "operating_income": q.operating_income,
+                "ordinary_income": q.ordinary_income,
+                "net_income": q.net_income,
+                "sales_growth": g.sales_growth,
+                "operating_growth": g.operating_growth,
+                "ordinary_growth": g.ordinary_growth,
+                "net_growth": g.net_growth,
+            })
+        }).collect::<Vec<_>>(),
         "yield_series": d.yield_series.iter().map(|(dt, y)| json!([dt.to_string(), y])).collect::<Vec<_>>(),
         "price_series": d.price_series.iter().map(|b| json!([b.date.to_string(), b.close])).collect::<Vec<_>>(),
         "latest_disclosed": d.latest_disclosed.map(|d| d.to_string()),
