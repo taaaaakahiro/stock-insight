@@ -119,7 +119,10 @@ function Detail({ d }: { d: StockDetail }) {
             1株{divWord}は増えているか・増配の余地はあるか（本決算、最大5期）
           </h3>
           {d.annual.some((r) => r.dps != null) ? (
-            <DpsChart rows={d.annual} divWord={divWord} />
+            <>
+              <DpsChart rows={d.annual} divWord={divWord} />
+              <PayoutChart rows={d.annual} divWord={divWord} />
+            </>
           ) : (
             <p className="text-sm text-muted-foreground">
               1株{divWord}の開示がまだ取り込まれていません。
@@ -272,7 +275,7 @@ function QuarterTable({ rows }: { rows: QuarterRow[] }) {
 const fiscalMonth = (p: string | null | undefined) => (p ? p.slice(0, 7).replace("-", "/") : "—");
 
 const BAR_H = 240;
-const BAR_PAD = { top: 22, bottom: 56 };
+const BAR_PAD = { top: 22, bottom: 40 };
 
 /**
  * 1株配当の棒グラフ。後ろの枠は1株利益（EPS）で、枠と棒のすき間が増配の余地。
@@ -316,9 +319,6 @@ function DpsChart({ rows, divWord }: { rows: AnnualRow[]; divWord: string }) {
         <text x={PAD.left - 8} y={base + 31} textAnchor="end" className="fill-muted-foreground">
           前期比
         </text>
-        <text x={PAD.left - 8} y={base + 47} textAnchor="end" className="fill-muted-foreground">
-          {divWord}性向
-        </text>
         {list.map((r, i) => {
           const cx = PAD.left + slot * (i + 0.5);
           const h = height(r.dps);
@@ -349,7 +349,13 @@ function DpsChart({ rows, divWord }: { rows: AnnualRow[]; divWord: string }) {
                 />
               )}
               {eh > 0 && (
-                <text x={cx} y={base - eh - 6} textAnchor="middle" className="fill-cheap">
+                // 利益と配当が近い期は、配当のラベルと重ならないよう上へずらす
+                <text
+                  x={cx}
+                  y={Math.min(base - eh - 6, base - h - 22)}
+                  textAnchor="middle"
+                  className="fill-cheap"
+                >
                   利益 {yen1(r.eps)}
                 </text>
               )}
@@ -367,9 +373,6 @@ function DpsChart({ rows, divWord }: { rows: AnnualRow[]; divWord: string }) {
               >
                 {growth(g)}
               </text>
-              <text x={cx} y={base + 47} textAnchor="middle" className="fill-muted-foreground">
-                {pct(r.payout_ratio, 0)}
-              </text>
             </g>
           );
         })}
@@ -380,6 +383,106 @@ function DpsChart({ rows, divWord }: { rows: AnnualRow[]; divWord: string }) {
         前の期より減った期は赤。
         {total != null && ` ${fiscalMonth(first?.period_end)}期から直近まで ${growth(total)}。`}
       </figcaption>
+    </figure>
+  );
+}
+
+/** 配当性向の目安の線。50% を超えると注意、60% を超えると配当が重い */
+const PAYOUT_LINES = [
+  { v: 0.5, cls: "warning" },
+  { v: 0.6, cls: "expensive" },
+] as const;
+const payoutClass = (v: number | null, deficit: boolean) =>
+  deficit || (v != null && v > 0.6)
+    ? "fill-expensive"
+    : v != null && v > 0.5
+      ? "fill-warning"
+      : "fill-foreground";
+const PAYOUT_H = 170;
+const PAYOUT_PAD = { top: 22, bottom: 26 };
+
+/**
+ * 配当性向（1株配当 ÷ 1株利益）の推移。DpsChart と同じ横位置に期を並べる。
+ * 50%・60% に線を引き、60% 超は赤・50% 超は注意の色。利益がマイナスで配当を出した期は「赤字」と出す
+ */
+function PayoutChart({ rows, divWord }: { rows: AnnualRow[]; divWord: string }) {
+  const list = [...rows].reverse();
+  const top = Math.max(1, ...list.map((r) => r.payout_ratio ?? 0));
+  const slot = (W - PAD.left - PAD.right) / list.length;
+  const plotH = PAYOUT_H - PAYOUT_PAD.top - PAYOUT_PAD.bottom;
+  const base = PAYOUT_H - PAYOUT_PAD.bottom;
+  const y = (v: number) => base - (plotH * Math.min(v, top)) / top;
+  const pts = list.map((r, i) => ({
+    r,
+    cx: PAD.left + slot * (i + 0.5),
+    v: r.payout_ratio,
+    deficit: r.payout_ratio == null && r.eps != null && r.eps <= 0 && (r.dps ?? 0) > 0,
+  }));
+  const path = pts
+    .filter((p) => p.v != null)
+    .map((p, i) => `${i ? "L" : "M"}${p.cx.toFixed(1)},${y(p.v ?? 0).toFixed(1)}`)
+    .join(" ");
+  const latest = list.at(-1);
+  return (
+    <figure className="mt-4">
+      <figcaption className="mb-1 text-sm">{divWord}性向の推移</figcaption>
+      <svg
+        viewBox={`0 0 ${W} ${PAYOUT_H}`}
+        role="img"
+        aria-label={`${divWord}性向の推移。${pts
+          .map((p) => `${fiscalMonth(p.r.period_end)}期 ${p.deficit ? "赤字" : pct(p.v, 0)}`)
+          .join("、")}`}
+        className="h-auto w-full text-xs"
+      >
+        {PAYOUT_LINES.map((l) => (
+          <g key={l.v}>
+            <line
+              x1={PAD.left}
+              x2={W - PAD.right}
+              y1={y(l.v)}
+              y2={y(l.v)}
+              className={l.cls === "warning" ? "stroke-warning" : "stroke-expensive"}
+              strokeDasharray="4 3"
+            />
+            <text
+              x={PAD.left - 8}
+              y={y(l.v) + 4}
+              textAnchor="end"
+              className={l.cls === "warning" ? "fill-warning" : "fill-expensive"}
+            >
+              {pct(l.v, 0)}
+            </text>
+          </g>
+        ))}
+        <text x={PAD.left - 8} y={base + 4} textAnchor="end" className="fill-muted-foreground">
+          0%
+        </text>
+        <line x1={PAD.left} x2={W - PAD.right} y1={base} y2={base} className="stroke-border" />
+        <path d={path} fill="none" className="stroke-foreground" strokeWidth={1.5} />
+        {pts.map((p) => {
+          const cls = payoutClass(p.v, p.deficit);
+          return (
+            <g key={p.r.period_end ?? p.cx}>
+              {p.v != null && <circle cx={p.cx} cy={y(p.v)} r={4} className={cls} />}
+              <text
+                x={p.cx}
+                y={p.v != null ? y(p.v) - 9 : base - 9}
+                textAnchor="middle"
+                className={cls}
+              >
+                {p.deficit ? "赤字" : pct(p.v, 0)}
+              </text>
+              <text x={p.cx} y={base + 16} textAnchor="middle" className="fill-muted-foreground">
+                {fiscalMonth(p.r.period_end)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {`利益のうち${divWord}に回した割合。低いほど増配の余地がある。50% を超えると注意（黄）、60% を超えると利益に対して${divWord}が重い（赤）。`}
+        直近は {latest?.payout_ratio != null ? pct(latest.payout_ratio, 1) : "—"}。
+      </p>
     </figure>
   );
 }
