@@ -2,6 +2,7 @@ import { ArrowLeft } from "lucide-react";
 import { useEffect, useState } from "react";
 import { DocPreview } from "@/components/doc-preview";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
+import { ReitDebt } from "@/components/reit-debt";
 import { DividendAmount, Flags } from "@/components/results-table";
 import { Button } from "@/components/ui/button";
 import {
@@ -114,6 +115,8 @@ function Detail({ d }: { d: StockDetail }) {
           {jstDateTime(s.fetched_at)}。
         </p>
       </header>
+
+      {kind === "reit" && <ReitDebt code={s.code} />}
 
       {kind !== "etf" && (
         <section aria-labelledby="dps-chart">

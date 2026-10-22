@@ -1,5 +1,6 @@
 //! D1（SQLite）に書き込むSQL文の組み立て。値は必ずプレースホルダで渡す。
 
+use crate::edinet::ReitRecord;
 use domain::analysis::PeriodType;
 use domain::split::Split;
 use domain::stock_master::ListedStock;
@@ -398,6 +399,149 @@ pub fn edinet_docs_stmts(docs: &[EdinetDoc], fetched_at: i64) -> Vec<Stmt> {
     )
 }
 
+/// REIT の最新の要約。同じ銘柄のもっと新しい期がすでにあれば上書きしない（古い書類から順に取り込むため）
+pub fn reit_profile_stmt(r: &ReitRecord, sector: Option<&str>, fetched_at: i64) -> Stmt {
+    let (b, m, d, p) = (&r.report.balance, &r.mix, &r.debt, &r.portfolio);
+    let checks = serde_json::json!({ "loans": r.checks.loans, "properties": r.checks.properties })
+        .to_string();
+    let cols = [
+        "code",
+        "doc_id",
+        "submitted",
+        "period_end",
+        "sector",
+        "short_loans",
+        "long_loans",
+        "bonds",
+        "rate_fixed",
+        "rate_swap_fixed",
+        "rate_swap_amount",
+        "rate_floating",
+        "rate_unknown",
+        "swap_notional",
+        "avg_rate",
+        "avg_years",
+        "reprice_1y",
+        "reprice_1y_max",
+        "property_count",
+        "leasable_m2",
+        "leased_m2",
+        "occupancy",
+        "checks",
+        "fetched_at",
+    ];
+    let update: Vec<String> = cols[1..]
+        .iter()
+        .map(|c| format!("{c} = excluded.{c}"))
+        .collect();
+    Stmt {
+        sql: format!(
+            "INSERT INTO reit_profile ({}) VALUES ({}) ON CONFLICT(code) DO UPDATE SET {} \
+             WHERE excluded.period_end >= reit_profile.period_end",
+            cols.join(", "),
+            vec!["?"; cols.len()].join(", "),
+            update.join(", ")
+        ),
+        params: vec![
+            Val::Text(r.code.clone()),
+            Val::Text(r.doc.doc_id.clone()),
+            Val::Text(r.doc.submitted.to_string()),
+            Val::Text(r.period_end.to_string()),
+            sector.map_or(Val::Null, |s| Val::Text(s.into())),
+            Val::Int(b.short_loans),
+            Val::Int(b.long_loans),
+            Val::Int(b.bonds),
+            Val::Int(m.fixed),
+            Val::Int(m.swap_fixed),
+            Val::Int(m.swap_amount_only),
+            Val::Int(m.floating),
+            Val::Int(m.unknown),
+            r.report.debt.swap_yen.map_or(Val::Null, Val::Int),
+            Val::opt_f(d.avg_rate_pct),
+            Val::opt_f(d.avg_years),
+            Val::Int(d.reprice_1y),
+            Val::Int(d.reprice_1y_max),
+            Val::Int(p.property_count as i64),
+            Val::opt_f((p.property_count > 0).then_some(p.leasable_m2)),
+            Val::opt_f((p.property_count > 0).then_some(p.leased_m2)),
+            Val::opt_f(p.occupancy_pct),
+            Val::Text(checks),
+            Val::Int(fetched_at),
+        ],
+    }
+}
+
+/// REIT の最新の明細（JSON 1つ）。要約と同じく新しい期だけで上書きする
+pub fn reit_detail_stmt(r: &ReitRecord, body: &serde_json::Value, fetched_at: i64) -> Stmt {
+    Stmt {
+        sql: "INSERT INTO reit_detail (code, period_end, body, fetched_at) VALUES (?, ?, ?, ?) \
+              ON CONFLICT(code) DO UPDATE SET period_end = excluded.period_end, body = excluded.body, \
+              fetched_at = excluded.fetched_at WHERE excluded.period_end >= reit_detail.period_end"
+            .into(),
+        params: vec![
+            Val::Text(r.code.clone()),
+            Val::Text(r.period_end.to_string()),
+            Val::Text(body.to_string()),
+            Val::Int(fetched_at),
+        ],
+    }
+}
+
+/// REIT の決算ごとの要約
+pub fn reit_history_stmt(r: &ReitRecord, fetched_at: i64) -> Stmt {
+    let loans: i64 = r.report.debt.loans.iter().map(|l| l.balance_yen).sum();
+    let p = &r.portfolio;
+    Stmt {
+        sql: "INSERT INTO reit_history (code, period_end, doc_id, loans_total, bonds, rate_floating, rate_unknown, \
+              swap_notional, avg_rate, property_count, leasable_m2, occupancy, fetched_at) \
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+              ON CONFLICT(code, period_end) DO UPDATE SET doc_id = excluded.doc_id, loans_total = excluded.loans_total, \
+              bonds = excluded.bonds, rate_floating = excluded.rate_floating, rate_unknown = excluded.rate_unknown, \
+              swap_notional = excluded.swap_notional, avg_rate = excluded.avg_rate, \
+              property_count = excluded.property_count, leasable_m2 = excluded.leasable_m2, \
+              occupancy = excluded.occupancy, fetched_at = excluded.fetched_at"
+            .into(),
+        params: vec![
+            Val::Text(r.code.clone()),
+            Val::Text(r.period_end.to_string()),
+            Val::Text(r.doc.doc_id.clone()),
+            // 明細が読めなかったときは BS の額
+            Val::Int(if loans > 0 { loans } else { r.report.balance.short_loans + r.report.balance.long_loans }),
+            Val::Int(r.report.balance.bonds),
+            Val::Int(r.mix.floating),
+            Val::Int(r.mix.unknown),
+            r.report.debt.swap_yen.map_or(Val::Null, Val::Int),
+            Val::opt_f(r.debt.avg_rate_pct),
+            Val::Int(p.property_count as i64),
+            Val::opt_f((p.property_count > 0).then_some(p.leasable_m2)),
+            Val::opt_f(p.occupancy_pct),
+            Val::Int(fetched_at),
+        ],
+    }
+}
+
+/// 用途の対応表（data/reit_sectors.csv）を reit_profile に反映する。対応表を直したときに新しい書類を待たずに効くよう毎回流す
+pub fn reit_sector_stmts(sectors: &std::collections::HashMap<String, String>) -> Vec<Stmt> {
+    let mut pairs: Vec<(&String, &String)> = sectors.iter().collect();
+    pairs.sort();
+    // CASE の (code, sector) と IN の code で1組3個。パラメータは100個まで
+    pairs
+        .chunks(33)
+        .map(|chunk| Stmt {
+            sql: format!(
+                "UPDATE reit_profile SET sector = CASE code {} END WHERE code IN ({})",
+                vec!["WHEN ? THEN ?"; chunk.len()].join(" "),
+                vec!["?"; chunk.len()].join(", ")
+            ),
+            params: chunk
+                .iter()
+                .flat_map(|(c, s)| [Val::Text((*c).clone()), Val::Text((*s).clone())])
+                .chain(chunk.iter().map(|(c, _)| Val::Text((*c).clone())))
+                .collect(),
+        })
+        .collect()
+}
+
 /// 古くなった書類の行を消す（R2 のファイルはバッチの最後に消す）
 pub fn delete_edinet_doc_stmt(key: &DocKey) -> Stmt {
     Stmt {
@@ -510,6 +654,20 @@ mod tests {
             del.render(),
             "DELETE FROM edinet_docs WHERE code = '7203' AND doc_kind = 'semiannual';"
         );
+    }
+
+    #[test]
+    fn reit_sectors_fit_the_parameter_limit() {
+        let sectors: std::collections::HashMap<String, String> = (0..70)
+            .map(|i| (format!("{:04}", 1000 + i), "office".to_string()))
+            .collect();
+        let stmts = reit_sector_stmts(&sectors);
+        assert_eq!(stmts.len(), 3);
+        assert!(stmts.iter().all(|s| s.params.len() <= 100));
+        assert_eq!(stmts[0].params.len(), 99);
+        assert!(stmts[0]
+            .sql
+            .starts_with("UPDATE reit_profile SET sector = CASE code WHEN ? THEN ?"));
     }
 
     #[test]

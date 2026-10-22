@@ -38,6 +38,82 @@ export type StockRow = {
   /** 有報・半期報告書（EDINET）の記述。書類をまだ取っていなければ null */
   progressive_dividend: boolean | null;
   no_dividend_cut: boolean | null;
+  /** REIT の金利・稼働率（有報から。REIT 以外や未取り込みなら null）。比率は小数 */
+  reit?: ReitListFields | null;
+};
+
+export type ReitListFields = {
+  sector: string | null;
+  period_end: string | null;
+  floating_ratio: number | null;
+  unknown_ratio: number | null;
+  reprice_ratio: number | null;
+  reprice_max_ratio: number | null;
+  avg_rate: number | null;
+  occupancy: number | null;
+};
+
+export type ReitRateType = "fixed" | "swap_fixed" | "floating" | null;
+
+/** /api/stocks/:code/reit。金額は円、面積は㎡、avg_rate・occupancy は % */
+export type ReitDetail = {
+  code: string;
+  doc_id: string;
+  submitted: string;
+  period_end: string;
+  sector: string | null;
+  balance: { short_loans: number; long_loans: number; bonds: number };
+  rate_mix: {
+    fixed: number;
+    swap_fixed: number;
+    swap_amount_only: number;
+    floating: number;
+    unknown: number;
+    bonds: number;
+  };
+  swap_notional: number | null;
+  avg_rate: number | null;
+  avg_years: number | null;
+  reprice_1y: number;
+  reprice_1y_max: number;
+  property_count: number;
+  leasable_m2: number | null;
+  leased_m2: number | null;
+  occupancy: number | null;
+  checks: { loans: string; properties: string } | null;
+  detail: {
+    loans: {
+      kind: "short" | "long" | null;
+      lender: string;
+      balance: number;
+      rate: number | null;
+      due: string | null;
+      rate_type: ReitRateType;
+    }[];
+    ladder: { item: string; amounts: number[] }[];
+    rate_notes: string[];
+    properties: {
+      id: string;
+      name: string;
+      leasable: number;
+      leased: number | null;
+      occupancy: number | null;
+      rent: number | null;
+      rent_note: string | null;
+    }[];
+  } | null;
+  history: {
+    period_end: string;
+    loans_total: number;
+    bonds: number;
+    rate_floating: number;
+    rate_unknown: number;
+    swap_notional: number | null;
+    avg_rate: number | null;
+    property_count: number;
+    leasable_m2: number | null;
+    occupancy: number | null;
+  }[];
 };
 
 /** EDINET の書類（有報・半期報告書の最新1通ずつ）から拾った配当方針の手がかり */

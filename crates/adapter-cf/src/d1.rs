@@ -9,7 +9,10 @@ use serde::Deserialize;
 use usecase::daily::{StoredAnnual, StoredForecast};
 use usecase::detail::StockDetailQuery;
 use usecase::portfolio::PortfolioRepository;
-use usecase::screening::{DataStatus, DisclosureRow, IndicatorQuery, StockRow};
+use usecase::screening::{
+    DataStatus, DisclosureRow, IndicatorQuery, ReitDetail, ReitHistoryRow, ReitListFields,
+    ReitProfile, StockRow,
+};
 use usecase::PortError;
 use worker::wasm_bindgen::JsValue;
 use worker::{D1Database, D1PreparedStatement};
@@ -74,6 +77,22 @@ pub(crate) struct Row {
     op_growth: Option<f64>,
     progressive_dividend: Option<i64>,
     no_dividend_cut: Option<i64>,
+    #[serde(default)]
+    reit_sector: Option<String>,
+    #[serde(default)]
+    reit_period_end: Option<String>,
+    #[serde(default)]
+    floating_ratio: Option<f64>,
+    #[serde(default)]
+    unknown_ratio: Option<f64>,
+    #[serde(default)]
+    reprice_ratio: Option<f64>,
+    #[serde(default)]
+    reprice_max_ratio: Option<f64>,
+    #[serde(default)]
+    avg_rate: Option<f64>,
+    #[serde(default)]
+    occupancy: Option<f64>,
     /// 条件に合う件数（一覧の SQL だけが返す）
     #[serde(default)]
     total: Option<i64>,
@@ -114,8 +133,61 @@ impl From<Row> for StockRow {
             op_growth: r.op_growth,
             progressive_dividend: r.progressive_dividend.map(|v| v != 0),
             no_dividend_cut: r.no_dividend_cut.map(|v| v != 0),
+            // reit_profile の行があるときだけ（期末日は必ず入る）
+            reit: r.reit_period_end.clone().map(|period_end| ReitListFields {
+                sector: r.reit_sector,
+                period_end: Some(period_end),
+                floating_ratio: r.floating_ratio,
+                unknown_ratio: r.unknown_ratio,
+                reprice_ratio: r.reprice_ratio,
+                reprice_max_ratio: r.reprice_max_ratio,
+                avg_rate: r.avg_rate,
+                occupancy: r.occupancy,
+            }),
         }
     }
+}
+
+/// reit_profile と reit_detail の行
+#[derive(Deserialize)]
+struct ReitDbRow {
+    doc_id: String,
+    submitted: String,
+    period_end: String,
+    sector: Option<String>,
+    short_loans: i64,
+    long_loans: i64,
+    bonds: i64,
+    rate_fixed: i64,
+    rate_swap_fixed: i64,
+    rate_swap_amount: i64,
+    rate_floating: i64,
+    rate_unknown: i64,
+    swap_notional: Option<i64>,
+    avg_rate: Option<f64>,
+    avg_years: Option<f64>,
+    reprice_1y: i64,
+    reprice_1y_max: i64,
+    property_count: i64,
+    leasable_m2: Option<f64>,
+    leased_m2: Option<f64>,
+    occupancy: Option<f64>,
+    checks: String,
+    body: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReitHistoryDbRow {
+    period_end: String,
+    loans_total: i64,
+    bonds: i64,
+    rate_floating: i64,
+    rate_unknown: i64,
+    swap_notional: Option<i64>,
+    avg_rate: Option<f64>,
+    property_count: i64,
+    leasable_m2: Option<f64>,
+    occupancy: Option<f64>,
 }
 
 /// edinet_docs の行。phrases は JSON の文字列配列
@@ -156,6 +228,7 @@ struct VersionRow {
     started_at: i64,
     finished_at: Option<i64>,
     edinet_at: Option<i64>,
+    reit_at: Option<i64>,
 }
 
 /// これより長く「実行中」のままのバッチは止まったとみなし、キャッシュを再開する（秒）
@@ -177,9 +250,10 @@ impl D1Indicators {
                 None => return None,
             };
             Some(format!(
-                "{}.{finished}.{}",
+                "{}.{finished}.{}.{}",
                 r.run_id,
-                r.edinet_at.unwrap_or(0)
+                r.edinet_at.unwrap_or(0),
+                r.reit_at.unwrap_or(0)
             ))
         }))
     }
@@ -422,6 +496,71 @@ impl IndicatorQuery for D1Indicators {
             .results()
             .map_err(err)?;
         Ok(rows.into_iter().map(DisclosureRow::from).collect())
+    }
+
+    async fn reit_detail(&self, code: &str) -> Result<Option<ReitDetail>, PortError> {
+        let arg = || vec![Arg::Text(code.into())];
+        let row: Option<ReitDbRow> = self
+            .prepare(&Query {
+                sql: query::REIT_DETAIL.into(),
+                args: arg(),
+            })?
+            .first(None)
+            .await
+            .map_err(err)?;
+        let Some(r) = row else { return Ok(None) };
+        let history: Vec<ReitHistoryDbRow> = self
+            .prepare(&Query {
+                sql: query::REIT_HISTORY.into(),
+                args: arg(),
+            })?
+            .all()
+            .await
+            .map_err(err)?
+            .results()
+            .map_err(err)?;
+        Ok(Some(ReitDetail {
+            profile: ReitProfile {
+                doc_id: r.doc_id,
+                submitted: r.submitted,
+                period_end: r.period_end,
+                sector: r.sector,
+                short_loans: r.short_loans,
+                long_loans: r.long_loans,
+                bonds: r.bonds,
+                rate_fixed: r.rate_fixed,
+                rate_swap_fixed: r.rate_swap_fixed,
+                rate_swap_amount: r.rate_swap_amount,
+                rate_floating: r.rate_floating,
+                rate_unknown: r.rate_unknown,
+                swap_notional: r.swap_notional,
+                avg_rate: r.avg_rate,
+                avg_years: r.avg_years,
+                reprice_1y: r.reprice_1y,
+                reprice_1y_max: r.reprice_1y_max,
+                property_count: r.property_count,
+                leasable_m2: r.leasable_m2,
+                leased_m2: r.leased_m2,
+                occupancy: r.occupancy,
+                checks: r.checks,
+            },
+            body: r.body,
+            history: history
+                .into_iter()
+                .map(|h| ReitHistoryRow {
+                    period_end: h.period_end,
+                    loans_total: h.loans_total,
+                    bonds: h.bonds,
+                    rate_floating: h.rate_floating,
+                    rate_unknown: h.rate_unknown,
+                    swap_notional: h.swap_notional,
+                    avg_rate: h.avg_rate,
+                    property_count: h.property_count,
+                    leasable_m2: h.leasable_m2,
+                    occupancy: h.occupancy,
+                })
+                .collect(),
+        }))
     }
 }
 

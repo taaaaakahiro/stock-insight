@@ -1,6 +1,6 @@
-# 09 REIT の有利子負債・物件（設計案）
+# 09 REIT の有利子負債・物件
 
-REIT が金利の上昇にどれだけ影響を受けるかを見るために、有価証券報告書（EDINET）から借入金の明細と物件ごとの稼働率・賃料を読む。**この文書は提案で、テーブルはまだ作っていない。**
+REIT が金利の上昇にどれだけ影響を受けるかを見るために、有価証券報告書（EDINET）から借入金の明細と物件ごとの稼働率・賃料を読む。日次バッチ（`batch-cli sync-reit`）が D1 に保存し、一覧の REIT のタブと銘柄の詳細ページに出す。
 
 ## 取得元と読み方
 
@@ -65,56 +65,62 @@ REIT の書類は、書類一覧（`documents.json`）で `secCode` が空。府
 - 1年内返済予定の長期借入金が銘柄独自の要素名（`LongTermLoansRepayableWithinOneYearCL`）
 - 物件の表: 用途別の小計（「物流施設 64物件 計」「コアアセット中計(41物件)」）、底地の面積（「48,932.00 (土地)」）、「入居率」、同じ期の「時点」と「期間」の 2 列、物件が列に並ぶ縦横逆の表、面積だけの表と稼働率の表が分かれている
 
-## テーブル案（提案）
+## 保存先
 
 ### 方針
 
-- 一覧（REIT のタブ）で絞り込み・並べ替えに使う数字だけを D1 に 1 銘柄 1 行で持つ。借入の明細・物件の一覧は R2 の JSON に置き、詳細の画面で読む（物件が数百件ある銘柄もあるので、D1 の読み取り枠を使わない）
-- 推移を見るため、決算ごとの数字を D1 に 1 銘柄 1 期 1 行で持つ（REIT は年 2 回 × 約 60 銘柄なので小さい）。物件ごとの推移は R2 の決算ごとの JSON から作る
-- 用途（物流・ホテル・住宅…）は有報から機械的には決めにくいので、リポジトリに対応表を置く（約 60 行。新規上場のときに PR で足す）
+- 一覧（REIT のタブ）で絞り込み・並べ替えに使う数字だけを D1 `reit_profile` に 1 銘柄 1 行で持つ
+- 借入の明細・物件の一覧は、1 銘柄 1 行の JSON（D1 `reit_detail`）にまとめる。詳細の画面で開いたときに 1 行だけ読むので、D1 の読み取り枠（行数で数える）をほとんど使わない。最大の銘柄（KDX）でも約 110KB で、行の上限（2MB）に収まる。API に R2 を読む仕組みがまだないので R2 は使わない
+- 決算ごとの要約を D1 `reit_history` に 1 銘柄 1 期 1 行で持つ（REIT は年 2 回 × 約 60 銘柄なので小さい）
+- 用途（物流・ホテル・住宅…）は有報から機械的に決めにくいので、リポジトリの `data/reit_sectors.csv` に置く（約 60 行。新規上場のときに PR で足す）。バッチが毎回 `reit_profile.sector` に反映する
+
+テーブルの定義は `migrations/0011_reit.sql`。
 
 ### D1 `reit_profile`（最新の有報、1 銘柄 1 行）
 
-| 列 | 型 | 内容 |
-|---|---|---|
-| code | TEXT PK | 証券コード（表紙の SecurityCodeDEI） |
-| doc_id / submitted / period_end | TEXT | 元の書類 |
-| sector | TEXT | 用途（office / logistics / residential / hotel / retail / healthcare / diversified / infra）。対応表から |
-| short_loans / long_loans / bonds | INTEGER | BS の有利子負債（円） |
-| rate_fixed / rate_swap_fixed / rate_swap_amount / rate_floating / rate_unknown | INTEGER | 金利の内訳（円）。投資法人債は bonds |
-| swap_notional | INTEGER | 金利スワップの契約額 |
-| avg_rate | REAL | 借入の残高加重の平均利率（%） |
-| avg_years | REAL | 借入の残高加重の平均残存年数 |
-| reprice_1y | INTEGER | 1 年以内に金利が見直される額 = 変動（明記）＋ 1 年以内に返済・償還が来る固定（借り換えで新しい金利になる）。記載なしは含めない |
-| reprice_1y_max | INTEGER | 上の額に記載なしを全部変動とみなして足した上限 |
-| property_count / leasable_m2 / leased_m2 | INTEGER / REAL | 物件の数と面積 |
-| occupancy | REAL | 面積加重の稼働率（%） |
-| checks | TEXT | 読み取りの確認結果（JSON: 借入 一致/端数/ずれ、物件 一致/…）。画面で「参考値」と出すかの判断に使う |
-| fetched_at | INTEGER | |
+| 列 | 内容 |
+|---|---|
+| code | 証券コード（表紙の SecurityCodeDEI） |
+| doc_id / submitted / period_end | 元の書類 |
+| sector | office / logistics / residential / hotel / retail / healthcare / diversified / infra |
+| short_loans / long_loans / bonds | BS の有利子負債（円） |
+| rate_fixed / rate_swap_fixed / rate_swap_amount / rate_floating / rate_unknown | 金利の内訳（円）。投資法人債は bonds |
+| swap_notional | 金利スワップの契約額 |
+| avg_rate / avg_years | 借入の残高加重の平均利率（%）と平均残存年数 |
+| reprice_1y | 1 年以内に金利が見直される額（下限）= 変動（明記）＋ 1 年以内に返済期限が来る借入 ＋ 1 年以内に償還が来る投資法人債。記載なしは含めない |
+| reprice_1y_max | 上の額に、記載なしの借入（スワップ額のみの分を除く）を全部変動とみなして足した上限 |
+| property_count / leasable_m2 / leased_m2 / occupancy | 物件の数・面積・面積加重の稼働率（%） |
+| checks | 読み取りの確認（JSON: 借入 一致/端数/ずれ/明細なし、物件 一致/端数/ずれ/合計行なし/物件なし）。画面で「参考値」と出すかに使う |
 
-金利の感応度は画面で出す: **金利 +1% で年間の支払利息が増える額** = reprice_1y × 1%（下限）〜 reprice_1y_max × 1%（上限）。1 口あたり分配金に対する割合は、J-Quants の分配金と発行済投資口数から出す。
+同じ銘柄のもっと新しい期がすでにあれば上書きしない（`ON CONFLICT ... WHERE excluded.period_end >= reit_profile.period_end`）。古い書類から順に取り込むので、初回の取り込みで過去の期が最新を消すことはない。`reit_detail` も同じ。
+
+### D1 `reit_detail`（最新の有報の明細、1 銘柄 1 行）
+
+`body` は JSON: `loans`（借入先・残高・利率・返済期限・金利の種類）、`ladder`（返済予定の科目ごとの 6 区分）、`rate_notes`（金利の種類の判定に使った注記）、`properties`（物件番号・名称・面積・稼働率・年間賃料。非開示はその旨）。
 
 ### D1 `reit_history`（決算ごと、1 銘柄 1 期 1 行）
 
-| 列 | 型 | 内容 |
-|---|---|---|
-| code, period_end | TEXT, TEXT | PK |
-| occupancy / leasable_m2 / property_count | | ポートフォリオの稼働率・面積・物件数 |
-| loans_total / bonds / avg_rate / rate_floating / rate_unknown / swap_notional | | 有利子負債と金利の内訳 |
+有利子負債、変動（明記）・記載なしの額、スワップの契約額、平均利率、物件数・面積・稼働率。
 
-### R2
+## API
 
-| キー | 中身 |
-|---|---|
-| `edinet/<コード>/reit.json.gz` | 最新の有報の借入の明細（借入先・残高・利率・返済期限・金利の種類）、返済予定、注記の手がかり、物件の一覧（面積・稼働率・賃料） |
-| `edinet/<コード>/reit/<期末日>.json.gz` | 決算ごとの同じ中身。物件ごとの稼働率・賃料の推移はこれを並べて作る |
+- `GET /api/stocks?kind=reit` の行に `reit`（用途・変動の割合・記載なしの割合・1 年内の見直しの割合の下限と上限・平均利率・稼働率。比率は小数）を足した。並べ替えと範囲の絞り込みは `floating_ratio` / `unknown_ratio` / `reprice_ratio` / `reprice_max_ratio` / `avg_rate` / `occupancy`、用途は `reit_sector=logistics,hotel`
+- `GET /api/stocks/:code/reit`: 要約・明細・推移。まだ取り込んでいない銘柄は 404
+- サーバー側キャッシュの版（`DATA_VERSION`）に `sync_state.reit_listed_until` の更新時刻を足した
 
-### 用途の対応表
+## 画面
 
-`data/reit_sectors.csv`（コード, 用途, 備考）。総合型・複合型は diversified。インフラファンドは infra。
+- 一覧の REIT のタブ: 用途の絞り込み、銘柄名の下に用途、列に「変動金利」「金利の記載なし」「1 年内の金利見直し」「同（最大）」「平均利率」「稼働率」（説明は i のツールチップ）
+- 詳細ページ（REIT）: 有利子負債・1 年内に見直される額・金利 +1% で増える年間の利息（幅で出す）・平均利率・平均残存年数・稼働率、金利の内訳の帯、返済・償還の予定、決算ごとの推移（2 期以上あるとき）、物件ごとの稼働率・賃料（稼働率の低い順など）、借入の明細
 
-### バッチ
+金利の内訳の色は、固定（青）・投資法人債（黄）・スワップ（水色）・変動（オレンジ）の順。この並びだと隣どうしが色覚の違いでも見分けられる（dataviz の `validate_palette.js` でライト・ダークとも確認）。記載なしは系列の色を使わず灰色の斜線。色だけに頼らないよう、帯の下の表に名前と額を出す。
 
-- `sync-edinet` の書類一覧（1 日 1 回の呼び出し）で REIT の有報も拾う（呼び出しは増えない）。まだ持っていない書類だけ type=1 の zip を取って読む
-- 初回は過去の有報も取って推移を作る（EDINET の書類一覧で遡れる範囲。何年分にするかは要相談）
-- 借入の合計が BS と「ずれ」の書類も保存はするが、checks に残して画面で参考値と出す
+## バッチ
+
+`batch-cli sync-reit`（日次バッチの `reit` ジョブ。J-Quants・EDINET と並列）:
+
+1. 前回の続き（`sync_state.reit_listed_until`）から今日までの書類一覧を読み、投資法人の有報を拾う（初回は過去 400 日分）
+2. 古い書類から順に type=1 の zip を取り、読んで `reit_profile` / `reit_detail` / `reit_history` に書く
+3. 用途の対応表を `reit_profile` に反映し、続きの日付を残す。時間切れなら取り込めた書類の提出日の前日までを済みとする
+
+`--dry-run <file>` で D1 に触れずに SQL を書ける（`--from` が必要）。

@@ -30,7 +30,7 @@ use std::rc::Rc;
 use usecase::auth::{authenticate, AuthError, AuthUser, CachedUsers, RequestMeta, UserMemo};
 use usecase::detail::{stock_detail, StockDetail};
 use usecase::portfolio::PortfolioError;
-use usecase::screening::{data_status, disclosures, screen, StockRow};
+use usecase::screening::{data_status, disclosures, reit_detail, screen, StockRow};
 use usecase::Clock;
 use worker::{
     event, Cache, Context, Env, Request, Response, Result, RouteContext, Router, ScheduleContext,
@@ -132,6 +132,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/api/stocks", stocks)
         .get_async("/api/stocks/:code", stock_detail_route)
         .get_async("/api/stocks/:code/edinet", edinet)
+        .get_async("/api/stocks/:code/reit", reit)
         .get_async("/api/status", status)
         .get_async("/api/portfolio", portfolio)
         .put_async("/api/portfolio/:code", portfolio_add)
@@ -247,6 +248,67 @@ async fn edinet(req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
                     "phrases": d.phrases,
                 })).collect::<Vec<_>>(),
             })),
+            Ok(None) => json_error(400, "bad_request", "bad stock code"),
+            Err(e) => internal(&e.0),
+        }
+    })
+    .await
+}
+
+/// REIT の有利子負債（金利の内訳）・物件の要約と明細・決算ごとの推移
+async fn reit(req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let code = ctx.param("code").cloned().unwrap_or_default();
+    shared(&req, &ctx.env, |repo| async move {
+        match reit_detail(&repo, &code).await {
+            Ok(Some(Some(d))) => {
+                let p = &d.profile;
+                let body: Value = d
+                    .body
+                    .as_deref()
+                    .and_then(|b| serde_json::from_str(b).ok())
+                    .unwrap_or(Value::Null);
+                let checks: Value = serde_json::from_str(&p.checks).unwrap_or(Value::Null);
+                json_ok(&json!({
+                    "code": code,
+                    "doc_id": p.doc_id,
+                    "submitted": p.submitted,
+                    "period_end": p.period_end,
+                    "sector": p.sector,
+                    "balance": { "short_loans": p.short_loans, "long_loans": p.long_loans, "bonds": p.bonds },
+                    "rate_mix": {
+                        "fixed": p.rate_fixed,
+                        "swap_fixed": p.rate_swap_fixed,
+                        "swap_amount_only": p.rate_swap_amount,
+                        "floating": p.rate_floating,
+                        "unknown": p.rate_unknown,
+                        "bonds": p.bonds,
+                    },
+                    "swap_notional": p.swap_notional,
+                    "avg_rate": p.avg_rate,
+                    "avg_years": p.avg_years,
+                    "reprice_1y": p.reprice_1y,
+                    "reprice_1y_max": p.reprice_1y_max,
+                    "property_count": p.property_count,
+                    "leasable_m2": p.leasable_m2,
+                    "leased_m2": p.leased_m2,
+                    "occupancy": p.occupancy,
+                    "checks": checks,
+                    "detail": body,
+                    "history": d.history.iter().map(|h| json!({
+                        "period_end": h.period_end,
+                        "loans_total": h.loans_total,
+                        "bonds": h.bonds,
+                        "rate_floating": h.rate_floating,
+                        "rate_unknown": h.rate_unknown,
+                        "swap_notional": h.swap_notional,
+                        "avg_rate": h.avg_rate,
+                        "property_count": h.property_count,
+                        "leasable_m2": h.leasable_m2,
+                        "occupancy": h.occupancy,
+                    })).collect::<Vec<_>>(),
+                }))
+            }
+            Ok(Some(None)) => json_error(404, "not_found", "no REIT data for this code"),
             Ok(None) => json_error(400, "bad_request", "bad stock code"),
             Err(e) => internal(&e.0),
         }
@@ -534,6 +596,16 @@ fn row_json(r: &StockRow) -> Value {
         "op_growth": r.op_growth,
         "progressive_dividend": r.progressive_dividend,
         "no_dividend_cut": r.no_dividend_cut,
+        "reit": r.reit.as_ref().map(|x| json!({
+            "sector": x.sector,
+            "period_end": x.period_end,
+            "floating_ratio": x.floating_ratio,
+            "unknown_ratio": x.unknown_ratio,
+            "reprice_ratio": x.reprice_ratio,
+            "reprice_max_ratio": x.reprice_max_ratio,
+            "avg_rate": x.avg_rate,
+            "occupancy": x.occupancy,
+        })),
     })
 }
 

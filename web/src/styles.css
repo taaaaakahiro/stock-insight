@@ -191,11 +191,21 @@
   --cheap: oklch(0.52 0.14 150);
   --expensive: oklch(0.55 0.19 25);
   --warning: oklch(0.62 0.13 85);
+  /* REIT の金利の内訳（固定・投資法人債・スワップ・変動の順に並べると、隣どうしが色覚の違いでも見分けられる。
+     dataviz の validate_palette.js で確認済み）。記載なしは系列の色を使わず、灰色の斜線で出す */
+  --reit-fixed: #2a78d6;
+  --reit-bonds: #eda100;
+  --reit-swap: #1baf7a;
+  --reit-floating: #eb6834;
 }
 .dark {
   --cheap: oklch(0.75 0.15 150);
   --expensive: oklch(0.72 0.17 25);
   --warning: oklch(0.82 0.14 90);
+  --reit-fixed: #3987e5;
+  --reit-bonds: #c98500;
+  --reit-swap: #199e70;
+  --reit-floating: #d95926;
 }
 @theme inline {
   --color-cheap: var(--cheap);

@@ -1,7 +1,7 @@
 //! スクリーニング一覧の SQL を組み立てる。列名は domain の固定の列挙から取り、値は必ずプレースホルダで渡す。
 //! 指標（indicators_latest）に銘柄マスタ（stocks）をつないで、名称・種類・業種・規模区分も返す。
 
-use domain::screening::{ScreeningFilter, SortKey, SortOrder, PAGE_SIZE};
+use domain::screening::{Metric, ScreeningFilter, SortKey, SortOrder, PAGE_SIZE};
 
 /// プレースホルダに渡す値
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +17,38 @@ pub struct Query {
     pub args: Vec<Arg>,
 }
 
+/// REIT の有利子負債の合計（金利の内訳の5つ＋投資法人債）。0 なら NULL にして割り算を避ける
+const REIT_DEBT: &str =
+    "NULLIF(r.rate_fixed + r.rate_swap_fixed + r.rate_swap_amount + r.rate_floating \
+     + r.rate_unknown + r.bonds, 0)";
+
+/// 指標の SQL の式。株式などは indicators_latest の列、REIT は reit_profile から計算する（比率は小数）
+pub fn metric_sql(m: Metric) -> String {
+    match m {
+        Metric::FloatingRatio => format!("(r.rate_floating * 1.0 / {REIT_DEBT})"),
+        Metric::UnknownRatio => format!("(r.rate_unknown * 1.0 / {REIT_DEBT})"),
+        Metric::RepriceRatio => format!("(r.reprice_1y * 1.0 / {REIT_DEBT})"),
+        Metric::RepriceMaxRatio => format!("(r.reprice_1y_max * 1.0 / {REIT_DEBT})"),
+        Metric::AvgRate => "(r.avg_rate / 100.0)".into(),
+        Metric::Occupancy => "(r.occupancy / 100.0)".into(),
+        _ => format!("i.{}", m.key()),
+    }
+}
+
+/// REIT の列（一覧・ポートフォリオで返す）
+fn reit_columns() -> String {
+    let m = |x: Metric| format!("{} AS {}", metric_sql(x), x.key());
+    format!(
+        "r.sector AS reit_sector, {}, {}, {}, {}, {}, {}, r.period_end AS reit_period_end",
+        m(Metric::FloatingRatio),
+        m(Metric::UnknownRatio),
+        m(Metric::RepriceRatio),
+        m(Metric::RepriceMaxRatio),
+        m(Metric::AvgRate),
+        m(Metric::Occupancy)
+    )
+}
+
 pub const LIST_COLUMNS: &str =
     "i.code, i.price, i.price_date, i.dividend_ttm, i.dividend_basis, i.dividend_yield, i.yield_percentile, i.pbr, i.per, \
      i.payout_ratio, i.doe, i.consecutive_increases, i.operating_margin, i.no_loss_years, i.profit_uptrend, \
@@ -25,20 +57,21 @@ pub const LIST_COLUMNS: &str =
      (SELECT MAX(e.progressive_dividend) FROM edinet_docs e WHERE e.code = i.code) AS progressive_dividend, \
      (SELECT MAX(e.no_dividend_cut) FROM edinet_docs e WHERE e.code = i.code) AS no_dividend_cut";
 
-/// マスタにまだない銘柄も消えないよう LEFT JOIN（種類は株式として扱う）
-const FROM: &str = "FROM indicators_latest i LEFT JOIN stocks s ON s.code = i.code";
+/// マスタにまだない銘柄も消えないよう LEFT JOIN（種類は株式として扱う）。REIT の要約も LEFT JOIN
+const FROM: &str = "FROM indicators_latest i LEFT JOIN stocks s ON s.code = i.code \
+     LEFT JOIN reit_profile r ON r.code = i.code";
 
 fn where_clause(f: &ScreeningFilter) -> (String, Vec<Arg>) {
     let mut conds = vec!["COALESCE(s.kind, 'stock') = ?".to_string()];
     let mut args = vec![Arg::Text(f.kind.as_str().to_string())];
     for r in &f.ranges {
-        let col = r.metric.key();
+        let col = metric_sql(r.metric);
         if let Some(min) = r.min {
-            conds.push(format!("i.{col} >= ?"));
+            conds.push(format!("{col} >= ?"));
             args.push(Arg::Real(min));
         }
         if let Some(max) = r.max {
-            conds.push(format!("i.{col} <= ?"));
+            conds.push(format!("{col} <= ?"));
             args.push(Arg::Real(max));
         }
     }
@@ -50,6 +83,7 @@ fn where_clause(f: &ScreeningFilter) -> (String, Vec<Arg>) {
         ("s.sector33", &f.sectors),
         ("s.market", &f.markets),
         ("s.size_class", &f.sizes),
+        ("r.sector", &f.reit_sectors),
     ] {
         if !values.is_empty() {
             conds.push(format!("{col} IN ({})", vec!["?"; values.len()].join(", ")));
@@ -94,7 +128,10 @@ fn where_clause(f: &ScreeningFilter) -> (String, Vec<Arg>) {
 /// 1ページ分の行。条件に合う件数も同じスキャンで total 列に入れる（件数のために全件を読み直さない）
 pub fn list(f: &ScreeningFilter) -> Query {
     let (w, mut args) = where_clause(f);
-    let col = format!("i.{}", f.sort.key());
+    let col = match f.sort {
+        SortKey::Code => "i.code".to_string(),
+        SortKey::Metric(m) => metric_sql(m),
+    };
     let dir = match f.order {
         SortOrder::Asc => "ASC",
         SortOrder::Desc => "DESC",
@@ -108,8 +145,9 @@ pub fn list(f: &ScreeningFilter) -> Query {
     args.push(Arg::Int(f.offset() as i64));
     Query {
         sql: format!(
-            "SELECT {LIST_COLUMNS}, COUNT(*) OVER () AS total {FROM}{w} \
-             ORDER BY {nulls}{col} {dir}, i.code ASC LIMIT ? OFFSET ?"
+            "SELECT {LIST_COLUMNS}, {}, COUNT(*) OVER () AS total {FROM}{w} \
+             ORDER BY {nulls}{col} {dir}, i.code ASC LIMIT ? OFFSET ?",
+            reit_columns()
         ),
         args,
     }
@@ -127,8 +165,9 @@ pub fn count(f: &ScreeningFilter) -> Query {
 /// ポートフォリオに登録した銘柄の最新指標（? はユーザーID）
 pub fn portfolio_rows() -> String {
     format!(
-        "SELECT {LIST_COLUMNS} FROM portfolio_items p JOIN indicators_latest i ON i.code = p.code \
-         LEFT JOIN stocks s ON s.code = p.code WHERE p.user_id = ?"
+        "SELECT {LIST_COLUMNS}, {} FROM portfolio_items p JOIN indicators_latest i ON i.code = p.code \
+         LEFT JOIN stocks s ON s.code = p.code LEFT JOIN reit_profile r ON r.code = p.code WHERE p.user_id = ?",
+        reit_columns()
     )
 }
 
@@ -147,7 +186,10 @@ pub const PORTFOLIO_REMOVE: &str = "DELETE FROM portfolio_items WHERE user_id = 
 /// 詳細ページ用: 1銘柄の最新の指標（一覧と同じ列）
 pub fn latest_by_code(code: &str) -> Query {
     Query {
-        sql: format!("SELECT {LIST_COLUMNS} {FROM} WHERE i.code = ?"),
+        sql: format!(
+            "SELECT {LIST_COLUMNS}, {} {FROM} WHERE i.code = ?",
+            reit_columns()
+        ),
         args: vec![Arg::Text(code.to_string())],
     }
 }
@@ -200,10 +242,21 @@ pub const RECOMMENDATION_EXISTS: &str = "SELECT COUNT(*) AS n FROM recommendatio
 pub const RECOMMENDATION_INSERT: &str = "INSERT INTO recommendations \
      (date, rank, code, reason, model, created_at) VALUES (?, ?, ?, ?, ?, ?)";
 
+/// 1銘柄の REIT の要約と明細（? は銘柄コード）
+pub const REIT_DETAIL: &str = "SELECT p.doc_id, p.submitted, p.period_end, p.sector, p.short_loans, p.long_loans, \
+     p.bonds, p.rate_fixed, p.rate_swap_fixed, p.rate_swap_amount, p.rate_floating, p.rate_unknown, p.swap_notional, \
+     p.avg_rate, p.avg_years, p.reprice_1y, p.reprice_1y_max, p.property_count, p.leasable_m2, p.leased_m2, \
+     p.occupancy, p.checks, d.body FROM reit_profile p LEFT JOIN reit_detail d ON d.code = p.code WHERE p.code = ?";
+
+/// 1銘柄の REIT の決算ごとの要約（? は銘柄コード）
+pub const REIT_HISTORY: &str = "SELECT period_end, loans_total, bonds, rate_floating, rate_unknown, swap_notional, \
+     avg_rate, property_count, leasable_m2, occupancy FROM reit_history WHERE code = ? ORDER BY period_end";
+
 /// 一覧・配当方針・状態の中身が変わったかの目印（サーバー側キャッシュのキー）。
-/// 最新のバッチ（rowid は追加順）と、EDINET の取り込みを最後に終えた時刻。1〜2行しか読まない
+/// 最新のバッチ（rowid は追加順）と、EDINET・REIT の取り込みを最後に終えた時刻。数行しか読まない
 pub const DATA_VERSION: &str = "SELECT r.run_id, r.started_at, r.finished_at, \
-     (SELECT updated_at FROM sync_state WHERE key = 'edinet_listed_until') AS edinet_at \
+     (SELECT updated_at FROM sync_state WHERE key = 'edinet_listed_until') AS edinet_at, \
+     (SELECT updated_at FROM sync_state WHERE key = 'reit_listed_until') AS reit_at \
      FROM batch_runs r ORDER BY r.rowid DESC LIMIT 1";
 
 #[cfg(test)]
@@ -226,6 +279,7 @@ mod tests {
         assert!(q.sql.contains(", COUNT(*) OVER () AS total FROM"));
         assert!(q.sql.ends_with(
             "FROM indicators_latest i LEFT JOIN stocks s ON s.code = i.code \
+             LEFT JOIN reit_profile r ON r.code = i.code \
              WHERE COALESCE(s.kind, 'stock') = ? AND i.dividend_yield >= ? AND i.pbr <= ? AND i.valuation = ? \
              AND i.no_loss_years = 1 ORDER BY i.pbr IS NULL, i.pbr ASC, i.code ASC LIMIT ? OFFSET ?"
         ));
@@ -292,9 +346,10 @@ mod tests {
 
     #[test]
     fn portfolio_rows_use_the_list_columns() {
-        assert!(
-            portfolio_rows().starts_with(&format!("SELECT {LIST_COLUMNS} FROM portfolio_items"))
-        );
+        assert!(portfolio_rows().starts_with(&format!(
+            "SELECT {LIST_COLUMNS}, {} FROM portfolio_items",
+            reit_columns()
+        )));
     }
 
     #[test]
@@ -302,7 +357,7 @@ mod tests {
         let q = latest_by_code("7203");
         assert!(q
             .sql
-            .ends_with("LEFT JOIN stocks s ON s.code = i.code WHERE i.code = ?"));
+            .ends_with("LEFT JOIN reit_profile r ON r.code = i.code WHERE i.code = ?"));
         assert_eq!(q.args, vec![Arg::Text("7203".into())]);
     }
 
@@ -325,6 +380,34 @@ mod tests {
     fn kind_selects_the_tab() {
         let f = ScreeningFilter::from_pairs([("kind", "etf")]).unwrap();
         assert_eq!(list(&f).args[0], Arg::Text("etf".into()));
+    }
+
+    #[test]
+    fn reit_metrics_sort_and_filter_on_reit_profile() {
+        let f = ScreeningFilter::from_pairs([
+            ("kind", "reit"),
+            ("reit_sector", "logistics,hotel"),
+            ("floating_ratio_max", "0.2"),
+            ("sort", "reprice_max_ratio"),
+            ("order", "asc"),
+        ])
+        .unwrap();
+        let q = list(&f);
+        assert!(q
+            .sql
+            .contains("LEFT JOIN reit_profile r ON r.code = i.code"));
+        assert!(q.sql.contains("r.sector IN (?, ?)"));
+        assert!(q.sql.contains("(r.rate_floating * 1.0 / NULLIF("));
+        assert!(q.sql.contains("<= ?"));
+        assert!(
+            q.sql.contains("ORDER BY (r.reprice_1y_max * 1.0 / NULLIF("),
+            "{}",
+            q.sql
+        );
+        assert!(q.sql.contains("AS reprice_max_ratio"));
+        assert!(q.args.contains(&Arg::Text("hotel".into())));
+        assert!(q.args.contains(&Arg::Real(0.2)));
+        assert!(ScreeningFilter::from_pairs([("reit_sector", "casino")]).is_err());
     }
 
     #[test]

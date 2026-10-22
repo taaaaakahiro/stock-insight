@@ -19,6 +19,8 @@ import {
   MARKETS,
   metricLabel,
   metricsFor,
+  metricTip,
+  REIT_SECTORS,
   SECTORS33,
   SIZE_TIP,
   SIZES,
@@ -156,6 +158,25 @@ export function FilterPanel({ value, onChange }: Props) {
         </>
       )}
 
+      {value.kind === "reit" && (
+        <fieldset className="flex flex-col gap-2">
+          <legend className="mb-2 text-sm font-medium">用途</legend>
+          <div className="grid grid-cols-2 gap-x-2 gap-y-1.5">
+            {REIT_SECTORS.map((s) => (
+              <Label key={s.key} className="font-normal">
+                <Checkbox
+                  checked={value.reitSectors.includes(s.key)}
+                  onCheckedChange={(c) =>
+                    set({ reitSectors: toggle(value.reitSectors, s.key, c === true) })
+                  }
+                />
+                {s.label}
+              </Label>
+            ))}
+          </div>
+        </fieldset>
+      )}
+
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-1">
           <Label htmlFor="valuation">{stock ? "配当" : "分配金"}利回りの過去5年比</Label>
@@ -187,8 +208,8 @@ export function FilterPanel({ value, onChange }: Props) {
             <div key={m.key} className="grid grid-cols-[1fr_auto_1fr] items-center gap-x-2 gap-y-1">
               <span className="col-span-3 flex items-center gap-1 text-xs text-muted-foreground">
                 {label}（{UNIT_SUFFIX[m.unit]}）
-                {m.key === "yield_percentile" && (
-                  <InfoTip label={label} text={yieldPercentileTip(value.kind)} />
+                {metricTip(m.key, value.kind) && (
+                  <InfoTip label={label} text={metricTip(m.key, value.kind) ?? ""} />
                 )}
               </span>
               <Input

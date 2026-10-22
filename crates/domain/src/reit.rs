@@ -46,6 +46,17 @@ pub enum RateType {
     Floating,
 }
 
+impl RateType {
+    /// 画面に出す名前
+    pub fn label(self) -> &'static str {
+        match self {
+            RateType::Fixed => "固定",
+            RateType::SwapFixed => "スワップで固定",
+            RateType::Floating => "変動",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Loan {
     pub kind: Option<LoanKind>,
@@ -713,13 +724,13 @@ pub fn parse_debt(blocks: &[Block]) -> DebtSchedule {
     let mut rate_notes: Vec<String> = notes
         .by_note
         .iter()
-        .map(|(n, t)| format!("注{n}: {t:?}"))
+        .map(|(n, t)| format!("注{n}: {}", t.label()))
         .collect();
     if notes.rest_fixed {
         rate_notes.push("その他は全て固定".into());
     }
     if let Some(w) = notes.whole {
-        rate_notes.push(format!("全て {w:?}"));
+        rate_notes.push(format!("全て{}", w.label()));
     }
     DebtSchedule {
         loans,
@@ -1052,12 +1063,243 @@ pub fn parse_properties(blocks: &[Block]) -> (Vec<Property>, Option<PropertyTota
     (props, total)
 }
 
+// ---- 一覧に出す要約 ----
+
+/// 借入金の要約（一覧で並べ替える数字）
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DebtSummary {
+    /// 残高加重の平均利率（%）
+    pub avg_rate_pct: Option<f64>,
+    /// 残高加重の平均残存年数（期末日から返済期限まで）
+    pub avg_years: Option<f64>,
+    /// 1年以内に金利が見直される額 = 変動（明記）＋ 1年以内に返済期限が来る借入（借り換えで新しい金利になる）
+    /// ＋ 1年以内に償還が来る投資法人債。記載なしの借入は含めない（下限）
+    pub reprice_1y: i64,
+    /// 上の額に、記載なしの借入（スワップ額のみの分を除く）を全部変動とみなして足した上限
+    pub reprice_1y_max: i64,
+}
+
+pub fn debt_summary(debt: &DebtSchedule, mix: &RateMix, period_end: Date) -> DebtSummary {
+    let horizon = period_end.add_days(365);
+    let with_rate: Vec<&Loan> = debt.loans.iter().filter(|l| l.rate_pct.is_some()).collect();
+    let rate_base: i64 = with_rate.iter().map(|l| l.balance_yen).sum();
+    let avg_rate_pct = (rate_base > 0).then(|| {
+        with_rate
+            .iter()
+            .map(|l| l.balance_yen as f64 * l.rate_pct.unwrap_or(0.0))
+            .sum::<f64>()
+            / rate_base as f64
+    });
+    let with_due: Vec<(&Loan, Date)> = debt
+        .loans
+        .iter()
+        .filter_map(|l| Some((l, l.due?)))
+        .collect();
+    let due_base: i64 = with_due.iter().map(|(l, _)| l.balance_yen).sum();
+    let avg_years = (due_base > 0).then(|| {
+        with_due
+            .iter()
+            .map(|(l, d)| {
+                l.balance_yen as f64 * ((d.to_days() - period_end.to_days()).max(0) as f64 / 365.25)
+            })
+            .sum::<f64>()
+            / due_base as f64
+    });
+    let due_soon = |l: &Loan| l.due.is_some_and(|d| d <= horizon);
+    let floating: i64 = debt
+        .loans
+        .iter()
+        .filter(|l| l.rate_type == Some(RateType::Floating))
+        .map(|l| l.balance_yen)
+        .sum();
+    let other_due_1y: i64 = debt
+        .loans
+        .iter()
+        .filter(|l| l.rate_type != Some(RateType::Floating) && due_soon(l))
+        .map(|l| l.balance_yen)
+        .sum();
+    let unknown_due_1y: i64 = debt
+        .loans
+        .iter()
+        .filter(|l| l.rate_type.is_none() && due_soon(l))
+        .map(|l| l.balance_yen)
+        .sum();
+    // 返済予定表の「投資法人債」「1年内償還予定の投資法人債」の1年以内
+    let bonds_1y: i64 = debt
+        .ladder
+        .iter()
+        .filter(|(k, _)| k.contains("投資法人債"))
+        .map(|(_, v)| v[0])
+        .sum();
+    let reprice_1y = floating + other_due_1y + bonds_1y;
+    DebtSummary {
+        avg_rate_pct,
+        avg_years,
+        reprice_1y,
+        reprice_1y_max: reprice_1y + (mix.unknown - unknown_due_1y).max(0),
+    }
+}
+
+/// 物件の要約
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PortfolioSummary {
+    pub property_count: usize,
+    pub leasable_m2: f64,
+    pub leased_m2: f64,
+    /// 面積加重の稼働率（%）。稼働率の分かる物件だけで計算する
+    pub occupancy_pct: Option<f64>,
+}
+
+pub fn portfolio_summary(props: &[Property]) -> PortfolioSummary {
+    let mut leasable = 0.0;
+    let mut leased = 0.0;
+    let mut base = 0.0;
+    for p in props {
+        leasable += p.leasable_m2;
+        let l = p
+            .leased_m2
+            .or(p.occupancy_pct.map(|o| p.leasable_m2 * o / 100.0));
+        if let Some(l) = l {
+            leased += l;
+            base += p.leasable_m2;
+        }
+    }
+    PortfolioSummary {
+        property_count: props.len(),
+        leasable_m2: leasable,
+        leased_m2: leased,
+        occupancy_pct: (base > 0.0).then(|| leased / base * 100.0),
+    }
+}
+
+/// 読めた額と答え（BS・合計行）の比べ方: 一致 / 端数（tolerance 以内。千円・百万円未満の切り捨てが積もるなど）/ ずれ
+pub fn agreement(got: f64, want: f64, tolerance: f64) -> &'static str {
+    if (got - want).abs() < 0.5 {
+        "一致"
+    } else if want != 0.0 && ((got - want) / want).abs() <= tolerance {
+        "端数"
+    } else {
+        "ずれ"
+    }
+}
+
+/// 読み取りの確認結果
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Checks {
+    /// 借入の合計と BS（短期＋長期）: 一致 / 端数 / ずれ / 明細なし
+    pub loans: &'static str,
+    /// 物件の面積の合計と表の合計行: 一致 / 端数 / ずれ / 合計行なし / 物件なし
+    pub properties: &'static str,
+}
+
+pub fn checks(
+    debt: &DebtSchedule,
+    bs_loans: i64,
+    props: &[Property],
+    total: Option<&PropertyTotal>,
+) -> Checks {
+    let loans_total: i64 = debt.loans.iter().map(|l| l.balance_yen).sum();
+    let loans = if debt.loans.is_empty() {
+        "明細なし"
+    } else {
+        agreement(loans_total as f64, bs_loans as f64, 0.001)
+    };
+    let leasable: f64 = props.iter().map(|p| p.leasable_m2).sum();
+    let properties = match (total, props.is_empty()) {
+        (_, true) => "物件なし",
+        (Some(t), false) => agreement(leasable, t.leasable_m2, 0.001),
+        (None, false) => "合計行なし",
+    };
+    Checks { loans, properties }
+}
+
+/// 用途の区分（一覧の絞り込み用）。リポジトリの data/reit_sectors.csv が元
+pub const SECTORS: [&str; 8] = [
+    "office",
+    "logistics",
+    "residential",
+    "hotel",
+    "retail",
+    "healthcare",
+    "diversified",
+    "infra",
+];
+
+/// data/reit_sectors.csv（code,sector,note）を読む。知らない用途の行は捨てる
+pub fn parse_sectors(csv: &str) -> std::collections::HashMap<String, String> {
+    csv.lines()
+        .skip(1)
+        .filter_map(|l| {
+            let mut it = l.split(',');
+            let code = it.next()?.trim();
+            let sector = it.next()?.trim();
+            (!code.is_empty() && SECTORS.contains(&sector))
+                .then(|| (code.to_string(), sector.to_string()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn row(cells: &[&str]) -> Vec<String> {
         cells.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn summaries() {
+        let end = Date::new(2026, 5, 31);
+        let loan = |bal: i64, rate: f64, due: Date, t: Option<RateType>| Loan {
+            kind: Some(LoanKind::Long),
+            lender: "A".into(),
+            balance_yen: bal,
+            rate_pct: Some(rate),
+            due: Some(due),
+            rate_type: t,
+        };
+        let debt = DebtSchedule {
+            loans: vec![
+                loan(100, 1.0, Date::new(2026, 12, 1), Some(RateType::Fixed)), // 1年以内に返済 → 見直し
+                loan(200, 0.5, Date::new(2030, 5, 31), Some(RateType::Floating)), // 変動 → 見直し
+                loan(300, 0.8, Date::new(2029, 5, 31), None), // 記載なし → 上限だけ
+            ],
+            ladder: vec![("投資法人債".into(), [50, 0, 0, 0, 0, 0])],
+            ..Default::default()
+        };
+        let mix = rate_mix(&debt, 0);
+        let s = debt_summary(&debt, &mix, end);
+        assert_eq!(s.reprice_1y, 100 + 200 + 50);
+        assert_eq!(s.reprice_1y_max, 350 + 300);
+        assert!((s.avg_rate_pct.unwrap() - (100.0 + 100.0 + 240.0) / 600.0).abs() < 1e-9);
+        let props = vec![
+            Property {
+                id: "1".into(),
+                name: "a".into(),
+                leasable_m2: 100.0,
+                leased_m2: Some(90.0),
+                occupancy_pct: Some(90.0),
+                occupancy_computed: false,
+                annual_rent_yen: None,
+                rent_raw: String::new(),
+            },
+            Property {
+                id: "2".into(),
+                name: "b".into(),
+                leasable_m2: 100.0,
+                leased_m2: None,
+                occupancy_pct: Some(100.0),
+                occupancy_computed: false,
+                annual_rent_yen: None,
+                rent_raw: String::new(),
+            },
+        ];
+        let p = portfolio_summary(&props);
+        assert_eq!(p.property_count, 2);
+        assert!((p.occupancy_pct.unwrap() - 95.0).abs() < 1e-9);
+        let sec = parse_sectors("code,sector,note\n8951,office,\n3283,logistics,\n9999,unknown,\n");
+        assert_eq!(sec.get("8951").map(|s| s.as_str()), Some("office"));
+        assert!(!sec.contains_key("9999"));
     }
 
     #[test]
