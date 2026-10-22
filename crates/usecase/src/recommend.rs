@@ -64,6 +64,8 @@ pub fn candidates_of(rows: &[StockRow]) -> Vec<Candidate> {
             no_loss_years: r.no_loss_years,
             no_quarterly_loss: r.no_quarterly_loss,
             profit_uptrend: r.profit_uptrend,
+            payout_ratio: r.payout_ratio,
+            pbr: r.pbr,
         })
         .collect();
     select_candidates(&all)
