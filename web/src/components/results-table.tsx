@@ -28,12 +28,28 @@ import { cn } from "@/lib/utils";
 
 type Column = {
   key: MetricKey;
-  render: (r: StockRow) => string;
+  render: (r: StockRow) => React.ReactNode;
 };
 
+/** 1株配当と、それが会社予想か実績か（利回りはこの配当で出している） */
+export function DividendAmount({ r }: { r: StockRow }) {
+  if (r.dividend == null) return yen(null);
+  return (
+    <>
+      {yen(r.dividend)}
+      {r.dividend_basis && (
+        <span className="ml-1 text-[10px] text-muted-foreground">
+          {r.dividend_basis === "forecast" ? "予想" : "実績"}
+        </span>
+      )}
+    </>
+  );
+}
+
 // 数値の列。どのタブで出すかは filters.ts の METRICS（kinds）に合わせる
-const RENDER: Record<MetricKey, (r: StockRow) => string> = {
+const RENDER: Record<MetricKey, (r: StockRow) => React.ReactNode> = {
   price: (r) => yen(r.price),
+  dividend_ttm: (r) => <DividendAmount r={r} />,
   dividend_yield: (r) => pct(r.dividend_yield),
   yield_percentile: (r) => pct(r.yield_percentile, 0),
   pbr: (r) => times(r.pbr),
@@ -49,6 +65,7 @@ const RENDER: Record<MetricKey, (r: StockRow) => string> = {
 // 表の列の並び（株価を先頭に）
 const ORDER: MetricKey[] = [
   "price",
+  "dividend_ttm",
   "dividend_yield",
   "yield_percentile",
   "pbr",

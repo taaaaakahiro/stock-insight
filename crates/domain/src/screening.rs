@@ -4,6 +4,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Metric {
     Price,
+    /// 1株（REIT は1口）当たりの年間配当。利回りに使った値（会社予想、なければ実績）
+    Dividend,
     DividendYield,
     YieldPercentile,
     Pbr,
@@ -18,8 +20,9 @@ pub enum Metric {
 }
 
 impl Metric {
-    pub const ALL: [Metric; 11] = [
+    pub const ALL: [Metric; 12] = [
         Metric::Price,
+        Metric::Dividend,
         Metric::DividendYield,
         Metric::YieldPercentile,
         Metric::Pbr,
@@ -36,6 +39,7 @@ impl Metric {
     pub fn key(self) -> &'static str {
         match self {
             Metric::Price => "price",
+            Metric::Dividend => "dividend_ttm",
             Metric::DividendYield => "dividend_yield",
             Metric::YieldPercentile => "yield_percentile",
             Metric::Pbr => "pbr",

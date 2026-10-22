@@ -18,7 +18,7 @@ pub struct Query {
 }
 
 pub const LIST_COLUMNS: &str =
-    "i.code, i.price, i.price_date, i.dividend_yield, i.yield_percentile, i.pbr, i.per, \
+    "i.code, i.price, i.price_date, i.dividend_ttm, i.dividend_basis, i.dividend_yield, i.yield_percentile, i.pbr, i.per, \
      i.payout_ratio, i.doe, i.consecutive_increases, i.operating_margin, i.no_loss_years, i.profit_uptrend, \
      i.valuation, i.fetched_at, s.name, COALESCE(s.kind, 'stock') AS kind, s.market, s.sector33, s.size_class, \
      i.dividend_every_year, i.no_quarterly_loss, i.is_value, i.data_years, i.sales_growth, i.op_growth, \
@@ -156,6 +156,9 @@ pub const PRICE_HISTORY_BY_CODE: &str = "SELECT closes FROM price_history WHERE 
 
 /// 1銘柄の株式分割・併合（日付の古い順）
 pub const SPLITS_BY_CODE: &str = "SELECT date, factor FROM splits WHERE code = ? ORDER BY date";
+
+pub const FORECASTS_BY_CODE: &str =
+    "SELECT doc_id, disclosed, dps FROM dividend_forecasts WHERE code = ? ORDER BY disclosed";
 
 pub const ANNUALS_BY_CODE: &str =
     "SELECT period_end, doc_id, disclosed, net_sales, operating_income, \

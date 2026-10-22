@@ -142,6 +142,8 @@ mod tests {
             code: code.into(),
             price: 1000.0,
             price_date: "2026-10-21".into(),
+            dividend: Some(30.0),
+            dividend_basis: Some("forecast".into()),
             dividend_yield: Some(0.03),
             yield_percentile: None,
             pbr: None,

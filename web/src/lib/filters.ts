@@ -4,6 +4,7 @@
 export type Unit = "pct" | "times" | "yen" | "years";
 
 export type MetricKey =
+  | "dividend_ttm"
   | "dividend_yield"
   | "yield_percentile"
   | "pbr"
@@ -29,6 +30,7 @@ const ALL: Kind[] = ["stock", "reit", "etf"];
 const STOCK: Kind[] = ["stock"];
 
 export const METRICS: { key: MetricKey; label: string; unit: Unit; kinds: Kind[] }[] = [
+  { key: "dividend_ttm", label: "1株配当", unit: "yen", kinds: ALL },
   { key: "dividend_yield", label: "配当利回り", unit: "pct", kinds: ALL },
   { key: "yield_percentile", label: "利回りの過去5年比", unit: "pct", kinds: ALL },
   { key: "pbr", label: "PBR", unit: "times", kinds: STOCK },
@@ -46,7 +48,7 @@ export const METRICS: { key: MetricKey; label: string; unit: Unit; kinds: Kind[]
 export function metricLabel(key: MetricKey, kind: Kind): string {
   const label = METRICS.find((m) => m.key === key)?.label ?? key;
   if (kind === "stock") return label;
-  return label.replace("配当", "分配金").replace("株価", "価格");
+  return label.replace("1株配当", "1口分配金").replace("配当", "分配金").replace("株価", "価格");
 }
 
 export const metricsFor = (kind: Kind) => METRICS.filter((m) => m.kinds.includes(kind));

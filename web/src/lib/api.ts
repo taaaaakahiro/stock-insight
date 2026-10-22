@@ -6,6 +6,9 @@ export type StockRow = {
   code: string;
   price: number;
   price_date: string;
+  /** 利回りに使った1株（REIT は1口）配当。会社予想、予想がなければ実績。配当の開示がなければ null */
+  dividend: number | null;
+  dividend_basis: "forecast" | "actual" | null;
   dividend_yield: number | null;
   yield_percentile: number | null;
   pbr: number | null;

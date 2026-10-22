@@ -1,4 +1,4 @@
-//! 財務の取り込み（J-Quants の財務情報サマリー → financials_annual / financials_quarterly）。
+//! 財務の取り込み（J-Quants の財務情報サマリー → financials_annual / financials_quarterly / dividend_forecasts）。
 //! 指標の計算（daily）は、ここで保存した財務を D1 から読んで使う。
 
 use crate::PortError;
@@ -24,6 +24,18 @@ pub struct PeriodReport {
     pub period: CumulativePeriod,
 }
 
+/// 開示1件の会社予想の年間配当（決算短信・配当予想の修正）
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForecastReport {
+    pub code: StockCode,
+    pub doc_id: String,
+    pub disclosed: Date,
+    /// 予想の対象の事業年度の終了日
+    pub fiscal_year_end: Option<Date>,
+    /// None は「予想なし（未定・非開示）」
+    pub dps: Option<f64>,
+}
+
 pub trait FinancialStore {
     async fn save_annual_reports(
         &self,
@@ -33,6 +45,11 @@ pub trait FinancialStore {
     async fn save_period_reports(
         &self,
         reports: &[PeriodReport],
+        fetched_at: i64,
+    ) -> Result<(), PortError>;
+    async fn save_forecasts(
+        &self,
+        reports: &[ForecastReport],
         fetched_at: i64,
     ) -> Result<(), PortError>;
 }

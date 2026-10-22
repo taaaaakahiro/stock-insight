@@ -18,6 +18,14 @@ pub struct StoredAnnual {
     pub financial: AnnualFinancial,
 }
 
+/// 会社予想の配当の開示1件（dps が None は「予想なし」）
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredForecast {
+    pub doc_id: String,
+    pub disclosed: Date,
+    pub dps: Option<f64>,
+}
+
 /// 開示日が分からないときは、決算期末から45日後（決算短信の目安）に分かったとみなす
 const ASSUMED_DISCLOSURE_LAG_DAYS: i64 = 45;
 /// 指標に使う年次財務の期数
@@ -45,12 +53,48 @@ fn annual_as_period(a: &StoredAnnual) -> Option<CumulativePeriod> {
     })
 }
 
+/// 利回りに使う配当の移り変わり（新しい順）。実績・予想のどちらかの開示があった日ごとに、
+/// その日までで最新の開示の会社予想を使い、予想がなければ（未定・非開示）その日までの最新の実績を使う
+fn dividend_series(actuals: &[Dividend], forecasts: &[StoredForecast]) -> Vec<Dividend> {
+    let mut latest: Vec<&StoredForecast> = forecasts.iter().collect();
+    latest.sort_by(|a, b| (a.disclosed, &a.doc_id).cmp(&(b.disclosed, &b.doc_id)));
+    let mut days: Vec<Date> = actuals
+        .iter()
+        .map(|a| a.effective)
+        .chain(forecasts.iter().map(|f| f.disclosed))
+        .collect();
+    days.sort();
+    days.dedup();
+    days.into_iter()
+        .rev()
+        .filter_map(|day| {
+            let forecast = latest
+                .iter()
+                .rev()
+                .find(|f| f.disclosed <= day)
+                .and_then(|f| f.dps);
+            match forecast {
+                Some(annual) => Some(Dividend {
+                    effective: day,
+                    annual,
+                    forecast: true,
+                }),
+                None => domain::dividend_at(actuals, day).map(|a| Dividend {
+                    effective: day,
+                    ..a
+                }),
+            }
+        })
+        .collect()
+}
+
 /// 1銘柄分の入力を組み立てる: 株価と配当、年次財務（新しい期が先頭）、四半期単独の損益（古い順）。
 /// 株式分割があれば、終値と1株当たりの値（配当・EPS・BPS）を最新の株数の基準にそろえる
 /// （1株当たりの値は、開示した日より後の分割の分だけ直す）
 pub fn build_inputs(
     mut bars: Vec<PriceBar>,
     annuals: &[StoredAnnual],
+    forecasts: &[StoredForecast],
     quarterlies: &[CumulativePeriod],
     splits: &[Split],
 ) -> (
@@ -81,15 +125,25 @@ pub fn build_inputs(
         .collect();
     // 新しい期が先頭
     sorted.sort_by_key(|(_, a)| std::cmp::Reverse(a.financial.period_end));
-    let dividends = sorted
+    let actuals: Vec<Dividend> = sorted
         .iter()
         .filter_map(|(_, a)| {
             Some(Dividend {
                 effective: effective_date(a)?,
                 annual: a.financial.dps?,
+                forecast: false,
             })
         })
         .collect();
+    // 予想も実績と同じく、開示した日より後の分割の分だけ直す
+    let forecasts: Vec<StoredForecast> = forecasts
+        .iter()
+        .map(|f| StoredForecast {
+            dps: f.dps.map(|x| x * factor_after(splits, f.disclosed)),
+            ..f.clone()
+        })
+        .collect();
+    let dividends = dividend_series(&actuals, &forecasts);
     let latest = sorted.first().map(|(i, _)| *i);
     let fin = sorted.first().map(|(_, l)| FinancialData {
         doc_id: l.doc_id.clone(),
@@ -106,19 +160,33 @@ pub fn build_inputs(
     (MarketData { bars, dividends }, fin, quarters, latest)
 }
 
+/// D1 から読んだ全銘柄の財務（キーは銘柄コード）
+#[derive(Debug, Default)]
+pub struct StoredFinancials {
+    pub annuals: HashMap<String, Vec<StoredAnnual>>,
+    pub forecasts: HashMap<String, Vec<StoredForecast>>,
+    pub quarterlies: HashMap<String, Vec<CumulativePeriod>>,
+    pub splits: HashMap<String, Vec<Split>>,
+}
+
 /// 全銘柄の指標を計算する。株価の履歴がない銘柄は飛ばす
 pub fn compute_all(
     codes: &[StockCode],
     mut histories: HashMap<String, Vec<PriceBar>>,
-    annuals: &HashMap<String, Vec<StoredAnnual>>,
-    quarterlies: &HashMap<String, Vec<CumulativePeriod>>,
-    splits: &HashMap<String, Vec<Split>>,
+    stored: &StoredFinancials,
     run_id: &str,
     now: i64,
 ) -> (Vec<Snapshot>, usize) {
+    let StoredFinancials {
+        annuals,
+        forecasts,
+        quarterlies,
+        splits,
+    } = stored;
     let mut snaps = vec![];
     let mut skipped = 0;
     let no_annuals = vec![];
+    let no_forecasts = vec![];
     let no_quarters = vec![];
     let no_splits = vec![];
     for code in codes {
@@ -127,6 +195,7 @@ pub fn compute_all(
         let (market, fin, quarters, latest) = build_inputs(
             bars,
             anns,
+            forecasts.get(code.as_str()).unwrap_or(&no_forecasts),
             quarterlies.get(code.as_str()).unwrap_or(&no_quarters),
             splits.get(code.as_str()).unwrap_or(&no_splits),
         );
@@ -191,7 +260,7 @@ mod tests {
             annual("2025-03-31", Some("2025-05-10"), 40.0, 100.0),
             annual("2026-03-31", None, 44.0, 110.0),
         ];
-        let (m, fin, _, latest) = build_inputs(vec![], &annuals, &[], &[]);
+        let (m, fin, _, latest) = build_inputs(vec![], &annuals, &[], &[], &[]);
         assert_eq!(m.dividends.len(), 2);
         assert_eq!(
             m.dividends[0].effective,
@@ -211,7 +280,7 @@ mod tests {
             quarter("2026-03-31", "2025-09-30", PeriodType::Q2, 50.0),
             quarter("2026-03-31", "2025-12-31", PeriodType::Q3, 70.0),
         ];
-        let (_, _, quarters, _) = build_inputs(vec![], &annuals, &qs, &[]);
+        let (_, _, quarters, _) = build_inputs(vec![], &annuals, &[], &qs, &[]);
         let nets: Vec<Option<f64>> = quarters.iter().map(|q| q.net_income).collect();
         assert_eq!(nets, vec![Some(20.0), Some(30.0), Some(20.0), Some(30.0)]);
     }
@@ -236,15 +305,17 @@ mod tests {
         let (snaps, skipped) = compute_all(
             &[code, missing],
             hist,
-            &ann,
-            &HashMap::new(),
-            &HashMap::new(),
+            &StoredFinancials {
+                annuals: ann.clone(),
+                ..Default::default()
+            },
             "r1",
             0,
         );
         assert_eq!(skipped, 1, "株価の履歴がない銘柄は飛ばす");
         let i = &snaps[0].indicators;
         assert!((i.dividend_yield.unwrap() - 0.04).abs() < 1e-9);
+        assert_eq!(i.dividend_is_forecast, Some(false), "予想がなければ実績");
         assert!((i.payout_ratio.unwrap() - 0.4).abs() < 1e-9);
         assert_eq!(snaps[0].fin_doc_id.as_deref(), Some("doc-2026-03-31"));
     }
@@ -270,9 +341,11 @@ mod tests {
         let (snaps, _) = compute_all(
             std::slice::from_ref(&code),
             hist.clone(),
-            &ann,
-            &HashMap::new(),
-            &splits,
+            &StoredFinancials {
+                annuals: ann.clone(),
+                splits: splits.clone(),
+                ..Default::default()
+            },
             "r1",
             0,
         );
@@ -288,9 +361,10 @@ mod tests {
         let (unadjusted, _) = compute_all(
             &[code],
             hist,
-            &ann,
-            &HashMap::new(),
-            &HashMap::new(),
+            &StoredFinancials {
+                annuals: ann.clone(),
+                ..Default::default()
+            },
             "r1",
             0,
         );
@@ -298,5 +372,60 @@ mod tests {
             (unadjusted[0].indicators.dividend_yield.unwrap() - 0.08).abs() < 1e-9,
             "分割を知らなければ 40円 ÷ 500円 で2倍に出る"
         );
+    }
+
+    fn forecast(disclosed: &str, dps: Option<f64>) -> StoredForecast {
+        StoredForecast {
+            doc_id: format!("f-{disclosed}"),
+            disclosed: d(disclosed),
+            dps,
+        }
+    }
+
+    #[test]
+    fn yield_uses_latest_forecast_and_falls_back_to_actual() {
+        let annuals = [
+            annual("2025-03-31", Some("2025-05-10"), 40.0, 100.0),
+            annual("2026-03-31", Some("2026-05-12"), 44.0, 110.0),
+        ];
+        let forecasts = [
+            // 本決算と同じ日に来期の予想
+            forecast("2025-05-10", Some(42.0)),
+            // 第2四半期で増額
+            forecast("2025-11-10", Some(46.0)),
+            // 次の本決算では来期の予想が未定
+            forecast("2026-05-12", None),
+            // 第1四半期で予想を出した
+            forecast("2026-08-05", Some(50.0)),
+        ];
+        let (m, _, _, _) = build_inputs(vec![], &annuals, &forecasts, &[], &[]);
+        let at = |s| domain::dividend_at(&m.dividends, d(s)).map(|x| (x.annual, x.forecast));
+        assert_eq!(at("2025-05-09"), None);
+        assert_eq!(at("2025-05-10"), Some((42.0, true)));
+        assert_eq!(at("2025-12-01"), Some((46.0, true)));
+        assert_eq!(at("2026-06-01"), Some((44.0, false)), "予想が未定なら実績");
+        assert_eq!(at("2026-08-05"), Some((50.0, true)));
+    }
+
+    #[test]
+    fn actual_only_when_no_forecast_was_ever_disclosed() {
+        let annuals = [annual("2025-03-31", Some("2025-05-10"), 40.0, 100.0)];
+        let (m, _, _, _) = build_inputs(vec![], &annuals, &[], &[], &[]);
+        assert_eq!(m.dividends.len(), 1);
+        assert!(!m.dividends[0].forecast);
+        // 実績がなく予想だけ（上場直後など）でも利回りは出る
+        let (m, _, _, _) =
+            build_inputs(vec![], &[], &[forecast("2025-08-01", Some(30.0))], &[], &[]);
+        assert_eq!(m.dividends[0].annual, 30.0);
+    }
+
+    #[test]
+    fn forecast_disclosed_before_a_split_is_adjusted() {
+        // 2026-08-05 に予想60円、2026-09-29 に1:2の分割 → 30円として扱う
+        let forecasts = [forecast("2026-08-05", Some(60.0))];
+        let splits = [Split::new(d("2026-09-29"), 0.5).unwrap()];
+        let (m, _, _, _) = build_inputs(vec![], &[], &forecasts, &[], &splits);
+        assert_eq!(m.dividends[0].annual, 30.0);
+        assert!(m.dividends[0].forecast);
     }
 }
