@@ -112,6 +112,10 @@ mod tests {
                 no_quarterly_loss: None,
                 is_value: None,
                 data_years: None,
+                sales_growth: None,
+                op_growth: None,
+                progressive_dividend: None,
+                no_dividend_cut: None,
             }))
         }
         async fn price_history(&self, _: &StockCode) -> Result<Vec<PriceBar>, PortError> {

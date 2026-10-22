@@ -4,6 +4,7 @@
 pub mod access;
 pub mod analysis;
 pub mod calendar;
+pub mod disclosure;
 pub mod indicators;
 pub mod model;
 pub mod portfolio;

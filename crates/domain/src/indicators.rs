@@ -28,6 +28,9 @@ pub struct Indicators {
     pub is_value: Option<bool>,
     /// 判定に使えた年次財務の期数
     pub data_years: u32,
+    /// 売上高・営業利益の前年同期比（直近の期の累計。0.1 = 10% 増）。compute の後に analysis::yoy_growth で入れる
+    pub sales_growth: Option<f64>,
+    pub op_growth: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,8 +55,8 @@ impl Valuation {
 pub const CHEAP_PERCENTILE: f64 = 0.8;
 pub const EXPENSIVE_PERCENTILE: f64 = 0.2;
 const MIN_HISTORY_SAMPLES: usize = 52;
-/// 利回りの過去比に使う期間（J-Quants Light で取れる5年）
-const HISTORY_DAYS: i64 = 5 * 366;
+/// 利回りの過去比に使う期間（J-Quants Light で取れる5年）。終値の履歴はこれ以上の期間を持つ（price_history::KEEP_DAYS）
+pub const HISTORY_DAYS: i64 = 5 * 366;
 /// 配当の継続・通期赤字の判定に使う期数
 pub const ANALYSIS_YEARS: usize = 5;
 /// 四半期の赤字判定に使う四半期数と、判定に最低限必要な四半期数
@@ -199,6 +202,8 @@ pub fn compute(
         ),
         is_value: crate::analysis::is_value(pbr, per),
         data_years: years.len().min(ANALYSIS_YEARS) as u32,
+        sales_growth: None,
+        op_growth: None,
     })
 }
 

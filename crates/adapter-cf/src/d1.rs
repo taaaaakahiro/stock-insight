@@ -8,7 +8,7 @@ use serde::Deserialize;
 use usecase::daily::StoredAnnual;
 use usecase::detail::StockDetailQuery;
 use usecase::portfolio::PortfolioRepository;
-use usecase::screening::{DataStatus, IndicatorQuery, StockRow};
+use usecase::screening::{DataStatus, DisclosureRow, IndicatorQuery, StockRow};
 use usecase::PortError;
 use worker::wasm_bindgen::JsValue;
 use worker::{D1Database, D1PreparedStatement};
@@ -67,6 +67,10 @@ pub(crate) struct Row {
     no_quarterly_loss: Option<i64>,
     is_value: Option<i64>,
     data_years: Option<i64>,
+    sales_growth: Option<f64>,
+    op_growth: Option<f64>,
+    progressive_dividend: Option<i64>,
+    no_dividend_cut: Option<i64>,
     /// 条件に合う件数（一覧の SQL だけが返す）
     #[serde(default)]
     total: Option<i64>,
@@ -99,6 +103,42 @@ impl From<Row> for StockRow {
             no_quarterly_loss: r.no_quarterly_loss.map(|v| v != 0),
             is_value: r.is_value.map(|v| v != 0),
             data_years: r.data_years,
+            sales_growth: r.sales_growth,
+            op_growth: r.op_growth,
+            progressive_dividend: r.progressive_dividend.map(|v| v != 0),
+            no_dividend_cut: r.no_dividend_cut.map(|v| v != 0),
+        }
+    }
+}
+
+/// edinet_docs の行。phrases は JSON の文字列配列
+#[derive(Deserialize)]
+struct DisclosureDbRow {
+    doc_kind: String,
+    doc_id: String,
+    submitted: String,
+    period_end: Option<String>,
+    progressive_dividend: i64,
+    no_dividend_cut: i64,
+    dividend_raise: i64,
+    doe_target: i64,
+    payout_target: Option<f64>,
+    phrases: String,
+}
+
+impl From<DisclosureDbRow> for DisclosureRow {
+    fn from(r: DisclosureDbRow) -> Self {
+        DisclosureRow {
+            doc_kind: r.doc_kind,
+            doc_id: r.doc_id,
+            submitted: r.submitted,
+            period_end: r.period_end,
+            progressive_dividend: r.progressive_dividend != 0,
+            no_dividend_cut: r.no_dividend_cut != 0,
+            dividend_raise: r.dividend_raise != 0,
+            doe_target: r.doe_target != 0,
+            payout_target: r.payout_target,
+            phrases: serde_json::from_str(&r.phrases).unwrap_or_default(),
         }
     }
 }
@@ -308,6 +348,20 @@ impl IndicatorQuery for D1Indicators {
             latest_price_date: r.latest_price_date,
             latest_fin_date: r.latest_fin_date,
         }))
+    }
+
+    async fn disclosures(&self, code: &str) -> Result<Vec<DisclosureRow>, PortError> {
+        let rows: Vec<DisclosureDbRow> = self
+            .prepare(&Query {
+                sql: query::EDINET_DOCS.into(),
+                args: vec![Arg::Text(code.into())],
+            })?
+            .all()
+            .await
+            .map_err(err)?
+            .results()
+            .map_err(err)?;
+        Ok(rows.into_iter().map(DisclosureRow::from).collect())
     }
 }
 

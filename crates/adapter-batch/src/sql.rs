@@ -2,6 +2,7 @@
 
 use domain::analysis::PeriodType;
 use domain::stock_master::ListedStock;
+use usecase::edinet::{r2_key, DocKey, EdinetDoc};
 use usecase::fins::{AnnualReport, PeriodReport};
 use usecase::{BatchRun, Snapshot};
 
@@ -104,7 +105,8 @@ fn multi_row(
 
 const INDICATOR_COLUMNS: &str = "code, run_id, fetched_at, price, price_date, dividend_ttm, dividend_yield, \
      yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin, no_loss_years, \
-     profit_uptrend, valuation, fin_doc_id, fin_submitted, dividend_every_year, no_quarterly_loss, is_value, data_years";
+     profit_uptrend, valuation, fin_doc_id, fin_submitted, dividend_every_year, no_quarterly_loss, is_value, data_years, \
+     sales_growth, op_growth";
 
 /// 一覧用の最新指標（1銘柄1行）を upsert する
 pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
@@ -138,12 +140,14 @@ pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
                 Val::opt_b(i.no_quarterly_loss),
                 Val::opt_b(i.is_value),
                 Val::Int(i.data_years as i64),
+                Val::opt_f(i.sales_growth),
+                Val::opt_f(i.op_growth),
             ]
         })
         .collect();
     multi_row(
         &format!("INSERT INTO indicators_latest ({INDICATOR_COLUMNS})"),
-        23,
+        25,
         "ON CONFLICT(code) DO UPDATE SET run_id = excluded.run_id, fetched_at = excluded.fetched_at, \
          price = excluded.price, price_date = excluded.price_date, dividend_ttm = excluded.dividend_ttm, \
          dividend_yield = excluded.dividend_yield, yield_percentile = excluded.yield_percentile, pbr = excluded.pbr, \
@@ -152,7 +156,8 @@ pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
          no_loss_years = excluded.no_loss_years, profit_uptrend = excluded.profit_uptrend, \
          valuation = excluded.valuation, fin_doc_id = excluded.fin_doc_id, fin_submitted = excluded.fin_submitted, \
          dividend_every_year = excluded.dividend_every_year, no_quarterly_loss = excluded.no_quarterly_loss, \
-         is_value = excluded.is_value, data_years = excluded.data_years",
+         is_value = excluded.is_value, data_years = excluded.data_years, \
+         sales_growth = excluded.sales_growth, op_growth = excluded.op_growth",
         rows,
         usize::MAX,
     )
@@ -303,6 +308,51 @@ pub fn stocks_stmts(as_of: &str, stocks: &[ListedStock], now: i64) -> Vec<Stmt> 
         .collect()
 }
 
+/// EDINET の書類（銘柄・種類ごとに最新1通）を upsert する
+pub fn edinet_docs_stmts(docs: &[EdinetDoc], fetched_at: i64) -> Vec<Stmt> {
+    let rows = docs
+        .iter()
+        .map(|e| {
+            let (d, s) = (&e.doc, &e.signals);
+            vec![
+                Val::Text(d.code.clone()),
+                Val::Text(d.kind.as_str().into()),
+                Val::Text(d.doc_id.clone()),
+                Val::Text(d.submitted.to_string()),
+                d.period_end.map_or(Val::Null, |p| Val::Text(p.to_string())),
+                Val::Text(r2_key(&d.code, d.kind)),
+                Val::Int(s.progressive as i64),
+                Val::Int(s.no_cut as i64),
+                Val::Int(s.raise as i64),
+                Val::Int(s.doe_target as i64),
+                Val::opt_f(s.payout_target),
+                Val::Text(serde_json::to_string(&s.phrases).unwrap_or_else(|_| "[]".into())),
+                Val::Int(fetched_at),
+            ]
+        })
+        .collect();
+    multi_row(
+        "INSERT INTO edinet_docs (code, doc_kind, doc_id, submitted, period_end, r2_key, progressive_dividend, \
+         no_dividend_cut, dividend_raise, doe_target, payout_target, phrases, fetched_at)",
+        13,
+        "ON CONFLICT(code, doc_kind) DO UPDATE SET doc_id = excluded.doc_id, submitted = excluded.submitted, \
+         period_end = excluded.period_end, r2_key = excluded.r2_key, \
+         progressive_dividend = excluded.progressive_dividend, no_dividend_cut = excluded.no_dividend_cut, \
+         dividend_raise = excluded.dividend_raise, doe_target = excluded.doe_target, \
+         payout_target = excluded.payout_target, phrases = excluded.phrases, fetched_at = excluded.fetched_at",
+        rows,
+        usize::MAX,
+    )
+}
+
+/// 古くなった書類の行を消す（R2 のファイルはバッチの最後に消す）
+pub fn delete_edinet_doc_stmt(key: &DocKey) -> Stmt {
+    Stmt {
+        sql: "DELETE FROM edinet_docs WHERE code = ? AND doc_kind = ?".into(),
+        params: vec![Val::Text(key.0.clone()), Val::Text(key.1.as_str().into())],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,13 +405,15 @@ mod tests {
                 no_quarterly_loss: None,
                 is_value: None,
                 data_years: 0,
+                sales_growth: None,
+                op_growth: None,
             },
             fin_doc_id: None,
             fin_submitted: None,
         };
         let snaps: Vec<_> = (0..12).map(|i| snap(&format!("{}", 1300 + i))).collect();
         let stmts = snapshots_stmts(&snaps);
-        assert_eq!(stmts.len(), 3, "23列なので1文4行まで");
+        assert_eq!(stmts.len(), 3, "25列なので1文4行まで");
         assert!(stmts.iter().all(|s| s.params.len() <= 100));
         assert_eq!(stmts[0].sql.matches("(?, ").count(), 4);
         let h = price_history_stmts(
@@ -369,6 +421,40 @@ mod tests {
             1,
         );
         assert_eq!(h.len(), 3, "履歴は1文10行まで");
+    }
+
+    #[test]
+    fn edinet_rows_keep_signals_and_phrases() {
+        use domain::disclosure::{DividendSignals, DocKind};
+        use domain::Date;
+        use usecase::edinet::DocRef;
+        let doc = EdinetDoc {
+            doc: DocRef {
+                code: "7203".into(),
+                kind: DocKind::Annual,
+                doc_id: "S100AAAA".into(),
+                submitted: Date::new(2026, 6, 20),
+                period_end: Some(Date::new(2026, 3, 31)),
+            },
+            signals: DividendSignals {
+                progressive: true,
+                payout_target: Some(0.3),
+                phrases: vec!["累進配当を基本方針とし…".into()],
+                ..Default::default()
+            },
+        };
+        let stmts = edinet_docs_stmts(&vec![doc; 8], 1);
+        assert_eq!(stmts.len(), 2, "13列なので1文7行まで");
+        let p = &stmts[0].params;
+        assert_eq!(p[5], Val::Text("edinet/7203/annual.json.gz".into()));
+        assert_eq!(p[6], Val::Int(1));
+        assert_eq!(p[7], Val::Int(0));
+        assert_eq!(p[11], Val::Text(r#"["累進配当を基本方針とし…"]"#.into()));
+        let del = delete_edinet_doc_stmt(&("7203".into(), DocKind::Semiannual));
+        assert_eq!(
+            del.render(),
+            "DELETE FROM edinet_docs WHERE code = '7203' AND doc_kind = 'semiannual';"
+        );
     }
 
     #[test]

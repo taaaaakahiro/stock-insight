@@ -4,12 +4,13 @@
 //!   GET /api/me       ログイン中のユーザー
 //!   GET /api/stocks   スクリーニング一覧（F2）
 //!   GET /api/status   データ鮮度（F8）
+//!   GET /api/stocks/:code/edinet    有報・半期報告書（最新1通ずつ）から拾った配当方針の手がかり
 //!   GET /api/portfolio              登録した銘柄と売り時のサイン
 //!   PUT /api/portfolio/:code        銘柄を登録
 //!   DELETE /api/portfolio/:code     登録を外す
 //!   GET /api/recommendations        最新日の AIレコメンド（F7）
 //!
-//! 一覧・状態は、データの版（最新バッチと EDINET の取り込み）をキーに Cache API へ置く。
+//! 一覧・配当方針・状態は、データの版（最新バッチと EDINET の取り込み）をキーに Cache API へ置く。
 //! D1 の無料枠（読み取り 500万行/日）を画面の操作で使い切らないため。
 //!
 //! Cron Trigger（平日18:30 JST）では、GitHub Actions の日次バッチ（daily-batch.yml）を起動する。
@@ -29,7 +30,7 @@ use std::rc::Rc;
 use usecase::auth::{authenticate, AuthError, AuthUser, CachedUsers, RequestMeta, UserMemo};
 use usecase::detail::{stock_detail, StockDetail};
 use usecase::portfolio::PortfolioError;
-use usecase::screening::{data_status, screen, StockRow};
+use usecase::screening::{data_status, disclosures, screen, StockRow};
 use usecase::Clock;
 use worker::{
     event, Cache, Context, Env, Request, Response, Result, RouteContext, Router, ScheduleContext,
@@ -41,7 +42,7 @@ const AI_BINDING: &str = "AI";
 /// wrangler.jsonc の triggers.crons のうち、AIレコメンドを作るほう
 const RECOMMEND_CRON: &str = "0 12 * * 1-5";
 
-/// ブラウザに持たせる時間（一覧・状態）
+/// ブラウザに持たせる時間（一覧・配当方針・状態）
 const BROWSER_CACHE: &str = "private, max-age=300";
 /// Cache API に置く時間。版が変わればキーも変わるので、長くてよい
 const SHARED_TTL_SECS: u32 = 86_400;
@@ -130,6 +131,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/api/me", me)
         .get_async("/api/stocks", stocks)
         .get_async("/api/stocks/:code", stock_detail_route)
+        .get_async("/api/stocks/:code/edinet", edinet)
         .get_async("/api/status", status)
         .get_async("/api/portfolio", portfolio)
         .put_async("/api/portfolio/:code", portfolio_add)
@@ -220,6 +222,32 @@ async fn stocks(req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
                 "page": page.page,
                 "page_size": page.page_size,
             })),
+            Err(e) => internal(&e.0),
+        }
+    })
+    .await
+}
+
+async fn edinet(req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let code = ctx.param("code").cloned().unwrap_or_default();
+    shared(&req, &ctx.env, |repo| async move {
+        match disclosures(&repo, &code).await {
+            Ok(Some(docs)) => json_ok(&json!({
+                "code": code,
+                "docs": docs.iter().map(|d| json!({
+                    "doc_kind": d.doc_kind,
+                    "doc_id": d.doc_id,
+                    "submitted": d.submitted,
+                    "period_end": d.period_end,
+                    "progressive_dividend": d.progressive_dividend,
+                    "no_dividend_cut": d.no_dividend_cut,
+                    "dividend_raise": d.dividend_raise,
+                    "doe_target": d.doe_target,
+                    "payout_target": d.payout_target,
+                    "phrases": d.phrases,
+                })).collect::<Vec<_>>(),
+            })),
+            Ok(None) => json_error(400, "bad_request", "bad stock code"),
             Err(e) => internal(&e.0),
         }
     })
@@ -493,6 +521,10 @@ fn row_json(r: &StockRow) -> Value {
         "no_quarterly_loss": r.no_quarterly_loss,
         "is_value": r.is_value,
         "data_years": r.data_years,
+        "sales_growth": r.sales_growth,
+        "op_growth": r.op_growth,
+        "progressive_dividend": r.progressive_dividend,
+        "no_dividend_cut": r.no_dividend_cut,
     })
 }
 

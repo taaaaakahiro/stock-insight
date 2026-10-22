@@ -1,4 +1,5 @@
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
+import { EdinetPolicy } from "@/components/edinet-policy";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -11,7 +12,7 @@ import {
 } from "@/components/ui/table";
 import type { StockRow } from "@/lib/api";
 import { type Filters, type Kind, type MetricKey, metricLabel, metricsFor } from "@/lib/filters";
-import { count, pct, times, yen } from "@/lib/format";
+import { count, growth, pct, times, yen } from "@/lib/format";
 import { navigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
@@ -31,6 +32,8 @@ const RENDER: Record<MetricKey, (r: StockRow) => string> = {
   doe: (r) => pct(r.doe),
   consecutive_increases: (r) => count(r.consecutive_increases),
   operating_margin: (r) => pct(r.operating_margin, 1),
+  sales_growth: (r) => growth(r.sales_growth),
+  op_growth: (r) => growth(r.op_growth),
 };
 
 // 表の列の並び（株価を先頭に）
@@ -44,6 +47,8 @@ const ORDER: MetricKey[] = [
   "doe",
   "consecutive_increases",
   "operating_margin",
+  "sales_growth",
+  "op_growth",
 ];
 
 function columnsFor(kind: Kind): Column[] {
@@ -129,7 +134,8 @@ const BADGES: { key: keyof StockRow; label: string; hint: string; className: str
 
 export function Flags({ r }: { r: StockRow }) {
   const on = BADGES.filter((b) => r[b.key] === true);
-  if (on.length === 0) {
+  const policy = r.progressive_dividend === true || r.no_dividend_cut === true;
+  if (on.length === 0 && !policy) {
     return (
       <span className="text-xs text-muted-foreground" title="判定できる財務データがまだ足りません">
         —
@@ -143,6 +149,7 @@ export function Flags({ r }: { r: StockRow }) {
           {b.label}
         </Badge>
       ))}
+      {policy && <EdinetPolicy r={r} />}
     </span>
   );
 }

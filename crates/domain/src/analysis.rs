@@ -142,6 +142,36 @@ pub fn dividend_every_year(dps: &[Option<f64>], years: usize) -> Option<bool> {
     Some(dps[..years].iter().all(|d| d.is_some_and(|v| v > 0.0)))
 }
 
+/// 前年同期比の伸び率（売上高, 営業利益）。0.1 = 10% 増。
+/// 直近の期（1Q〜FY の期首からの累計）と、1年前の同じ期の累計を比べる。
+/// 前年の値がないか 0 以下（赤字からの改善など）なら、その項目は None
+pub fn yoy_growth(periods: &[CumulativePeriod]) -> (Option<f64>, Option<f64>) {
+    let Some(latest) = periods
+        .iter()
+        .filter(|p| p.net_sales.is_some() || p.operating_income.is_some())
+        .max_by_key(|p| (p.period_end, p.period_type))
+    else {
+        return (None, None);
+    };
+    // 決算期の変更で期末日が数日ずれても同じ期とみなす
+    let one_year_ago = latest.fiscal_year_end.to_days() - 365;
+    let prev = periods.iter().find(|p| {
+        p.period_type == latest.period_type
+            && (p.fiscal_year_end.to_days() - one_year_ago).abs() <= 15
+    });
+    let growth = |cur: Option<f64>, prev: Option<f64>| {
+        let (c, p) = (cur?, prev?);
+        (p > 0.0).then(|| c / p - 1.0)
+    };
+    match prev {
+        Some(p) => (
+            growth(latest.net_sales, p.net_sales),
+            growth(latest.operating_income, p.operating_income),
+        ),
+        None => (None, None),
+    }
+}
+
 /// バリュー株の目安: PBR と PER の両方が基準以下（PER は黒字が前提）
 pub const VALUE_PBR_MAX: f64 = 1.0;
 pub const VALUE_PER_MAX: f64 = 15.0;
@@ -213,6 +243,26 @@ mod tests {
             "判定できる四半期が足りない"
         );
         assert_eq!(no_quarterly_loss(&q[..3], 20, 3), Some(true));
+    }
+
+    #[test]
+    fn growth_compares_same_period_last_year() {
+        let periods = [
+            cum("2025-03-31", "2024-09-30", PeriodType::Q2, 20.0),
+            cum("2025-03-31", "2025-03-31", PeriodType::FY, 40.0),
+            cum("2026-03-31", "2025-09-30", PeriodType::Q2, 25.0),
+        ];
+        let (sales, op) = yoy_growth(&periods);
+        assert!(
+            (sales.unwrap() - 0.25).abs() < 1e-9,
+            "2Q 累計どうし（FY とは比べない）"
+        );
+        assert!((op.unwrap() - 0.25).abs() < 1e-9);
+        assert_eq!(yoy_growth(&periods[..2]), (None, None), "1年前の FY がない");
+        let mut loss = periods.clone();
+        loss[0].operating_income = Some(-5.0);
+        assert_eq!(yoy_growth(&loss).1, None, "前年が赤字なら伸び率は出さない");
+        assert_eq!(yoy_growth(&[]), (None, None));
     }
 
     #[test]

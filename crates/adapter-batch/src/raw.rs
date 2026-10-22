@@ -1,5 +1,6 @@
-//! J-Quants の応答を全項目そのまま、日付ごとの gzip JSON にして手元に書く（あとで R2 に上げる）。
-//! 1ファイル = 1日分の全銘柄。項目を選ばないので、後からどんな分析にも使える。
+//! 取得したデータを gzip JSON にして手元に書く（あとで R2 に上げる）。
+//! - J-Quants: 応答を全項目そのまま、1ファイル = 1日分の全銘柄。後からどんな分析にも使える
+//! - EDINET: 書類から抜いた文章を、1ファイル = 1銘柄・1種類（最新の1通で上書き）
 
 use domain::Date;
 use flate2::write::GzEncoder;
@@ -29,6 +30,21 @@ pub fn write_day(
         .and_then(|mut f| f.flush())
         .map_err(|e| PortError(format!("raw: {e}")))?;
     Ok(Some(path))
+}
+
+/// `{dir}/{key}` に1件を gzip JSON で書く（key は R2 のキーと同じ。例: edinet/7203/annual.json.gz）
+pub fn write_object(dir: &Path, key: &str, value: &Value) -> Result<PathBuf, PortError> {
+    let path = dir.join(key);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| PortError(format!("raw: {e}")))?;
+    }
+    let file = std::fs::File::create(&path).map_err(|e| PortError(format!("raw: {e}")))?;
+    let mut gz = GzEncoder::new(file, Compression::default());
+    serde_json::to_writer(&mut gz, value).map_err(|e| PortError(format!("raw: {e}")))?;
+    gz.finish()
+        .and_then(|mut f| f.flush())
+        .map_err(|e| PortError(format!("raw: {e}")))?;
+    Ok(path)
 }
 
 #[cfg(test)]

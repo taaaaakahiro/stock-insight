@@ -1,6 +1,6 @@
-# 07 デプロイ手順（初回の本番公開）
+# 07 デプロイ手順
 
-stock.insight.maa-un.com に API Worker と画面を初めて公開する手順。本番への変更を含むため、組織の承認フロー（宣言 → 影響範囲 → バックアップ → ステージング相当での確認 → 人の承認 → 実行と報告）に沿って進める。
+stock.insight.maa-un.com に API Worker と画面を公開する手順。初回の公開は 2026-10-21 に済んでいる。0.〜6. は初回の記録を兼ねた手順で、2回目以降は「[2回目以降のデプロイ](#2回目以降のデプロイ)」の流れで同じ手順を使う。本番への変更を含むため、組織の承認フロー（宣言 → 影響範囲 → バックアップ → ステージング相当での確認 → 人の承認 → 実行と報告）に沿って進める。
 
 コマンドはリポジトリのルートで実行する。wrangler は `npx wrangler@4.151.3`（以下 `wrangler` と書く）。
 
@@ -10,12 +10,12 @@ stock.insight.maa-un.com に API Worker と画面を初めて公開する手順�
 |---|---|---|
 | wrangler のログイン先 | `wrangler whoami` | maa'un japan の Cloudflare アカウント |
 | main が最新で CI が通っている | `git pull` / GitHub の Actions | `ci` が成功 |
-| 本番 D1 の現在のテーブル | `wrangler d1 execute maaun-stock-insight --remote --command "SELECT name FROM sqlite_master WHERE type='table'"` | `batch_runs`、`indicators_latest`、`financials_annual` |
-| Worker がまだない | `wrangler deployments list --name maaun-stock-insight` | 見つからない（初回） |
+| 本番 D1 の現在のテーブル | `wrangler d1 execute maaun-stock-insight --remote --command "SELECT name FROM sqlite_master WHERE type='table'"` | 初回は `batch_runs`、`indicators_latest`、`financials_annual`。今は `migrations/0001`〜`0008` のテーブルすべて（[05](05_detailed_design.md#テーブル定義)） |
+| Worker の状態 | `wrangler deployments list --name maaun-stock-insight` | 初回は見つからない。2回目以降は今のバージョン ID を控える（切り戻し先） |
 
 ## 1. 宣言と影響範囲
 
-**やること**: 本番 D1 にユーザー用のテーブルを足し、Worker `maaun-stock-insight` を新しく作ってカスタムドメイン stock.insight.maa-un.com で公開する。
+**やること**（初回の例）: 本番 D1 にユーザー用のテーブルを足し、Worker `maaun-stock-insight` を新しく作ってカスタムドメイン stock.insight.maa-un.com で公開する。2回目以降は、変えるテーブル・Worker・シークレットを同じ形の表にする。
 
 | 対象 | 変更 | 件数・範囲 | 既存への影響 |
 |---|---|---|---|
@@ -46,7 +46,7 @@ D1 の Time Travel でも過去の時点に戻せる（`wrangler d1 time-travel 
 
 ```bash
 pnpm --dir web install --frozen-lockfile
-VITE_CLERK_PUBLISHABLE_KEY=$(gh variable get CLERK_PUBLISHABLE_KEY --repo maa-un/area-insight) pnpm --dir web build
+VITE_CLERK_PUBLISHABLE_KEY=$(gh variable get CLERK_PUBLISHABLE_KEY --repo taaaaakahiro/stock-insight) pnpm --dir web build
 grep -v '"routes"' wrangler.jsonc > wrangler.unrouted.jsonc   # 初回だけ
 npx wrangler@4.151.3 deploy --config wrangler.unrouted.jsonc   # 初回だけ
 npx wrangler@4.151.3 versions upload --config wrangler.unrouted.jsonc
@@ -68,9 +68,13 @@ rm wrangler.unrouted.jsonc
 
 ### 5-1. D1 にテーブルを追加
 
+初回は `0002_users.sql`。2回目以降は新しく足したマイグレーションのファイルを指定する。`ADD COLUMN` を含むファイルは2回目に「列がすでにある」で止まるので、まだ適用していないファイルだけを流す（適用済みかは `wrangler d1 execute maaun-stock-insight --remote --command "PRAGMA table_info(<テーブル>)"` で確かめる）。
+
 ```bash
 npx wrangler@4.151.3 d1 execute maaun-stock-insight --remote --file migrations/0002_users.sql
 ```
+
+日次バッチも毎回最初に `batch-cli migrate` で `migrations/` をすべて適用する。新しいテーブルを読む Worker を出すときは、デプロイより先にここで適用しておく（バッチを待つと、その間 API が 500 になる）。
 
 ### 5-2. Worker Secret を登録
 
@@ -128,16 +132,24 @@ Clerk ダッシュボード → Users → 対象のユーザー → Metadata の
 | 公開を止めたい | `wrangler.jsonc` の `routes` を外して `wrangler deploy`（カスタムドメインが外れる）。または Worker を削除（要承認） |
 | D1 を戻したい | `wrangler d1 time-travel restore maaun-stock-insight --bookmark <控えたブックマーク>`、または 2. の書き出しから復元（どちらも要承認） |
 
-`users`・`login_events` は新しく足すだけなので、残しても既存の処理に影響しない。消す場合は DROP になるため、必ず承認を得る。
+マイグレーションはテーブル・列を足すだけなので、Worker を戻しても足したテーブルは残してよい（既存の処理に影響しない）。消す場合は DROP になるため、必ず承認を得る。
 
 ## 2回目以降のデプロイ
 
-画面と Worker を変えたときは 3.（プレビュー）→ 承認 → `wrangler deploy` → 6. の確認。テーブル定義を変えるときは 2.（バックアップ）と `batch-cli migrate` も行う。GitHub Actions からの自動デプロイは、デプロイ用の API トークン（[06](06_secrets_and_repository.md) のデプロイ用の権限）を用意してから追加する。
+画面と Worker を変えたときは 0.（今のバージョン ID を控える）→ 3.（プレビュー。2回目以降は `wrangler.jsonc` のまま `versions upload` でよい）→ 4. 承認 → 5-3. `wrangler deploy` → 6. の確認。テーブル定義を変えるときは、デプロイの前に 2.（バックアップ）と 5-1.（マイグレーション）も行う。
+
+```bash
+VITE_CLERK_PUBLISHABLE_KEY=$(gh variable get CLERK_PUBLISHABLE_KEY --repo taaaaakahiro/stock-insight) pnpm --dir web build
+npx wrangler@4.151.3 versions upload
+```
+
+デプロイは共有の作業ツリーではなく、main を切り出した clean な worktree から行う（他の作業中の変更をビルドに混ぜないため）。GitHub Actions からの自動デプロイは未設定。追加するときは API トークンに Workers 編集の権限を足す（[06](06_secrets_and_repository.md)）。
 
 ## 日次バッチを有効にする
 
-日次バッチは GitHub Actions の `daily-batch`。Worker の Cron Trigger（`wrangler.jsonc` の `triggers.crons`、平日 09:30 UTC = 18:30 JST）が `workflow_dispatch` で起動する。
+日次バッチは GitHub Actions の `daily-batch`。Worker の Cron Trigger（`wrangler.jsonc` の `triggers.crons`、平日 09:30 UTC = 18:30 JST）が `workflow_dispatch` で起動する。中身は [05 日次バッチのステップ](05_detailed_design.md#日次バッチのステップ)。
 
+0. GitHub Actions Secrets に `CLOUDFLARE_ACCOUNT_ID`・`D1_DATABASE_ID`・`CLOUDFLARE_API_TOKEN`（D1 編集・R2 編集）・`JQUANTS_API_KEY`・`EDINET_API_KEY` があることを `gh secret list` で確かめる（[06](06_secrets_and_repository.md)）。取得元だけを確かめたいときは、D1 に触れない `probe` で流せる: `gh workflow run daily-batch --repo taaaaakahiro/stock-insight -f probe=true`（結果の SQL は成果物 `probe-sql`）
 1. GitHub で Fine-grained personal access token を作る（Repository access: `taaaaakahiro/stock-insight` のみ、Permissions: Actions = Read and write、有効期限を設定）
 2. Worker Secret に登録する（値は対話入力。ダッシュボードの場合は Variables and Secrets に Secret として追加）
 
@@ -146,22 +158,66 @@ npx wrangler@4.151.3 secret put GITHUB_DISPATCH_TOKEN
 ```
 
 3. `wrangler deploy` で Cron Trigger を反映する（手順 5-3 と同じ。画面は公開キー入りでビルドしてから）
-4. 初回は手動で全銘柄を流して確かめる（休場日・当日実行済みの判定は `force=true` で飛ばせる）
+4. 初回は手動で全銘柄を流して確かめる（休場日・当日実行済みの判定は `force=true` で飛ばせる）。初回は J-Quants の過去5年分で約1時間、EDINET の過去400日分の書類一覧でさらに1時間ほどかかる。時間切れ（`max_minutes`、EDINET は60分）になっても次回は続きから取る
 
 ```bash
 gh workflow run daily-batch --repo taaaaakahiro/stock-insight -f force=true
 ```
 
-5. 次の平日 18:30 以降に、`batch_runs` に `daily-...` の行が増えていること、`wrangler tail` に `dispatched daily-batch` が出ていることを確かめる
+5. 次の平日 18:30 以降に、`batch_runs` に `daily-...` の行が `succeeded` で増えていること、`wrangler tail` に `dispatched daily-batch` が出ていること、画面のヘッダーの株価の日付が進んでいることを確かめる
+
+D1 の書き込みは1日10万行までなので、`persist_every` を小さくして流さない（保存のたびに全銘柄の終値の履歴を書き直す）。
 
 止めたいときは `wrangler.jsonc` の `triggers.crons` を空にして `wrangler deploy`（GitHub 側の予備の schedule は、ワークフローを無効化する: `gh workflow disable daily-batch`）。
+
+## 株価の履歴を5年分に取り直す
+
+v0.3.0 までは終値の履歴（D1 `price_history`）を直近3年に切り詰めていたため、利回りの過去5年比が実際は3年分で計算されていた。保存期間を5年＋1か月に直した版を main にマージしたあと、一度だけ過去5年分の株価を J-Quants から取り直す。本番の D1 を書き換えるので、承認フローに沿って進める。
+
+**やること**: 日次バッチを `refill_prices=true` で1回流し、全銘柄の `price_history` を過去5年分で書き直す。
+
+| 対象 | 変更 | 件数・範囲 | 既存への影響 |
+|---|---|---|---|
+| D1 `price_history` | 全銘柄の `closes` を5年分に書き直す（同じ日付は J-Quants の同じ値で上書き） | 約4,200行（D1 の書き込み上限 10万行/日の5%弱）。1行あたり約20KB、全体で約90MB | 削除なし。履歴が長くなるだけ |
+| D1 `indicators_latest`・`batch_runs` | 続く `compute` で、利回りの過去5年比と valuation が5年分で計算し直される | 約4,200行・1行 | 一覧の「過去5年比」とポートフォリオの「割高」のサインが変わる銘柄がある |
+| D1 の財務・`sync_state`、R2 | 変えない | — | なし |
+
+1. この修正を入れた版を main にマージする（Worker のデプロイは不要。変わるのはバッチだけ）
+2. バックアップ（手順 2. と同じ）
+
+```bash
+mkdir -p backups && npx wrangler@4.151.3 d1 export maaun-stock-insight --remote --table price_history --output backups/price_history-$(date +%Y%m%d-%H%M).sql
+```
+
+3. 先に D1 に触れない `probe` で、J-Quants から取れることを確かめる（ステージング相当）
+
+```bash
+gh workflow run daily-batch --repo taaaaakahiro/stock-insight -f probe=true
+```
+
+4. 1〜3 の結果を見せて承認を得る
+5. 取り直す。休場日や当日の実行後でも動くよう `force=true` を付ける（通常の取り込み・指標計算・EDINET も続けて動く）
+
+```bash
+gh workflow run daily-batch --repo taaaaakahiro/stock-insight -f refill_prices=true -f force=true
+```
+
+6. 確認と報告
+
+| 確認すること | 方法 | 期待する結果 |
+|---|---|---|
+| 取り直しの範囲 | Actions のログの `sync-jq: prices ... (refill from <5年前の日付>)` と最後の `persist: ... price histories` | 約4,200銘柄を保存 |
+| 履歴の長さ | `wrangler d1 execute maaun-stock-insight --remote --command "SELECT code, substr(closes, 1, 8) AS first_day, last_date FROM price_history WHERE code = '7203'"` | `first_day` が約5年前 |
+| 指標 | `batch_runs` の最新行が `succeeded`、画面の「過去5年比」が出ている | — |
+
+所要は J-Quants の呼び出しが約1,250日分で30〜45分。`max_minutes` を超えて止まったときは、同じコマンドをもう一度流す（`sync_state` は変えていないので、取り直しは最初からやり直しになるが、同じ値の上書きなので問題ない）。うまくいかなかったときは 2. の書き出しから `price_history` を戻す（要承認）。
 
 ## バージョンとタグ
 
 版の元は `Cargo.toml` の `workspace.package.version` だけ（semver: MAJOR.MINOR.PATCH）。画面のフッターと `/api/status` の `version` はビルド時にここから入る。
 
-1. `Cargo.toml` と `web/package.json` の version を上げて main にマージする
-2. 同じ番号でタグを押す（`git tag v0.2.0 && git push origin v0.2.0`）。`release.yml` が Cargo.toml と照合し、一致しなければ失敗する。一致すれば GitHub Release を作る
-3. 本番への反映は 5-3 と同じ（`wrangler deploy`）。デプロイ後、フッターの `v0.2.0` と `/api/status` の `version` がタグと同じであることを確かめる
+1. `Cargo.toml` と `web/package.json` の version を上げて main にマージする（画面の版は `web/vite.config.ts` が Cargo.toml から読む。`web/package.json` は揃えておくだけ）
+2. 同じ番号でタグを押す（`git tag v0.3.0 && git push origin v0.3.0`）。`release.yml` が Cargo.toml と照合し、一致しなければ失敗する。一致すれば GitHub Release を作る
+3. 本番への反映は 5-3 と同じ（`wrangler deploy`）。デプロイ後、フッターの `v0.3.0` と `/api/status` の `version` がタグと同じであることを確かめる
 
 タグと画面の版がずれているときは、タグを打ち直すのではなく version を直して出し直す。

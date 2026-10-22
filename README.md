@@ -62,6 +62,7 @@ python3 scripts/verify_sql.py target/poc_offline.sql   # 出力SQLをSQLiteで�
 
 # 実データ（ネットワークとキーが必要）
 cargo run -p batch-cli -- sync-master --dry-run master.sql   # JPX の上場銘柄一覧 → 銘柄マスタ
+cargo run -p batch-cli -- sync-edinet --dry-run edinet.sql --from 2026-06-22 --until 2026-06-26 --limit 5   # EDINET（D1 に触れない）
 cargo run -p batch-cli -- ingest --codes 7203,8058 --dry-run out.sql
 cargo run -p batch-cli -- migrate
 cargo run -p batch-cli -- ingest --codes 7203,8058 --shard 0/2 --concurrency 4
@@ -103,7 +104,8 @@ curl -H "Authorization: Bearer $(curl -s localhost:9871/token/user_member)" loca
 | エンドポイント | 内容 |
 | --- | --- |
 | `GET /api/me` | ログイン中のユーザー（管理者かどうかを含む） |
-| `GET /api/stocks` | スクリーニング一覧。`<指標>_min` / `<指標>_max`（price, dividend_yield, yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin）、`valuation`、`no_loss_years`、`profit_uptrend`、`sort`、`order`、`page`（50件ずつ） |
+| `GET /api/stocks` | スクリーニング一覧。`<指標>_min` / `<指標>_max`（price, dividend_yield, yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin, sales_growth, op_growth）、`valuation`、`no_loss_years`、`profit_uptrend`、`dividend_policy`（累進配当・非減配の記述あり）、`sort`、`order`、`page`（50件ずつ） |
+| `GET /api/stocks/:code/edinet` | 有報・半期報告書（EDINET、最新1通ずつ）から拾った配当方針の手がかりと該当の文 |
 | `GET /api/status` | 直近のバッチの状態と最新の株価日付 |
 
 ## シークレット（キー名のみ）
@@ -111,6 +113,7 @@ curl -H "Authorization: Bearer $(curl -s localhost:9871/token/user_member)" loca
 | キー名 | 設定先 | 用途 |
 | --- | --- | --- |
 | `JQUANTS_API_KEY` | GitHub Actions Secrets | J-Quants API（Light プラン） |
+| `EDINET_API_KEY` | GitHub Actions Secrets | EDINET API v2（有報・半期報告書の配当方針の文章） |
 | `CLOUDFLARE_ACCOUNT_ID` | GitHub Actions Secrets | D1 HTTP API の宛先 |
 | `D1_DATABASE_ID` | GitHub Actions Secrets | 書き込み先の D1 |
 | `CLOUDFLARE_API_TOKEN` | GitHub Actions Secrets | D1 への書き込み（権限は D1 編集のみ） |

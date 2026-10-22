@@ -1,0 +1,6 @@
+"要素ID"	"項目名"	"コンテキストID"	"相対年度"	"連結・個別"	"期間・時点"	"ユニットID"	"単位"	"値"
+"jpcrp_cor:DividendPolicyTextBlock"	"配当政策 [テキストブロック]"	"FilingDateInstant"	"提出日時点"	"その他"	"時点"	""	""	"当社は累進配当を基本方針とし、配当性向３０％以上を目標としております。
+当期は1株当たり5円の増配といたしました。"
+"jpcrp_cor:BusinessPolicyBusinessEnvironmentIssuesToAddressEtcTextBlock"	"経営方針、経営環境及び対処すべき課題等 [テキストブロック]"	"FilingDateInstant"	"提出日時点"	"その他"	"時点"	""	""	"「""中期経営計画""」では	ROE10%を目指します。"
+"jpcrp_cor:NetSalesSummaryOfBusinessResults"	"売上高"	"CurrentYearDuration"	"当期"	"連結"	"期間"	"JPY"	"円"	"120000000000"
+"jpcrp_cor:BusinessRisksTextBlock"	"事業等のリスク [テキストブロック]"	"FilingDateInstant"	"提出日時点"	"その他"	"時点"	""	""	"為替の変動"

@@ -6,6 +6,9 @@
 //!                                         JPX の上場銘柄一覧 → stocks（名称・種類・業種・規模）
 //!   batch-cli sync-jq [options]           J-Quants から株価（終値）と財務（本決算）を日付ごとに取り込む。
 //!                                         前回の続きから今日まで。初回は過去5年分（中断しても続きから再開）
+//!   batch-cli sync-edinet [options]       EDINET から有報・半期報告書（銘柄・種類ごとに最新の1通）を取り、
+//!                                         配当政策などの文章を R2 用に書き出し、配当方針の手がかりを D1 に保存する。
+//!                                         前回の続きから今日まで。初回は過去400日分の書類一覧から
 //!   batch-cli compute [--label daily]     保存済みの株価と財務から、全銘柄の指標を計算して保存
 //!   batch-cli should-run [--label daily] [--force]
 //!                                         今日バッチを動かすか（休場日・当日成功済みなら false）。
@@ -20,13 +23,23 @@
 //!                           株価の履歴を書き直すので、小さくすると D1 の1日の書き込み上限に当たる）
 //!   --dry-run <file>        D1 を読み書きせず、取得結果を SQL ファイルに書く（--from と --until が必要）
 //!   --raw-dir <dir>         J-Quants の応答を全項目そのまま gzip JSON で置く場所（既定 raw。あとで R2 に上げる）
+//!   --refill-prices         取り込み済みの期間の株価（終値）も取り直して履歴を埋める（財務と進み具合はそのまま）。
+//!                           範囲は --from から（既定: 5年前）。新しい日の生データだけを --raw-dir に書く
+//!
+//! sync-edinet のオプション（--from / --until / --rate / --max-minutes / --raw-dir は sync-jq と同じ）:
+//!   --dry-run <file>        D1 を読み書きせず、--from〜--until の一覧から --limit 件だけ取って SQL と文章を書く
+//!   --limit <n>             --dry-run で取る書類の数（既定 5）
+//!   R2 から消すファイルのキーは {raw-dir}/edinet-delete.txt に1行ずつ書く（ワークフローが消す）
 //!
 //! 環境変数（値はリポジトリに書かない）:
 //!   JQUANTS_API_KEY                                          sync-jq で必須
+//!   EDINET_API_KEY                                           sync-edinet で必須
 //!   CLOUDFLARE_ACCOUNT_ID, D1_DATABASE_ID, CLOUDFLARE_API_TOKEN  D1 を使うコマンドで必須
 
 use adapter_batch::{
-    d1, http, jpx,
+    d1,
+    edinet::EdinetClient,
+    http, jpx,
     jquants::{self, JQuantsClient},
     raw,
 };
@@ -34,6 +47,7 @@ use domain::{Date, PriceBar, StockCode};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use usecase::edinet::{DocRef, EdinetDoc};
 use usecase::fins::{AnnualReport, FinancialStore, PeriodReport};
 use usecase::{BatchRun, Clock, SnapshotStore};
 
@@ -60,13 +74,15 @@ struct Args {
     max_minutes: u64,
     persist_every: usize,
     raw_dir: String,
+    limit: usize,
+    refill_prices: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
-    let cmd = it
-        .next()
-        .ok_or("command required: migrate | sync-master | sync-jq | compute | should-run")?;
+    let cmd = it.next().ok_or(
+        "command required: migrate | sync-master | sync-jq | sync-edinet | compute | should-run",
+    )?;
     let mut a = Args {
         cmd,
         dry_run: None,
@@ -79,6 +95,8 @@ fn parse_args() -> Result<Args, String> {
         max_minutes: 300,
         persist_every: 1500,
         raw_dir: "raw".into(),
+        limit: 5,
+        refill_prices: false,
     };
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or(format!("{flag} needs a value"));
@@ -87,6 +105,7 @@ fn parse_args() -> Result<Args, String> {
             "--dry-run" => a.dry_run = Some(val()?),
             "--from-file" => a.from_file = Some(val()?),
             "--force" => a.force = true,
+            "--refill-prices" => a.refill_prices = true,
             "--from" => a.from = Some(date(val()?)?),
             "--until" => a.until = Some(date(val()?)?),
             "--rate" => a.rate = val()?.parse().map_err(|_| "bad rate")?,
@@ -95,6 +114,7 @@ fn parse_args() -> Result<Args, String> {
                 a.persist_every = val()?.parse().map_err(|_| "bad persist-every")?
             }
             "--raw-dir" => a.raw_dir = val()?,
+            "--limit" => a.limit = val()?.parse().map_err(|_| "bad limit")?,
             "--label" => {
                 a.label = val()?;
                 if !a.label.chars().all(|c| c.is_ascii_alphanumeric()) {
@@ -136,6 +156,7 @@ async fn main() {
         "migrate" => migrate().await,
         "sync-master" => sync_master(args).await,
         "sync-jq" => sync_jq(args).await,
+        "sync-edinet" => sync_edinet(args).await,
         "compute" => compute(args).await,
         "should-run" => should_run(args).await,
         other => Err(format!("unknown command: {other}")),
@@ -170,6 +191,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0006_portfolio",
         include_str!("../../../migrations/0006_portfolio.sql"),
+    ),
+    (
+        "0007_edinet",
+        include_str!("../../../migrations/0007_edinet.sql"),
     ),
 ];
 
@@ -297,11 +322,21 @@ async fn sync_jq(args: Args) -> Result<(), String> {
         (None, None) => today.add_days(-BACKFILL_DAYS),
     };
     let fin_start = start.min(until.add_days(-REFETCH_FIN_DAYS));
-    let days = usecase::fins::weekdays(fin_start, until);
-    println!(
-        "sync-jq: prices {start}..{until}, financials {fin_start}..{until} ({} weekdays)",
-        days.len()
-    );
+    // 取り込み済みの期間の株価を取り直す（履歴の保存期間を延ばしたときに、切り詰めた分を埋める）
+    let refill_from = (args.refill_prices && cursor.is_some())
+        .then(|| args.from.unwrap_or(today.add_days(-BACKFILL_DAYS)))
+        .filter(|&r| r < start);
+    let days = usecase::fins::weekdays(fin_start.min(refill_from.unwrap_or(fin_start)), until);
+    match refill_from {
+        Some(r) => println!(
+            "sync-jq: prices {start}..{until} (refill from {r}), financials {fin_start}..{until} ({} weekdays)",
+            days.len()
+        ),
+        None => println!(
+            "sync-jq: prices {start}..{until}, financials {fin_start}..{until} ({} weekdays)",
+            days.len()
+        ),
+    }
     if days.is_empty() {
         return Ok(());
     }
@@ -314,12 +349,16 @@ async fn sync_jq(args: Args) -> Result<(), String> {
     let deadline = std::time::Duration::from_secs(args.max_minutes * 60);
 
     for (i, &day) in days.iter().enumerate() {
-        if day >= start {
+        let refill = refill_from.is_some_and(|r| day >= r) && day < start;
+        if day >= start || refill {
             let rows = jq
                 .bars_on(day)
                 .await
                 .map_err(|e| format!("{day} prices: {}", e.0))?;
-            raw::write_day(&raw_dir, "bars", day, &rows).map_err(|e| e.0)?;
+            // 取り直した日の生データは前に取り込んだときのものと同じなので、R2 には上げ直さない
+            if !refill {
+                raw::write_day(&raw_dir, "bars", day, &rows).map_err(|e| e.0)?;
+            }
             let closes = jquants::closes(&rows);
             let n = closes.len();
             let mut by_code: HashMap<String, Vec<PriceBar>> = HashMap::new();
@@ -337,22 +376,24 @@ async fn sync_jq(args: Args) -> Result<(), String> {
                 println!("{day}: {n} closes");
             }
         }
-        let rows = jq
-            .summaries_on(day)
-            .await
-            .map_err(|e| format!("{day} financials: {}", e.0))?;
-        raw::write_day(&raw_dir, "fins", day, &rows).map_err(|e| e.0)?;
-        let annuals = jquants::annual_reports(&rows);
-        let periods = jquants::period_reports(&rows);
-        if !periods.is_empty() {
-            println!(
-                "{day}: {} financial rows ({} annual)",
-                periods.len(),
-                annuals.len()
-            );
+        if day >= fin_start {
+            let rows = jq
+                .summaries_on(day)
+                .await
+                .map_err(|e| format!("{day} financials: {}", e.0))?;
+            raw::write_day(&raw_dir, "fins", day, &rows).map_err(|e| e.0)?;
+            let annuals = jquants::annual_reports(&rows);
+            let periods = jquants::period_reports(&rows);
+            if !periods.is_empty() {
+                println!(
+                    "{day}: {} financial rows ({} annual)",
+                    periods.len(),
+                    annuals.len()
+                );
+            }
+            pending.annuals.extend(annuals);
+            pending.periods.extend(periods);
         }
-        pending.annuals.extend(annuals);
-        pending.periods.extend(periods);
         if day >= start {
             done_until = Some(day);
         }
@@ -493,6 +534,254 @@ async fn persist(
             .await
             .map_err(|e| e.0)?;
     }
+    Ok(())
+}
+
+/// sync-edinet がどの日付までの書類一覧を読んだか
+const EDINET_CURSOR_KEY: &str = "edinet_listed_until";
+/// 初回に読む書類一覧の期間。有報は年1回なので、提出の遅い会社も含めて1年強
+const EDINET_BACKFILL_DAYS: i64 = 400;
+/// 何件ごとに D1 へ保存するか
+const EDINET_PERSIST_EVERY: usize = 20;
+/// R2 から消すファイルのキー（ワークフローが読んで消す）
+const EDINET_DELETE_FILE: &str = "edinet-delete.txt";
+
+async fn sync_edinet(args: Args) -> Result<(), String> {
+    if let Some(path) = &args.dry_run {
+        return sync_edinet_dry_run(&args, path).await;
+    }
+    let started = Instant::now();
+    let deadline = std::time::Duration::from_secs(args.max_minutes * 60);
+    let client = http::client();
+    let ed = EdinetClient::new(client.clone(), env("EDINET_API_KEY")?, args.rate);
+    let store = d1_store(client)?;
+    let now = SystemClock.now_unix();
+    let today = Date::from_unix_jst(now);
+    let until = args.until.unwrap_or(today);
+    let raw_dir = PathBuf::from(&args.raw_dir);
+
+    let cursor = store
+        .get_state(EDINET_CURSOR_KEY)
+        .await
+        .map_err(|e| e.0)?
+        .and_then(|s| Date::parse(&s));
+    let start = match (cursor, args.from) {
+        (Some(c), _) => c.add_days(1),
+        (None, Some(f)) => f,
+        (None, None) => today.add_days(-EDINET_BACKFILL_DAYS),
+    };
+    let days = usecase::fins::weekdays(start, until);
+    println!(
+        "sync-edinet: listing {start}..{until} ({} weekdays)",
+        days.len()
+    );
+
+    // 1. 書類一覧（1日1回の呼び出し）。時間切れなら読めたところまでで先に進む
+    let mut listed = vec![];
+    let mut listed_until = until;
+    for &day in &days {
+        if started.elapsed() > deadline {
+            listed_until = day.add_days(-1);
+            println!("sync-edinet: time limit reached while listing; listed until {listed_until}");
+            break;
+        }
+        let docs = ed
+            .list_day(day)
+            .await
+            .map_err(|e| format!("{day} list: {}", e.0))?;
+        if !docs.is_empty() {
+            println!("{day}: {} reports", docs.len());
+        }
+        listed.extend(docs);
+    }
+
+    // 2. 銘柄・種類ごとに最新の1通で、まだ持っていないものだけを取る
+    let current: HashSet<String> = store
+        .current_codes(&["stock", "reit"])
+        .await
+        .map_err(|e| e.0)?
+        .into_iter()
+        .collect();
+    if current.is_empty() {
+        return Err("no listed codes; run sync-master first".into());
+    }
+    let stored = store.load_edinet_docs().await.map_err(|e| e.0)?;
+    let n_listed = listed.len();
+    let plan = usecase::edinet::plan(listed, &stored, &current);
+    println!(
+        "sync-edinet: {n_listed} listed, {} stored, {} to fetch, {} to delete",
+        stored.len(),
+        plan.fetch.len(),
+        plan.delete.len()
+    );
+
+    // 3. 古くなった書類を消す（D1 の行はここで、R2 のファイルはワークフローの最後に）
+    store
+        .delete_edinet_docs(&plan.delete)
+        .await
+        .map_err(|e| e.0)?;
+    let keys: Vec<String> = plan
+        .delete
+        .iter()
+        .map(|(code, kind)| usecase::edinet::r2_key(code, *kind))
+        .collect();
+    append_lines(&raw_dir.join(EDINET_DELETE_FILE), &keys)?;
+
+    // 4. 書類を取る。止まったら、まだ取っていない最初の書類の前日から次回やり直す
+    let mut pending = vec![];
+    let mut fetched = 0;
+    let mut error = None;
+    for doc in &plan.fetch {
+        if started.elapsed() > deadline {
+            println!(
+                "sync-edinet: time limit reached; will resume from {}",
+                doc.submitted
+            );
+            break;
+        }
+        match fetch_doc(&ed, &raw_dir, doc).await {
+            Ok(e) => pending.push(e),
+            Err(e) => {
+                error = Some(format!("{} {}: {e}", doc.code, doc.doc_id));
+                break;
+            }
+        }
+        fetched += 1;
+        if pending.len() >= EDINET_PERSIST_EVERY {
+            store
+                .save_edinet_docs(&pending, now)
+                .await
+                .map_err(|e| e.0)?;
+            pending.clear();
+        }
+    }
+    store
+        .save_edinet_docs(&pending, now)
+        .await
+        .map_err(|e| e.0)?;
+    let next = usecase::edinet::resume_cursor(listed_until, plan.fetch.get(fetched));
+    store
+        .set_state(EDINET_CURSOR_KEY, &next.to_string(), now)
+        .await
+        .map_err(|e| e.0)?;
+    println!(
+        "sync-edinet: {fetched} fetched, listed until {next}, {}s",
+        started.elapsed().as_secs()
+    );
+    error.map_or(Ok(()), Err)
+}
+
+/// 1通を取り、文章を R2 用のファイルに書き、配当方針の手がかりを返す
+async fn fetch_doc(
+    ed: &EdinetClient,
+    raw_dir: &std::path::Path,
+    doc: &DocRef,
+) -> Result<EdinetDoc, String> {
+    let sections = ed.fetch_sections(&doc.doc_id).await.map_err(|e| e.0)?;
+    let refs: Vec<(domain::disclosure::Section, &str)> =
+        sections.iter().map(|(s, t)| (*s, t.as_str())).collect();
+    let signals = domain::disclosure::detect(&refs);
+    let body = serde_json::json!({
+        "source": "EDINET",
+        "code": doc.code,
+        "kind": doc.kind.as_str(),
+        "doc_id": doc.doc_id,
+        "submitted": doc.submitted.to_string(),
+        "period_end": doc.period_end.map(|d| d.to_string()),
+        "sections": sections.iter().map(|(s, t)| (s.key().to_string(), serde_json::Value::from(t.as_str()))).collect::<serde_json::Map<_, _>>(),
+        "signals": {
+            "progressive_dividend": signals.progressive,
+            "no_dividend_cut": signals.no_cut,
+            "dividend_raise": signals.raise,
+            "doe_target": signals.doe_target,
+            "payout_target": signals.payout_target,
+            "phrases": signals.phrases,
+        },
+    });
+    raw::write_object(
+        raw_dir,
+        &usecase::edinet::r2_key(&doc.code, doc.kind),
+        &body,
+    )
+    .map_err(|e| e.0)?;
+    let flags = [
+        (signals.progressive, "累進配当"),
+        (signals.no_cut, "非減配"),
+        (signals.raise, "増配"),
+        (signals.doe_target, "DOE"),
+        (signals.payout_target.is_some(), "配当性向目標"),
+    ];
+    let on: Vec<&str> = flags.iter().filter(|(b, _)| *b).map(|(_, l)| *l).collect();
+    println!(
+        "{} {} {} ({} sections){}",
+        doc.submitted,
+        doc.code,
+        doc.kind.as_str(),
+        sections.len(),
+        if on.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", on.join(", "))
+        }
+    );
+    Ok(EdinetDoc {
+        doc: doc.clone(),
+        signals,
+    })
+}
+
+fn append_lines(path: &std::path::Path, lines: &[String]) -> Result<(), String> {
+    use std::io::Write;
+    if lines.is_empty() {
+        return Ok(());
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    for l in lines {
+        writeln!(f, "{l}").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// D1 に触れずに、指定期間の一覧から数件だけ取る（API キーと取得元の形の確認用）
+async fn sync_edinet_dry_run(args: &Args, path: &str) -> Result<(), String> {
+    let (Some(from), Some(until)) = (args.from, args.until) else {
+        return Err("--dry-run needs --from and --until".into());
+    };
+    let ed = EdinetClient::new(http::client(), env("EDINET_API_KEY")?, args.rate);
+    let raw_dir = PathBuf::from(&args.raw_dir);
+    let mut listed = vec![];
+    for day in usecase::fins::weekdays(from, until) {
+        let docs = ed
+            .list_day(day)
+            .await
+            .map_err(|e| format!("{day} list: {}", e.0))?;
+        println!("{day}: {} reports", docs.len());
+        listed.extend(docs);
+    }
+    let all: HashSet<String> = listed.iter().map(|d| d.code.clone()).collect();
+    let plan = usecase::edinet::plan(listed, &HashMap::new(), &all);
+    let mut docs = vec![];
+    for doc in plan.fetch.iter().take(args.limit) {
+        docs.push(fetch_doc(&ed, &raw_dir, doc).await?);
+    }
+    let sql: String = adapter_batch::sql::edinet_docs_stmts(&docs, 0)
+        .iter()
+        .map(|s| s.render() + "\n")
+        .collect();
+    std::fs::write(path, sql).map_err(|e| e.to_string())?;
+    println!(
+        "dry-run: {} of {} reports -> {path} (texts in {}/edinet)",
+        docs.len(),
+        plan.fetch.len(),
+        args.raw_dir
+    );
     Ok(())
 }
 
