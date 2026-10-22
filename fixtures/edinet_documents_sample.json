@@ -3,30 +3,33 @@
   "title": "提出された書類を把握するためのAPI",
   "status": "200",
   "message": "OK",
-  "resultset": { "count": 7 }
+  "resultset": { "count": 8 }
  },
  "results": [
   { "seqNumber": 1, "docID": "S100AAAA", "edinetCode": "E99999", "secCode": "99990", "filerName": "サンプル株式会社",
-    "docTypeCode": "120", "periodStart": "2025-04-01", "periodEnd": "2026-03-31",
+    "ordinanceCode": "010", "docTypeCode": "120", "periodStart": "2025-04-01", "periodEnd": "2026-03-31",
     "submitDateTime": "2026-11-10 09:00", "withdrawalStatus": "0", "csvFlag": "1" },
   { "seqNumber": 2, "docID": "S100BBBB", "edinetCode": "E99998", "secCode": "130A0", "filerName": "サンプル二号株式会社",
-    "docTypeCode": "160", "periodStart": "2026-04-01", "periodEnd": "2027-03-31",
+    "ordinanceCode": "010", "docTypeCode": "160", "periodStart": "2026-04-01", "periodEnd": "2027-03-31",
     "submitDateTime": "2026-11-10 15:00", "withdrawalStatus": "0", "csvFlag": "1" },
   { "seqNumber": 3, "docID": "S100NOCSV", "edinetCode": "E88888", "secCode": "88880",
-    "docTypeCode": "120", "periodEnd": "2026-03-31", "submitDateTime": "2026-11-10 15:00",
+    "ordinanceCode": "010", "docTypeCode": "120", "periodEnd": "2026-03-31", "submitDateTime": "2026-11-10 15:00",
     "withdrawalStatus": "0", "csvFlag": "0" },
   { "seqNumber": 4, "docID": "S100WDRW", "edinetCode": "E77777", "secCode": "77770",
-    "docTypeCode": "120", "periodEnd": "2026-03-31", "submitDateTime": "2026-11-10 15:00",
+    "ordinanceCode": "010", "docTypeCode": "120", "periodEnd": "2026-03-31", "submitDateTime": "2026-11-10 15:00",
     "withdrawalStatus": "1", "csvFlag": "1" },
   { "seqNumber": 5, "docID": "S100CORR", "edinetCode": "E99999", "secCode": "99990",
-    "docTypeCode": "130", "periodEnd": "2026-03-31", "submitDateTime": "2026-11-10 16:00",
+    "ordinanceCode": "010", "docTypeCode": "130", "periodEnd": "2026-03-31", "submitDateTime": "2026-11-10 16:00",
     "withdrawalStatus": "0", "csvFlag": "1" },
   { "seqNumber": 6, "docID": "S100FUND", "edinetCode": "G00001", "secCode": null,
-    "docTypeCode": "120", "periodEnd": "2026-03-31", "submitDateTime": "2026-11-10 15:00",
+    "ordinanceCode": "010", "docTypeCode": "120", "periodEnd": "2026-03-31", "submitDateTime": "2026-11-10 15:00",
     "withdrawalStatus": "0", "csvFlag": "1" }
 ,
   { "seqNumber": 7, "docID": "S100OLD1", "edinetCode": "E66666", "secCode": "66660",
-    "docTypeCode": "120", "periodEnd": "2025-12-31", "submitDateTime": "2026-03-19 15:00",
-    "withdrawalStatus": "0", "csvFlag": "1" }
+    "ordinanceCode": "010", "docTypeCode": "120", "periodEnd": "2025-12-31", "submitDateTime": "2026-03-19 15:00",
+    "withdrawalStatus": "0", "csvFlag": "1" },
+  { "seqNumber": 8, "docID": "S100TRST", "edinetCode": "E99997", "secCode": "82530", "filerName": "サンプル信販株式会社",
+    "ordinanceCode": "030", "formCode": "09A000", "docTypeCode": "120", "periodEnd": "2026-05-31",
+    "submitDateTime": "2026-11-10 16:00", "withdrawalStatus": "0", "csvFlag": "1" }
  ]
 }
