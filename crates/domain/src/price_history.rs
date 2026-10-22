@@ -2,8 +2,9 @@
 
 use crate::{Date, PriceBar};
 
-/// 保存しておく期間（日）。利回りの位置は最大10年だが、無料プランで取れるのは約2年なので3年あれば足りる
-pub const KEEP_DAYS: i64 = 3 * 366;
+/// 保存しておく期間（日）。利回りの過去5年比（indicators::HISTORY_DAYS）に足りるよう、5年に1か月の余裕を足す
+pub const KEEP_DAYS: i64 = crate::indicators::HISTORY_DAYS + 31;
+const _: () = assert!(KEEP_DAYS >= crate::indicators::HISTORY_DAYS);
 
 pub fn encode(bars: &[PriceBar]) -> String {
     bars.iter()
@@ -99,5 +100,16 @@ mod tests {
         let mut h = vec![bar("2020-01-01", 1.0)];
         merge(&mut h, &[bar("2026-07-01", 2.0)]);
         assert_eq!(h, vec![bar("2026-07-01", 2.0)]);
+    }
+
+    #[test]
+    fn merge_keeps_five_years() {
+        let mut h = vec![bar("2021-05-01", 0.5), bar("2021-06-01", 1.0)];
+        merge(&mut h, &[bar("2026-07-01", 2.0)]);
+        assert_eq!(
+            h,
+            vec![bar("2021-06-01", 1.0), bar("2026-07-01", 2.0)],
+            "利回りの過去5年比に使う5年分は残し、それより古い分だけ捨てる"
+        );
     }
 }

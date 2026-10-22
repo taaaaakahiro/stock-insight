@@ -23,6 +23,8 @@
 //!                           株価の履歴を書き直すので、小さくすると D1 の1日の書き込み上限に当たる）
 //!   --dry-run <file>        D1 を読み書きせず、取得結果を SQL ファイルに書く（--from と --until が必要）
 //!   --raw-dir <dir>         J-Quants の応答を全項目そのまま gzip JSON で置く場所（既定 raw。あとで R2 に上げる）
+//!   --refill-prices         取り込み済みの期間の株価（終値）も取り直して履歴を埋める（財務と進み具合はそのまま）。
+//!                           範囲は --from から（既定: 5年前）。新しい日の生データだけを --raw-dir に書く
 //!
 //! sync-edinet のオプション（--from / --until / --rate / --max-minutes / --raw-dir は sync-jq と同じ）:
 //!   --dry-run <file>        D1 を読み書きせず、--from〜--until の一覧から --limit 件だけ取って SQL と文章を書く
@@ -73,6 +75,7 @@ struct Args {
     persist_every: usize,
     raw_dir: String,
     limit: usize,
+    refill_prices: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -93,6 +96,7 @@ fn parse_args() -> Result<Args, String> {
         persist_every: 1500,
         raw_dir: "raw".into(),
         limit: 5,
+        refill_prices: false,
     };
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or(format!("{flag} needs a value"));
@@ -101,6 +105,7 @@ fn parse_args() -> Result<Args, String> {
             "--dry-run" => a.dry_run = Some(val()?),
             "--from-file" => a.from_file = Some(val()?),
             "--force" => a.force = true,
+            "--refill-prices" => a.refill_prices = true,
             "--from" => a.from = Some(date(val()?)?),
             "--until" => a.until = Some(date(val()?)?),
             "--rate" => a.rate = val()?.parse().map_err(|_| "bad rate")?,
@@ -317,11 +322,21 @@ async fn sync_jq(args: Args) -> Result<(), String> {
         (None, None) => today.add_days(-BACKFILL_DAYS),
     };
     let fin_start = start.min(until.add_days(-REFETCH_FIN_DAYS));
-    let days = usecase::fins::weekdays(fin_start, until);
-    println!(
-        "sync-jq: prices {start}..{until}, financials {fin_start}..{until} ({} weekdays)",
-        days.len()
-    );
+    // 取り込み済みの期間の株価を取り直す（履歴の保存期間を延ばしたときに、切り詰めた分を埋める）
+    let refill_from = (args.refill_prices && cursor.is_some())
+        .then(|| args.from.unwrap_or(today.add_days(-BACKFILL_DAYS)))
+        .filter(|&r| r < start);
+    let days = usecase::fins::weekdays(fin_start.min(refill_from.unwrap_or(fin_start)), until);
+    match refill_from {
+        Some(r) => println!(
+            "sync-jq: prices {start}..{until} (refill from {r}), financials {fin_start}..{until} ({} weekdays)",
+            days.len()
+        ),
+        None => println!(
+            "sync-jq: prices {start}..{until}, financials {fin_start}..{until} ({} weekdays)",
+            days.len()
+        ),
+    }
     if days.is_empty() {
         return Ok(());
     }
@@ -334,12 +349,16 @@ async fn sync_jq(args: Args) -> Result<(), String> {
     let deadline = std::time::Duration::from_secs(args.max_minutes * 60);
 
     for (i, &day) in days.iter().enumerate() {
-        if day >= start {
+        let refill = refill_from.is_some_and(|r| day >= r) && day < start;
+        if day >= start || refill {
             let rows = jq
                 .bars_on(day)
                 .await
                 .map_err(|e| format!("{day} prices: {}", e.0))?;
-            raw::write_day(&raw_dir, "bars", day, &rows).map_err(|e| e.0)?;
+            // 取り直した日の生データは前に取り込んだときのものと同じなので、R2 には上げ直さない
+            if !refill {
+                raw::write_day(&raw_dir, "bars", day, &rows).map_err(|e| e.0)?;
+            }
             let closes = jquants::closes(&rows);
             let n = closes.len();
             let mut by_code: HashMap<String, Vec<PriceBar>> = HashMap::new();
@@ -357,22 +376,24 @@ async fn sync_jq(args: Args) -> Result<(), String> {
                 println!("{day}: {n} closes");
             }
         }
-        let rows = jq
-            .summaries_on(day)
-            .await
-            .map_err(|e| format!("{day} financials: {}", e.0))?;
-        raw::write_day(&raw_dir, "fins", day, &rows).map_err(|e| e.0)?;
-        let annuals = jquants::annual_reports(&rows);
-        let periods = jquants::period_reports(&rows);
-        if !periods.is_empty() {
-            println!(
-                "{day}: {} financial rows ({} annual)",
-                periods.len(),
-                annuals.len()
-            );
+        if day >= fin_start {
+            let rows = jq
+                .summaries_on(day)
+                .await
+                .map_err(|e| format!("{day} financials: {}", e.0))?;
+            raw::write_day(&raw_dir, "fins", day, &rows).map_err(|e| e.0)?;
+            let annuals = jquants::annual_reports(&rows);
+            let periods = jquants::period_reports(&rows);
+            if !periods.is_empty() {
+                println!(
+                    "{day}: {} financial rows ({} annual)",
+                    periods.len(),
+                    annuals.len()
+                );
+            }
+            pending.annuals.extend(annuals);
+            pending.periods.extend(periods);
         }
-        pending.annuals.extend(annuals);
-        pending.periods.extend(periods);
         if day >= start {
             done_until = Some(day);
         }
