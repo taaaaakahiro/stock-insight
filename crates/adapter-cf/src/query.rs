@@ -162,10 +162,16 @@ pub fn count(f: &ScreeningFilter) -> Query {
     }
 }
 
-/// ポートフォリオに登録した銘柄の最新指標（? はユーザーID）
+/// 最新の本決算の EPS。期末のほかに数字が1つもない行（配当予想の修正が残ったもの）は飛ばす
+/// （`AnnualFinancial::has_no_figures` と同じ条件）
+const LATEST_EPS: &str = "(SELECT f.eps FROM financials_annual f WHERE f.code = p.code \
+     AND COALESCE(f.net_sales, f.operating_income, f.ordinary_income, f.net_income, f.equity, \
+     f.eps, f.bps, f.dps, f.operating_cf) IS NOT NULL ORDER BY f.period_end DESC LIMIT 1) AS latest_eps";
+
+/// ポートフォリオに登録した銘柄の最新指標と、売りサイン用の最新 EPS（? はユーザーID）
 pub fn portfolio_rows() -> String {
     format!(
-        "SELECT {LIST_COLUMNS}, {} FROM portfolio_items p JOIN indicators_latest i ON i.code = p.code \
+        "SELECT {LIST_COLUMNS}, {}, {LATEST_EPS} FROM portfolio_items p JOIN indicators_latest i ON i.code = p.code \
          LEFT JOIN stocks s ON s.code = p.code LEFT JOIN reit_profile r ON r.code = p.code WHERE p.user_id = ?",
         reit_columns()
     )
@@ -347,7 +353,7 @@ mod tests {
     #[test]
     fn portfolio_rows_use_the_list_columns() {
         assert!(portfolio_rows().starts_with(&format!(
-            "SELECT {LIST_COLUMNS}, {} FROM portfolio_items",
+            "SELECT {LIST_COLUMNS}, {}, {LATEST_EPS} FROM portfolio_items",
             reit_columns()
         )));
     }

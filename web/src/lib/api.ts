@@ -179,11 +179,19 @@ export type StockDetail = {
 };
 
 /** 売り時のサイン（domain::portfolio::SellSignal） */
-export type SellSignal = "high_payout" | "expensive" | "no_increase" | "profit_downtrend" | "loss";
+export type SellSignal =
+  | "high_payout"
+  | "high_pbr"
+  | "loss_dividend"
+  | "expensive"
+  | "no_increase"
+  | "profit_downtrend"
+  | "loss";
 
-export type Holding = StockRow & { signals: SellSignal[] };
+/** signals は売る判断に使う主のサイン（配当性向・PBR・赤字配当）、reference_signals は参考 */
+export type Holding = StockRow & { signals: SellSignal[]; reference_signals: SellSignal[] };
 
-/** codes は登録した全銘柄。rows は指標がある銘柄だけ（サインの多い順） */
+/** codes は登録した全銘柄。rows は指標がある銘柄だけ（主のサインの多い順） */
 export type Portfolio = { codes: string[]; rows: Holding[] };
 
 export type Status = {

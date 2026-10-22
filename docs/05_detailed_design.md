@@ -27,13 +27,17 @@
 
 `domain::portfolio::sell_signals`。`/api/portfolio` を返すときに、最新の指標（indicators_latest）から毎回判定する。判定できない値（None）ではサインを出さない。
 
-| サイン（API の値） | 条件 | 使う列 |
-|---|---|---|
-| `high_payout` | 配当性向 > 50%（`PAYOUT_WARN`。ちょうど50%は出さない） | payout_ratio |
-| `expensive` | valuation が `expensive` | valuation |
-| `no_increase` | 連続増配年数が 0 | consecutive_increases |
-| `profit_downtrend` | 営業利益の増加傾向が偽 | profit_uptrend |
-| `loss` | 通期で赤字なし、または四半期で赤字なしが偽 | no_loss_years, no_quarterly_loss |
+売るかどうかは配当性向と PBR で決める。主のサイン（`SellSignal::is_primary`）は API の `signals`、参考のサインは `reference_signals` に入れる。一覧は主のサインの多い順、同数なら参考のサインの多い順に並べる。主のサインは株式（`kind = stock`）だけで判定する（REIT は利益のほぼ全部を分配するので、配当性向が常に高く出る）。
+
+| サイン（API の値） | 区分 | 条件 | 使う列 |
+|---|---|---|---|
+| `high_payout` | 主 | 配当性向 > 50%（`PAYOUT_WARN`。ちょうど50%は出さない） | payout_ratio |
+| `high_pbr` | 主 | PBR > 1.5倍（`PBR_WARN`。ちょうど1.5倍は出さない） | pbr |
+| `loss_dividend` | 主 | 最新の本決算の EPS ≤ 0 で、1株配当（予想か実績）> 0。赤字だと配当性向は出ないので、画面の配当性向は「赤字」と出す | financials_annual の最新の本決算の eps（数字のない行は飛ばす）、dividend_ttm |
+| `expensive` | 参考 | valuation が `expensive` | valuation |
+| `no_increase` | 参考 | 連続増配年数が 0 | consecutive_increases |
+| `profit_downtrend` | 参考 | 営業利益の増加傾向が偽 | profit_uptrend |
+| `loss` | 参考 | 通期で赤字なし、または四半期で赤字なしが偽 | no_loss_years, no_quarterly_loss |
 
 1人が登録できる銘柄は100（`MAX_ITEMS`）。
 

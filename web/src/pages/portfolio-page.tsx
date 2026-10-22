@@ -13,17 +13,22 @@ import {
 } from "@/components/ui/table";
 import { apiGet, type Holding, type Portfolio, type SellSignal } from "@/lib/api";
 import { useAuthState } from "@/lib/auth";
-import { pct, yen } from "@/lib/format";
+import { pct, times, yen } from "@/lib/format";
 import { usePortfolio } from "@/lib/portfolio";
 import { cn } from "@/lib/utils";
 
 type Load = { state: "loading" } | { state: "ok"; data: Portfolio } | { state: "error" };
 
-/** 売り時のサイン。判定の中身は domain::portfolio と合わせる */
+/** 売り時のサイン。判定の中身は domain::portfolio と合わせる（主は配当性向・PBR・赤字配当、ほかは参考） */
 const SIGNALS: Record<SellSignal, { label: string; hint: string }> = {
   high_payout: {
     label: "配当性向50%超",
     hint: "利益の半分以上を配当に回していて、増配の余地が小さい",
+  },
+  high_pbr: { label: "PBR1.5倍超", hint: "株価が1株あたり純資産の1.5倍を超えている" },
+  loss_dividend: {
+    label: "赤字で配当",
+    hint: "最新の本決算が赤字（EPS が0以下）なのに配当を出している",
   },
   expensive: { label: "割高", hint: "配当利回りが過去5年の下位20%（株価が上がっている）" },
   no_increase: { label: "増配停止", hint: "前期から増配していない（据え置き・減配）" },
@@ -32,32 +37,52 @@ const SIGNALS: Record<SellSignal, { label: string; hint: string }> = {
 };
 
 function Signals({ h }: { h: Holding }) {
-  if (h.signals.length === 0) {
-    return (
-      <Badge variant="outline" className="border-cheap/40 bg-cheap/10 text-cheap">
-        サインなし
-      </Badge>
-    );
-  }
   return (
-    <span className="flex flex-wrap gap-1">
-      {h.signals.map((s) => (
-        <Badge
-          key={s}
-          variant="outline"
-          title={SIGNALS[s].hint}
-          className="border-expensive/40 bg-expensive/10 text-expensive"
-        >
-          {SIGNALS[s].label}
-        </Badge>
-      ))}
+    <span className="flex flex-col gap-1">
+      <span className="flex flex-wrap gap-1">
+        {h.signals.length === 0 ? (
+          <Badge variant="outline" className="border-cheap/40 bg-cheap/10 text-cheap">
+            売りサインなし
+          </Badge>
+        ) : (
+          h.signals.map((s) => (
+            <Badge
+              key={s}
+              variant="outline"
+              title={SIGNALS[s].hint}
+              className="border-expensive/40 bg-expensive/10 text-expensive"
+            >
+              {SIGNALS[s].label}
+            </Badge>
+          ))
+        )}
+      </span>
+      {h.reference_signals.length > 0 && (
+        <span className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+          参考:
+          {h.reference_signals.map((s) => (
+            <Badge key={s} variant="outline" title={SIGNALS[s].hint} className="font-normal">
+              {SIGNALS[s].label}
+            </Badge>
+          ))}
+        </span>
+      )}
     </span>
   );
 }
 
+/** 赤字で配当を出しているときは、計算できない「—」の代わりに「赤字」と出す */
 function Payout({ h }: { h: Holding }) {
+  if (h.signals.includes("loss_dividend")) {
+    return <span className="font-medium text-expensive">赤字</span>;
+  }
   const warn = h.signals.includes("high_payout");
   return <span className={cn(warn && "font-medium text-expensive")}>{pct(h.payout_ratio, 1)}</span>;
+}
+
+function Pbr({ h }: { h: Holding }) {
+  const warn = h.signals.includes("high_pbr");
+  return <span className={cn(warn && "font-medium text-expensive")}>{times(h.pbr)}</span>;
 }
 
 export function PortfolioPage() {
@@ -131,6 +156,7 @@ export function PortfolioPage() {
               <TableHead className="text-right">1株配当</TableHead>
               <TableHead className="text-right">配当利回り</TableHead>
               <TableHead className="text-right">配当性向</TableHead>
+              <TableHead className="text-right">PBR</TableHead>
               <TableHead>売りサイン</TableHead>
             </TableRow>
           </TableHeader>
@@ -151,6 +177,9 @@ export function PortfolioPage() {
                 <TableCell className="text-right tabular-nums">{pct(h.dividend_yield)}</TableCell>
                 <TableCell className="text-right tabular-nums">
                   <Payout h={h} />
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  <Pbr h={h} />
                 </TableCell>
                 <TableCell>
                   <Signals h={h} />
@@ -178,7 +207,7 @@ export function PortfolioPage() {
             <div className="mb-3">
               <Signals h={h} />
             </div>
-            <dl className="grid grid-cols-3 gap-x-3 text-sm">
+            <dl className="grid grid-cols-4 gap-x-3 text-sm">
               <div>
                 <dt className="text-xs text-muted-foreground">株価</dt>
                 <dd className="tabular-nums">{yen(h.price)}</dd>
@@ -196,6 +225,12 @@ export function PortfolioPage() {
                 <dt className="text-xs text-muted-foreground">配当性向</dt>
                 <dd className="tabular-nums">
                   <Payout h={h} />
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">PBR</dt>
+                <dd className="tabular-nums">
+                  <Pbr h={h} />
                 </dd>
               </div>
             </dl>
@@ -218,7 +253,7 @@ export function PortfolioPage() {
       )}
 
       <p className="text-xs text-muted-foreground">
-        サインは最新の指標だけで出す目安です（取得価格は見ません）。売買の判断はご自身で行ってください。
+        売りサインは配当性向50%超・PBR1.5倍超・赤字で配当の3つで、株式だけに出します。参考のサインは判断の材料です。どれも最新の指標だけで出す目安です（取得価格は見ません）。売買の判断はご自身で行ってください。
       </p>
     </section>
   );
