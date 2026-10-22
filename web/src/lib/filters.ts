@@ -93,12 +93,44 @@ export const SECTORS33 = [
 ] as const;
 
 export const MARKETS = ["プライム", "スタンダード", "グロース"] as const;
-export const SIZES: { key: string; label: string }[] = [
-  { key: "large", label: "大型" },
-  { key: "mid", label: "中型" },
-  { key: "small", label: "小型" },
-  { key: "none", label: "区分なし" },
+export const SIZES: { key: string; label: string; hint: string }[] = [
+  {
+    key: "large",
+    label: "大型",
+    hint: "時価総額と売買の多さで上位100社（TOPIX Core30・Large70）",
+  },
+  { key: "mid", label: "中型", hint: "大型に次ぐ400社（TOPIX Mid400）" },
+  { key: "small", label: "小型", hint: "TOPIX に入っている残りの会社（TOPIX Small）" },
+  {
+    key: "none",
+    label: "区分なし",
+    hint: "TOPIX に入っていない会社（スタンダード・グロース市場の会社や、上場して間もない会社など）",
+  },
 ];
+
+export const SIZE_TIP = [
+  "JPX が TOPIX（東証株価指数）の銘柄を会社の大きさで分けた区分です。",
+  ...SIZES.map((s) => `・${s.label}: ${s.hint}`),
+  "大きい会社ほど株価の動きが穏やかで、売り買いしやすい傾向があります。",
+].join("\n");
+
+/** 利回りの過去5年比の説明。REIT・ETF では「配当」を「分配金」に読み替える */
+export function yieldPercentileTip(kind: Kind): string {
+  const tip = [
+    "いまの配当利回りが、過去5年（週ごと）の利回りの中でどのくらい高いかを 0〜100% で表したものです。",
+    "例: 90% なら、過去5年の9割の時期より今の利回りが高い。",
+    "配当が同じなら株価が下がるほど利回りは上がるので、",
+    "・高い → 過去と比べて株価が安い（割安かもしれない）",
+    "・低い → 過去と比べて株価が高い（割高かもしれない）",
+  ];
+  if (kind === "stock") {
+    tip.push(
+      "ただし業績が悪くて株価が下がっていることもあるので、判定（赤字なし など）も合わせて見てください。",
+    );
+    return tip.join("\n");
+  }
+  return tip.join("\n").replaceAll("配当", "分配金").replaceAll("株価", "価格");
+}
 
 /** 一覧のバッジ（株式だけ）。API のクエリ名と表示名 */
 export const FLAGS: { key: FlagKey; label: string; hint: string }[] = [

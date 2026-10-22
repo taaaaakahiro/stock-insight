@@ -1,5 +1,6 @@
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import { EdinetPolicy } from "@/components/edinet-policy";
+import { InfoTip } from "@/components/info-tip";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -11,7 +12,15 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { StockRow } from "@/lib/api";
-import { type Filters, type Kind, type MetricKey, metricLabel, metricsFor } from "@/lib/filters";
+import {
+  type Filters,
+  type Kind,
+  type MetricKey,
+  metricLabel,
+  metricsFor,
+  SIZES,
+  yieldPercentileTip,
+} from "@/lib/filters";
 import { count, growth, pct, times, yen } from "@/lib/format";
 import { navigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -57,16 +66,11 @@ function columnsFor(kind: Kind): Column[] {
 }
 
 const SIZE_LABEL: Record<string, string> = { large: "大型", mid: "中型", small: "小型" };
-const SIZE_HINT: Record<string, string> = {
-  large: "TOPIX Core30・Large70（時価総額と流動性が特に高い上位100銘柄）",
-  mid: "TOPIX Mid400（大型に次ぐ400銘柄）",
-  small: "TOPIX Small（上記以外の TOPIX 構成銘柄）",
-};
 
 function SizeBadge({ size }: { size: StockRow["size_class"] }) {
   if (!size || !SIZE_LABEL[size]) return null;
   return (
-    <Badge variant="secondary" title={`JPX の規模区分: ${SIZE_HINT[size]}`}>
+    <Badge variant="secondary" title={`JPX の規模区分: ${SIZES.find((s) => s.key === size)?.hint}`}>
       {SIZE_LABEL[size]}
     </Badge>
   );
@@ -221,13 +225,18 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
               </TableHead>
               {columns.map((c) => (
                 <TableHead key={c.key} className="text-right" aria-sort={ariaSort(c.key)}>
-                  <SortButton
-                    label={metricLabel(c.key, kind)}
-                    active={sort === c.key}
-                    order={order}
-                    numeric
-                    onClick={() => onSort(c.key)}
-                  />
+                  <div className="inline-flex items-center gap-1">
+                    {c.key === "yield_percentile" && (
+                      <InfoTip label={metricLabel(c.key, kind)} text={yieldPercentileTip(kind)} />
+                    )}
+                    <SortButton
+                      label={metricLabel(c.key, kind)}
+                      active={sort === c.key}
+                      order={order}
+                      numeric
+                      onClick={() => onSort(c.key)}
+                    />
+                  </div>
                 </TableHead>
               ))}
               {kind === "stock" && <TableHead>判定</TableHead>}
@@ -271,7 +280,14 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
             <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
               {columns.map((c) => (
                 <div key={c.key} className="flex justify-between gap-2">
-                  <dt className="text-muted-foreground">{metricLabel(c.key, kind)}</dt>
+                  <dt className="text-muted-foreground">
+                    {metricLabel(c.key, kind)}
+                    {c.key === "yield_percentile" && (
+                      <span className="ml-0.5 inline-block align-[-2px]">
+                        <InfoTip label={metricLabel(c.key, kind)} text={yieldPercentileTip(kind)} />
+                      </span>
+                    )}
+                  </dt>
                   <dd className="tabular-nums">{c.render(r)}</dd>
                 </div>
               ))}
