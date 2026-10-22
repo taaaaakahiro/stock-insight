@@ -157,7 +157,7 @@ DOE の下限と目標（`doe_floor`・`doe_goal`、比率は小数）は、DOE 
 |---|---|---|
 | 候補の絞り込み（ルール） | 種類が株式で、配当利回りが分かっていて、バリュー株（PBR ≤ 1.0 かつ 0 < PER ≤ 15）または「5年連続で配当あり かつ 通期で赤字なし」。満たす条件（バリュー・5年配当・通期黒字・四半期黒字・増益傾向）の多い順、同点なら利回りの高い順に上位50銘柄 | `domain/src/recommend.rs`（`select_candidates`）、SQL は `adapter-cf/src/query.rs` |
 | AI への依頼 | 候補50銘柄の指標（コード・名称・業種・株価・利回り・過去5年比・PBR・PER・配当性向・DOE・連続増配・営業利益率・各バッジ）を JSON で渡し、上位10銘柄と各1〜2文の理由を JSON Schema（`response_format`）で返させる | `adapter-cf/src/recommend.rs` |
-| モデル | Workers AI `@cf/meta/llama-3.1-8b-instruct-fp8`（無料枠で動く軽いテキスト生成モデル。`@cf/meta/llama-3.1-8b-instruct` は廃止済み） | 同上（`MODEL`） |
+| モデル | Workers AI `@cf/meta/llama-3.3-70b-instruct-fp8-fast`（JSON モードに対応したテキスト生成モデル。1日1回で約400 Neurons と無料枠に収まる。`llama-3.1-8b-instruct-fp8` は JSON Schema に対応しておらず、`@cf/meta/llama-3.1-8b-instruct` は廃止済み） | 同上（`MODEL`） |
 | 答えの検証 | ちょうど10件、すべて候補にある銘柄、重複なし、理由が空でなく200文字以内。1つでも外れたら保存せずエラーをログに出す | `domain/src/recommend.rs`（`validate_picks`） |
 
 画面（AIレコメンドのタブ）には「AIによる参考情報であり投資助言ではありません」を明記する。

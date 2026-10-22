@@ -7,8 +7,9 @@ use serde_json::{json, Value};
 use usecase::screening::StockRow;
 use usecase::PortError;
 
-/// 無料枠で動く軽いテキスト生成モデル（JSON モード対応）
-pub const MODEL: &str = "@cf/meta/llama-3.1-8b-instruct-fp8";
+/// JSON モード（response_format の json_schema）に対応したテキスト生成モデル。
+/// llama-3.1-8b-instruct-fp8 は JSON Schema に対応しておらず、5025 で断られる
+pub const MODEL: &str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 const SYSTEM_PROMPT: &str = "\
 あなたは日本株の配当投資を手伝うアシスタントです。\

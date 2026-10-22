@@ -29,7 +29,7 @@ flowchart LR
     D1[(D1（SQLite）<br/>指標・財務・終値の履歴<br/>ユーザーごとのデータ)]
     R2[(R2<br/>J-Quantsの応答・EDINETの文章)]
     WF[判定Workflow（予定）<br/>警告・売り時・メール]
-    AI[Workers AI<br/>Llama 3.1 8B]
+    AI[Workers AI<br/>Llama 3.3 70B]
     MAIL[Email Service（予定）]
   end
 

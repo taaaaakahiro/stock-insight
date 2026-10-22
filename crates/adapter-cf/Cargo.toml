@@ -13,4 +13,7 @@ serde_json.workspace = true
 # D1 への接続は Worker（wasm32）でだけビルドする。SQL の組み立てはネイティブでテストできる
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 worker = { version = "0.8.7", features = ["d1"] }
+# Workers AI への入力を、Map ではなくふつうの JS オブジェクトにして渡すため（ai.rs）
+serde-wasm-bindgen = "0.6.5"
+wasm-bindgen = "0.2.129"
 web-sys = { version = "0.3.106", features = ["Crypto", "CryptoKey", "SubtleCrypto"] }
