@@ -484,8 +484,15 @@ async fn recommend_cron(env: &Env) {
     let repo = D1Recommendations::new(db);
     let now = WorkerClock.now_unix();
     match usecase::recommend::generate(&repo, &WorkersAi::new(ai), now).await {
-        Ok(usecase::recommend::Outcome::Saved { date, picks }) => {
-            worker::console_log!("cron {RECOMMEND_CRON}: saved {picks} recommendations for {date}")
+        Ok(usecase::recommend::Outcome::Saved {
+            date,
+            picks,
+            dropped,
+        }) => {
+            worker::console_log!("cron {RECOMMEND_CRON}: saved {picks} recommendations for {date}");
+            for d in dropped {
+                worker::console_log!("cron {RECOMMEND_CRON}: dropped ({d})");
+            }
         }
         Ok(usecase::recommend::Outcome::Skipped(why)) => {
             worker::console_log!("cron {RECOMMEND_CRON}: skipped ({why})")

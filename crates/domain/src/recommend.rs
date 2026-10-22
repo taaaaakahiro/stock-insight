@@ -3,8 +3,10 @@
 
 /// AI に渡す候補の上限
 pub const MAX_CANDIDATES: usize = 50;
-/// AI が返す（画面に出す）銘柄数
+/// AI に返させる（画面に出す）銘柄数
 pub const PICK_COUNT: usize = 10;
+/// 壊れた答えを捨てたあと、保存するのに最低限ほしい銘柄数
+pub const MIN_PICKS: usize = 5;
 /// 理由の長さの上限（文字数）。長すぎる答えは壊れているとみなす
 pub const MAX_REASON_CHARS: usize = 200;
 
@@ -77,54 +79,91 @@ pub struct Pick {
     pub reason: String,
 }
 
+/// AI の答えのうち、捨てた1件の理由
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickError {
-    /// 件数が PICK_COUNT でない
-    WrongCount(usize),
     /// 候補にない銘柄
     UnknownCode(String),
-    /// 同じ銘柄が2回
+    /// 同じ銘柄が2回（2回目以降を捨てる）
     Duplicate(String),
     /// 理由が空、または長すぎる
     BadReason(String),
+    /// PICK_COUNT を超えた分
+    Extra(String),
 }
 
 impl std::fmt::Display for PickError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PickError::WrongCount(n) => write!(f, "expected {PICK_COUNT} picks, got {n}"),
             PickError::UnknownCode(c) => write!(f, "code {c} is not a candidate"),
             PickError::Duplicate(c) => write!(f, "code {c} appears twice"),
             PickError::BadReason(c) => write!(f, "bad reason for {c}"),
+            PickError::Extra(c) => write!(f, "code {c} is beyond {PICK_COUNT} picks"),
         }
     }
 }
 
-/// AI の答えを検証して順位を付ける。候補にない銘柄・重複・空の理由があれば保存しない
-pub fn validate_picks(raw: &[RawPick], candidates: &[Candidate]) -> Result<Vec<Pick>, PickError> {
-    if raw.len() != PICK_COUNT {
-        return Err(PickError::WrongCount(raw.len()));
+/// 検証の結果。picks は順位順（1始まりで詰める）、dropped は捨てた分
+#[derive(Debug, Clone, PartialEq)]
+pub struct Validated {
+    pub picks: Vec<Pick>,
+    pub dropped: Vec<PickError>,
+}
+
+/// 正しい答えが MIN_PICKS に届かず、保存しない
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TooFewPicks {
+    pub kept: usize,
+    pub dropped: Vec<PickError>,
+}
+
+impl std::fmt::Display for TooFewPicks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "only {} valid picks (need {MIN_PICKS})", self.kept)?;
+        for d in &self.dropped {
+            write!(f, "; {d}")?;
+        }
+        Ok(())
     }
-    let mut out: Vec<Pick> = Vec::with_capacity(PICK_COUNT);
-    for (i, p) in raw.iter().enumerate() {
+}
+
+/// AI の答えを検証して順位を付ける。候補にない銘柄・重複・空や長すぎる理由・PICK_COUNT を超えた分は
+/// その1件だけ捨て、残りを AI の並び順のまま詰めて順位にする。残りが MIN_PICKS 未満なら保存しない
+pub fn validate_picks(raw: &[RawPick], candidates: &[Candidate]) -> Result<Validated, TooFewPicks> {
+    let mut picks: Vec<Pick> = Vec::with_capacity(PICK_COUNT);
+    let mut dropped = Vec::new();
+    for p in raw {
         let code = p.code.trim();
         if !candidates.iter().any(|c| c.code == code) {
-            return Err(PickError::UnknownCode(code.to_string()));
+            dropped.push(PickError::UnknownCode(code.to_string()));
+            continue;
         }
-        if out.iter().any(|q| q.code == code) {
-            return Err(PickError::Duplicate(code.to_string()));
+        if picks.iter().any(|q| q.code == code) {
+            dropped.push(PickError::Duplicate(code.to_string()));
+            continue;
         }
         let reason: String = p.reason.split_whitespace().collect::<Vec<_>>().join(" ");
         if reason.is_empty() || reason.chars().count() > MAX_REASON_CHARS {
-            return Err(PickError::BadReason(code.to_string()));
+            dropped.push(PickError::BadReason(code.to_string()));
+            continue;
         }
-        out.push(Pick {
-            rank: i as u32 + 1,
+        if picks.len() == PICK_COUNT {
+            dropped.push(PickError::Extra(code.to_string()));
+            continue;
+        }
+        picks.push(Pick {
+            rank: picks.len() as u32 + 1,
             code: code.to_string(),
             reason,
         });
     }
-    Ok(out)
+    if picks.len() < MIN_PICKS {
+        return Err(TooFewPicks {
+            kept: picks.len(),
+            dropped,
+        });
+    }
+    Ok(Validated { picks, dropped })
 }
 
 #[cfg(test)]
@@ -211,7 +250,9 @@ mod tests {
             .iter()
             .map(|x| raw(&format!(" {} ", x.code), "  割安で\n増配が続く  "))
             .collect();
-        let picks = validate_picks(&raw, &c).unwrap();
+        let v = validate_picks(&raw, &c).unwrap();
+        assert!(v.dropped.is_empty());
+        let picks = v.picks;
         assert_eq!(picks.len(), 10);
         assert_eq!(picks[0].rank, 1);
         assert_eq!(picks[9].rank, 10);
@@ -223,38 +264,65 @@ mod tests {
     }
 
     #[test]
-    fn rejects_broken_answers() {
+    fn drops_only_the_broken_picks_and_renumbers() {
         let c = ten_candidates();
-        let ok: Vec<RawPick> = c.iter().map(|x| raw(&x.code, "r")).collect();
-
-        assert_eq!(validate_picks(&ok[..9], &c), Err(PickError::WrongCount(9)));
-
-        let mut unknown = ok.clone();
-        unknown[3].code = "9999".into();
+        let mut ans: Vec<RawPick> = c.iter().map(|x| raw(&x.code, "r")).collect();
+        ans[1].code = "9999".into(); // 候補にない
+        ans[3].code = "4000".into(); // 重複（2回目を捨てる）
+        ans[5].reason = " \n ".into(); // 理由が空
+        ans[7].reason = "あ".repeat(MAX_REASON_CHARS + 1); // 理由が長すぎる
+        let v = validate_picks(&ans, &c).unwrap();
+        let codes: Vec<&str> = v.picks.iter().map(|p| p.code.as_str()).collect();
+        assert_eq!(codes, vec!["4000", "4002", "4004", "4006", "4008", "4009"]);
+        let ranks: Vec<u32> = v.picks.iter().map(|p| p.rank).collect();
+        assert_eq!(ranks, vec![1, 2, 3, 4, 5, 6], "捨てた分は詰めて順位にする");
         assert_eq!(
-            validate_picks(&unknown, &c),
-            Err(PickError::UnknownCode("9999".into()))
+            v.dropped,
+            vec![
+                PickError::UnknownCode("9999".into()),
+                PickError::Duplicate("4000".into()),
+                PickError::BadReason("4005".into()),
+                PickError::BadReason("4007".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_at_most_ten_and_needs_at_least_five() {
+        let c: Vec<Candidate> = (0..12)
+            .map(|i| cand(&format!("{}", 4000 + i), Some(0.03), true, true, true))
+            .collect();
+        let all: Vec<RawPick> = c.iter().map(|x| raw(&x.code, "r")).collect();
+        let v = validate_picks(&all, &c).unwrap();
+        assert_eq!(v.picks.len(), PICK_COUNT);
+        assert_eq!(
+            v.dropped,
+            vec![
+                PickError::Extra("4010".into()),
+                PickError::Extra("4011".into())
+            ]
         );
 
-        let mut dup = ok.clone();
-        dup[5].code = "4000".into();
         assert_eq!(
-            validate_picks(&dup, &c),
-            Err(PickError::Duplicate("4000".into()))
+            validate_picks(&all[..MIN_PICKS], &c).unwrap().picks.len(),
+            5
         );
 
-        let mut empty = ok.clone();
-        empty[0].reason = " \n ".into();
+        let mut few = all[..MIN_PICKS].to_vec();
+        few[0].code = "9999".into();
         assert_eq!(
-            validate_picks(&empty, &c),
-            Err(PickError::BadReason("4000".into()))
+            validate_picks(&few, &c),
+            Err(TooFewPicks {
+                kept: MIN_PICKS - 1,
+                dropped: vec![PickError::UnknownCode("9999".into())],
+            })
         );
-
-        let mut long = ok;
-        long[1].reason = "あ".repeat(MAX_REASON_CHARS + 1);
         assert_eq!(
-            validate_picks(&long, &c),
-            Err(PickError::BadReason("4001".into()))
+            validate_picks(&[], &c),
+            Err(TooFewPicks {
+                kept: 0,
+                dropped: vec![]
+            })
         );
     }
 }

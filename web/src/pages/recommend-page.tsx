@@ -146,8 +146,9 @@ export function RecommendPage() {
           <p className="text-sm text-muted-foreground">
             ルールで絞った候補（株式で、バリュー株か「5年連続で配当あり かつ
             通期で赤字なし」）の指標を AI
-            に渡し、増配が期待できて割安な順に10銘柄を選ばせています。数字の計算は AI
-            にさせていません。
+            に渡し、増配が期待できて割安な順に10銘柄を選ばせています。AI
+            の答えに重複や候補にない銘柄があればその分を除くので、10銘柄より少ない日もあります。数字の計算は
+            AI にさせていません。
           </p>
           <ol className="flex flex-col gap-3">
             {day.rows.map((r) => (
