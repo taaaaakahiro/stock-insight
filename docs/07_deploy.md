@@ -158,7 +158,7 @@ npx wrangler@4.151.3 secret put GITHUB_DISPATCH_TOKEN
 ```
 
 3. `wrangler deploy` で Cron Trigger を反映する（手順 5-3 と同じ。画面は公開キー入りでビルドしてから）
-4. 初回は手動で全銘柄を流して確かめる（休場日・当日実行済みの判定は `force=true` で飛ばせる）。初回は J-Quants の過去5年分で約1時間、EDINET の過去400日分の書類一覧でさらに1時間ほどかかる。時間切れ（`max_minutes`、EDINET は60分）になっても次回は続きから取る
+4. 初回は手動で全銘柄を流して確かめる（休場日・当日実行済みの判定は `force=true` で飛ばせる）。初回は J-Quants の過去5年分で1時間以上、EDINET の過去400日分（数千通）で1〜2時間ほどかかる（2つは並列に動く）。時間切れ（`max_minutes`、EDINET は300分）になっても次回は続きから取る
 
 ```bash
 gh workflow run daily-batch --repo taaaaakahiro/stock-insight -f force=true
@@ -166,7 +166,7 @@ gh workflow run daily-batch --repo taaaaakahiro/stock-insight -f force=true
 
 5. 次の平日 18:30 以降に、`batch_runs` に `daily-...` の行が `succeeded` で増えていること、`wrangler tail` に `dispatched daily-batch` が出ていること、画面のヘッダーの株価の日付が進んでいることを確かめる
 
-D1 の書き込みは1日10万行までなので、`persist_every` を小さくして流さない（保存のたびに全銘柄の終値の履歴を書き直す）。
+`persist_every` は小さくしない（保存のたびに全銘柄の終値の履歴を書き直し、書き込みが膨らむ）。J-Quants（`jquants` ジョブ）と EDINET（`edinet` ジョブ）は並列に動き、片方が失敗してももう片方は続く。
 
 止めたいときは `wrangler.jsonc` の `triggers.crons` を空にして `wrangler deploy`（GitHub 側の予備の schedule は、ワークフローを無効化する: `gh workflow disable daily-batch`）。
 
@@ -178,7 +178,7 @@ v0.3.0 までは終値の履歴（D1 `price_history`）を直近3年に切り詰
 
 | 対象 | 変更 | 件数・範囲 | 既存への影響 |
 |---|---|---|---|
-| D1 `price_history` | 全銘柄の `closes` を5年分に書き直す（同じ日付は J-Quants の同じ値で上書き） | 約4,200行（D1 の書き込み上限 10万行/日の5%弱）。1行あたり約20KB、全体で約90MB | 削除なし。履歴が長くなるだけ |
+| D1 `price_history` | 全銘柄の `closes` を5年分に書き直す（同じ日付は J-Quants の同じ値で上書き） | 約4,300行（Workers Paid の D1 の枠では気にならない量）。1行あたり約20KB、全体で約90MB | 削除なし。履歴が長くなるだけ |
 | D1 `indicators_latest`・`batch_runs` | 続く `compute` で、利回りの過去5年比と valuation が5年分で計算し直される | 約4,200行・1行 | 一覧の「過去5年比」とポートフォリオの「割高」のサインが変わる銘柄がある |
 | D1 の財務・`sync_state`、R2 | 変えない | — | なし |
 

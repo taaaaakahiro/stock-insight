@@ -659,7 +659,7 @@ async fn sync_edinet(args: Args) -> Result<(), String> {
         .save_edinet_docs(&pending, now)
         .await
         .map_err(|e| e.0)?;
-    let next = usecase::edinet::resume_cursor(listed_until, plan.fetch.get(fetched));
+    let next = usecase::edinet::resume_cursor(listed_until, plan.fetch.get(fetched), today);
     store
         .set_state(EDINET_CURSOR_KEY, &next.to_string(), now)
         .await

@@ -87,12 +87,14 @@ pub fn plan(
     Plan { fetch, delete }
 }
 
-/// 途中で止めたとき、次回どの日付の次から一覧を読み直すか。
-/// 最後まで読んだ日と、まだ取っていない最初の書類の提出日の前日の、早いほう
-pub fn resume_cursor(listed_until: Date, first_unfetched: Option<&DocRef>) -> Date {
+/// 次回どの日付の次から一覧を読み直すか。
+/// 最後まで読んだ日、まだ取っていない最初の書類の提出日の前日、今日の前日のうち最も早い日。
+/// 今日の一覧はバッチの後にも書類が増えるので、翌日もう一度読む（取得済みの書類は plan が飛ばす）
+pub fn resume_cursor(listed_until: Date, first_unfetched: Option<&DocRef>, today: Date) -> Date {
+    let c = listed_until.min(today.add_days(-1));
     match first_unfetched {
-        Some(d) => listed_until.min(d.submitted.add_days(-1)),
-        None => listed_until,
+        Some(d) => c.min(d.submitted.add_days(-1)),
+        None => c,
     }
 }
 
@@ -211,11 +213,17 @@ mod tests {
     #[test]
     fn cursor_resumes_before_the_first_unfetched_doc() {
         let first = doc("7203", DocKind::Annual, "A", "2026-06-20", "2026-03-31");
+        let today = d("2026-10-22");
         assert_eq!(
-            resume_cursor(d("2026-10-20"), Some(&first)),
+            resume_cursor(d("2026-10-20"), Some(&first), today),
             d("2026-06-19")
         );
-        assert_eq!(resume_cursor(d("2026-10-20"), None), d("2026-10-20"));
+        assert_eq!(resume_cursor(d("2026-10-20"), None, today), d("2026-10-20"));
+        assert_eq!(
+            resume_cursor(d("2026-10-22"), None, today),
+            d("2026-10-21"),
+            "今日の一覧は翌日にもう一度読む"
+        );
         assert_eq!(
             r2_key("130A", DocKind::Semiannual),
             "edinet/130A/semiannual.json.gz"

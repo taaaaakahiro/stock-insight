@@ -15,13 +15,13 @@
 
 取り込みは `batch-cli sync-jq`。初回だけ過去5年分、以後は前回の続き（`sync_state.jq_synced_until`）。財務は直近3日分を毎回取り直す。
 
-EDINET は `batch-cli sync-edinet`。初回は過去400日分の書類一覧（有報は年1回なので、提出の遅い会社も含めて1年強）、以後は前回の続き（`sync_state.edinet_listed_until`）。API キーは URL に載せずヘッダー（`Ocp-Apim-Subscription-Key`。`Subscription-Key` ヘッダーは 401 になる）で渡す。古い書類の扱い:
+EDINET は `batch-cli sync-edinet`。初回は過去400日分の書類一覧（有報は年1回なので、提出の遅い会社も含めて1年強）、以後は前回の続き（`sync_state.edinet_listed_until`）。今日の一覧はバッチの後にも書類が増えうるので、続きの位置は前日までしか進めず、翌日もう一度読む（取得済みの書類は飛ばす）。日次バッチの中では J-Quants と別のジョブで並列に動く。API キーは URL に載せずヘッダー（`Ocp-Apim-Subscription-Key`。`Subscription-Key` ヘッダーは 401 になる）で渡す。古い書類の扱い:
 
 - 同じ銘柄・種類の新しい書類が出たら、D1 の行と R2 のファイルを上書きする（古い書類は残らない）
 - 同じ事業年度かそれより後の有報が出たら、その半期報告書は消す（初回の取り込みでは最初から取らない）。EDINET の `periodEnd` は半期報告書でも事業年度の末日なので、有報の `periodEnd` ≥ 半期報告書の `periodEnd` で比べる
 - 書類一覧には、その日に縦覧の状態などが変わった過去の書類も載るので、その日に提出された書類だけを使う
 - 上場していない銘柄（最新の JPX 一覧にない）の書類は消す
-- R2 から消すキーはバッチが `raw/edinet-delete.txt` に書き、ワークフローの最後に `wrangler r2 object delete` で消す
+- R2 から消すキーはバッチが `raw/edinet-delete.txt` に書き、`edinet` ジョブの最後に `wrangler r2 object delete` で消す
 
 ## 項目の対応
 
