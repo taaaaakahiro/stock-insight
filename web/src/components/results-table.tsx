@@ -89,33 +89,65 @@ export function DoeMargin({ r }: { r: StockRow }) {
   );
 }
 
-// 表の列の並び（株価を先頭に）
+/** 利回りの下に、その元になった1株配当を小さく添える（配当の列は別に持たない） */
+function YieldCell({ r }: { r: StockRow }) {
+  return (
+    <>
+      {pct(r.dividend_yield)}
+      {r.dividend != null && (
+        <span className="block text-xs text-muted-foreground">
+          <DividendAmount r={r} />
+        </span>
+      )}
+    </>
+  );
+}
+
+/** 1年内の金利見直しを「少なく見た値〜多く見た値」で1つの列に */
+function RepriceCell({ r }: { r: StockRow }) {
+  const min = r.reit?.reprice_ratio;
+  const max = r.reit?.reprice_max_ratio;
+  return (
+    <>
+      {pct(min, 1)}
+      {max != null && max !== min && (
+        <span className="block text-xs text-muted-foreground">最大 {pct(max, 1)}</span>
+      )}
+    </>
+  );
+}
+
+// 一覧の列の並び（株価を先頭に）。買うかを比べるのに要る値だけにし、残りは銘柄のページで見せる
+// （DOE・DOE下限・DOEの余裕は配当方針、営業利益率・伸びは主要な指標、金利の内訳・平均利率は REIT の借入）。
+// 列にない指標も条件では絞り込める
 const ORDER: MetricKey[] = [
   "price",
-  "dividend_ttm",
   "dividend_yield",
   "yield_percentile",
   "pbr",
   "per",
   "payout_ratio",
-  "doe",
-  "doe_floor",
-  "doe_margin",
   "consecutive_increases",
-  "operating_margin",
-  "sales_growth",
-  "op_growth",
   "floating_ratio",
-  "unknown_ratio",
   "reprice_ratio",
-  "reprice_max_ratio",
-  "avg_rate",
   "occupancy",
 ];
 
+// 一覧では、隣の値をまとめて1つのセルに出す列
+const LIST_RENDER: Partial<Record<MetricKey, (r: StockRow) => React.ReactNode>> = {
+  dividend_yield: (r) => <YieldCell r={r} />,
+  reprice_ratio: (r) => <RepriceCell r={r} />,
+};
+
+// 一覧の見出しだけ短くする（説明の InfoTip には元の名前を出す）
+const LIST_LABEL: Partial<Record<MetricKey, string>> = { yield_percentile: "過去5年比" };
+
 function columnsFor(kind: Kind): Column[] {
   const keys = new Set(metricsFor(kind).map((m) => m.key));
-  return ORDER.filter((k) => keys.has(k)).map((key) => ({ key, render: RENDER[key] }));
+  return ORDER.filter((k) => keys.has(k)).map((key) => ({
+    key,
+    render: LIST_RENDER[key] ?? RENDER[key],
+  }));
 }
 
 const SIZE_LABEL: Record<string, string> = { large: "大型", mid: "中型", small: "小型" };
@@ -165,6 +197,12 @@ export function NameCell({ r, link = true }: { r: StockRow; link?: boolean }) {
 
 /** 一覧のバッジ。当てはまるものだけ出す（判定できない＝null は出さない）。色だけに意味を持たせない */
 const BADGES: { key: keyof StockRow; label: string; hint: string; className: string }[] = [
+  {
+    key: "dividend_cut",
+    label: "減配",
+    hint: "直近の配当が前期より減った、または会社予想が直近の配当を下回る（据え置きは含めない）",
+    className: "border-expensive/40 bg-expensive/10 text-expensive",
+  },
   {
     key: "is_value",
     label: "バリュー",
@@ -288,7 +326,7 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
                       />
                     )}
                     <SortButton
-                      label={metricLabel(c.key, kind)}
+                      label={LIST_LABEL[c.key] ?? metricLabel(c.key, kind)}
                       active={sort === c.key}
                       order={order}
                       numeric
@@ -297,13 +335,13 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
                   </div>
                 </TableHead>
               ))}
-              {kind === "stock" && <TableHead>判定</TableHead>}
+              {kind === "stock" && <TableHead className="min-w-36">判定</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {rows.map((r) => (
               <TableRow key={r.code}>
-                <TableCell className="max-w-72">
+                <TableCell className="max-w-60">
                   <div className="flex items-center gap-1">
                     <PortfolioToggle code={r.code} name={r.name ?? r.code} />
                     <NameCell r={r} />
@@ -341,7 +379,7 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
               {columns.map((c) => (
                 <div key={c.key} className="flex justify-between gap-2">
                   <dt className="text-muted-foreground">
-                    {metricLabel(c.key, kind)}
+                    {LIST_LABEL[c.key] ?? metricLabel(c.key, kind)}
                     {metricTip(c.key, kind) && (
                       <span className="ml-0.5 inline-block align-[-2px]">
                         <InfoTip
