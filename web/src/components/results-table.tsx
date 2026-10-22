@@ -1,4 +1,5 @@
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
+import { DocPreview } from "@/components/doc-preview";
 import { EdinetPolicy } from "@/components/edinet-policy";
 import { InfoTip } from "@/components/info-tip";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
@@ -249,6 +250,7 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
                   <div className="flex items-center gap-1">
                     <PortfolioToggle code={r.code} name={r.name ?? r.code} />
                     <NameCell r={r} />
+                    {kind === "stock" && <DocPreview r={r} />}
                   </div>
                 </TableCell>
                 {columns.map((c) => (
@@ -274,6 +276,7 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
               <div className="flex min-w-0 items-center gap-1">
                 <PortfolioToggle code={r.code} name={r.name ?? r.code} />
                 <NameCell r={r} />
+                {kind === "stock" && <DocPreview r={r} />}
               </div>
               {kind === "stock" && <Flags r={r} />}
             </div>

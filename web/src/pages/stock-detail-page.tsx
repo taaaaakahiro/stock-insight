@@ -1,5 +1,6 @@
 import { ArrowLeft } from "lucide-react";
 import { useEffect, useState } from "react";
+import { DocPreview } from "@/components/doc-preview";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
 import { Flags } from "@/components/results-table";
 import { Button } from "@/components/ui/button";
@@ -102,6 +103,7 @@ function Detail({ d }: { d: StockDetail }) {
                 .join("・")}
             </p>
           </div>
+          {stock && <DocPreview r={s} />}
         </div>
         {stock && <Flags r={s} />}
         <p className="text-xs text-muted-foreground">
