@@ -26,6 +26,21 @@ pub struct D1Store {
     token: String,
 }
 
+/// D1 の一時的なエラー（通信エラー・429・5xx）をやり直す回数と、最初の待ち時間（以後は倍）
+const D1_RETRIES: u32 = 4;
+const D1_FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// 混み合い（429）とサーバー側の一時的なエラー（5xx）だけをやり直す。SQL の誤りなどの 4xx はやり直さない
+fn is_retryable_status(status: u16) -> bool {
+    status == 429 || (500..600).contains(&status)
+}
+
+/// やり直してよいエラーか
+enum D1Error {
+    Retryable(String),
+    Fatal(String),
+}
+
 impl D1Store {
     pub fn new(
         client: reqwest::Client,
@@ -44,25 +59,61 @@ impl D1Store {
         self.query(stmt).await.map(|_| ())
     }
 
-    /// 1文を実行して結果の行（JSON のオブジェクト）を返す
+    /// 1文を実行して結果の行（JSON のオブジェクト）を返す。
+    /// D1 はときどき 500（code 7500 の internal error）などを返すので、通信エラー・429・5xx は
+    /// 待ってから最大 D1_RETRIES 回やり直す。書き込みはどれもキーでの upsert・削除か IF NOT EXISTS なので、
+    /// 1回目が実は通っていても、やり直して結果は変わらない
     pub async fn query(&self, stmt: &Stmt) -> Result<Vec<serde_json::Value>, PortError> {
         let params: Vec<serde_json::Value> = stmt.params.iter().map(|v| v.to_json()).collect();
         let body = serde_json::json!({ "sql": stmt.sql, "params": params });
+        let mut wait = D1_FIRST_WAIT;
+        let mut attempt = 0;
+        loop {
+            match self.query_once(&body).await {
+                Err(D1Error::Retryable(e)) if attempt < D1_RETRIES => {
+                    attempt += 1;
+                    eprintln!(
+                        "d1: {e}; retry {attempt}/{D1_RETRIES} in {}s",
+                        wait.as_secs()
+                    );
+                    tokio::time::sleep(wait).await;
+                    wait *= 2;
+                }
+                Err(D1Error::Retryable(e) | D1Error::Fatal(e)) => return Err(PortError(e)),
+                Ok(rows) => return Ok(rows),
+            }
+        }
+    }
+
+    async fn query_once(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<Vec<serde_json::Value>, D1Error> {
         let res = self
             .client
             .post(&self.url)
             .bearer_auth(&self.token)
-            .json(&body)
+            .json(body)
             .send()
             .await
-            .map_err(|e| PortError(format!("d1: {e}")))?;
+            .map_err(|e| D1Error::Retryable(format!("d1: {e}")))?;
         let status = res.status();
-        let v: serde_json::Value = res
-            .json()
-            .await
-            .map_err(|e| PortError(format!("d1: {e}")))?;
+        let v: Result<serde_json::Value, _> = res.json().await;
+        let retryable = is_retryable_status(status.as_u16());
+        let v = match v {
+            Ok(v) => v,
+            Err(e) if retryable => {
+                return Err(D1Error::Retryable(format!("d1 HTTP {status}: {e}")))
+            }
+            Err(e) => return Err(D1Error::Fatal(format!("d1: {e}"))),
+        };
         if !status.is_success() || v["success"].as_bool() != Some(true) {
-            return Err(PortError(format!("d1 HTTP {status}: {}", v["errors"])));
+            let msg = format!("d1 HTTP {status}: {}", v["errors"]);
+            return Err(if retryable {
+                D1Error::Retryable(msg)
+            } else {
+                D1Error::Fatal(msg)
+            });
         }
         Ok(v["result"][0]["results"]
             .as_array()
@@ -547,4 +598,19 @@ pub fn split_sql(script: &str) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retries_only_busy_and_server_errors() {
+        assert!(is_retryable_status(500), "code 7500 の internal error");
+        assert!(is_retryable_status(503));
+        assert!(is_retryable_status(429));
+        assert!(!is_retryable_status(400), "SQL の誤りはやり直さない");
+        assert!(!is_retryable_status(401));
+        assert!(!is_retryable_status(200));
+    }
 }
