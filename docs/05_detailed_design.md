@@ -144,10 +144,12 @@ CloudflareのCron Trigger（平日18:30 JST）は呼び出しを送るだけな�
 
 | 対象 | 実装 |
 |---|---|
-| 銘柄一覧・詳細API | Cache API。キャッシュキーに最新バッチIDを含め、TTL 24時間 |
+| 銘柄一覧・状態API | Cache API（TTL 24時間）。キーと ETag（弱い ETag、`If-None-Match` なら 304）は「アプリの版＋データの版」から作る。データの版は最新バッチの run_id・終了時刻と EDINET 取り込みの最終時刻（`sync_state` の `edinet_listed_until`）で、Worker のメモリに60秒持つ。バッチの実行中は使わない（3時間以上「実行中」なら止まったとみなして使う） |
 | APIのレスポンス | `Cache-Control: private, max-age=300` + `ETag`。ユーザー固有データは`no-store` |
 | 静的ファイル | ハッシュ付きJS・CSSは`max-age=31536000, immutable`、`index.html`は`no-cache` |
 | JWKS | Workerのメモリに1時間。検証失敗時は即時取り直し |
+| 許可リストの判定 | D1 の `users` に1時間。Worker のメモリにも同じ1時間持ち、その間は D1 を読まない |
+| 一覧の件数 | 一覧の SQL に `COUNT(*) OVER ()` を足し、同じスキャンで数える。最後のページより先を開いて0行のときだけ `COUNT(*)` を流す |
 
 ## エラー処理とログ
 

@@ -82,7 +82,7 @@ fn where_clause(f: &ScreeningFilter) -> (String, Vec<Arg>) {
     (format!(" WHERE {}", conds.join(" AND ")), args)
 }
 
-/// 1ページ分の行
+/// 1ページ分の行。条件に合う件数も同じスキャンで total 列に入れる（件数のために全件を読み直さない）
 pub fn list(f: &ScreeningFilter) -> Query {
     let (w, mut args) = where_clause(f);
     let col = format!("i.{}", f.sort.key());
@@ -99,13 +99,14 @@ pub fn list(f: &ScreeningFilter) -> Query {
     args.push(Arg::Int(f.offset() as i64));
     Query {
         sql: format!(
-            "SELECT {LIST_COLUMNS} {FROM}{w} ORDER BY {nulls}{col} {dir}, i.code ASC LIMIT ? OFFSET ?"
+            "SELECT {LIST_COLUMNS}, COUNT(*) OVER () AS total {FROM}{w} \
+             ORDER BY {nulls}{col} {dir}, i.code ASC LIMIT ? OFFSET ?"
         ),
         args,
     }
 }
 
-/// 条件に合う件数
+/// 条件に合う件数（最後のページより先を開いて list が0行だったときだけ使う）
 pub fn count(f: &ScreeningFilter) -> Query {
     let (w, args) = where_clause(f);
     Query {
@@ -156,6 +157,12 @@ pub const RECOMMENDATION_EXISTS: &str = "SELECT COUNT(*) AS n FROM recommendatio
 pub const RECOMMENDATION_INSERT: &str = "INSERT INTO recommendations \
      (date, rank, code, reason, model, created_at) VALUES (?, ?, ?, ?, ?, ?)";
 
+/// 一覧・状態の中身が変わったかの目印（サーバー側キャッシュのキー）。
+/// 最新のバッチ（rowid は追加順）と、EDINET の取り込みを最後に終えた時刻。1〜2行しか読まない
+pub const DATA_VERSION: &str = "SELECT r.run_id, r.started_at, r.finished_at, \
+     (SELECT updated_at FROM sync_state WHERE key = 'edinet_listed_until') AS edinet_at \
+     FROM batch_runs r ORDER BY r.rowid DESC LIMIT 1";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +180,7 @@ mod tests {
         ])
         .unwrap();
         let q = list(&f);
+        assert!(q.sql.contains(", COUNT(*) OVER () AS total FROM"));
         assert!(q.sql.ends_with(
             "FROM indicators_latest i LEFT JOIN stocks s ON s.code = i.code \
              WHERE COALESCE(s.kind, 'stock') = ? AND i.dividend_yield >= ? AND i.pbr <= ? AND i.valuation = ? \
