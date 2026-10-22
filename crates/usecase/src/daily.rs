@@ -118,10 +118,11 @@ pub fn build_inputs(
             a
         })
         .collect();
+    // 数字のない行（PR #29 より前に取り込んだ予想の修正など）を最新の本決算にしない
     let mut sorted: Vec<(usize, &StoredAnnual)> = adjusted
         .iter()
         .enumerate()
-        .filter(|(_, a)| a.financial.period_end.is_some())
+        .filter(|(_, a)| a.financial.period_end.is_some() && !a.financial.has_no_figures())
         .collect();
     // 新しい期が先頭
     sorted.sort_by_key(|(_, a)| std::cmp::Reverse(a.financial.period_end));
@@ -272,6 +273,42 @@ mod tests {
         assert_eq!(latest, Some(1));
     }
 
+    /// 配当予想の修正（DividendForecastRevision）が本決算の形で残った行: 来期の期末だけで数字がない
+    fn revision_row(period_end: &str, disclosed: &str) -> StoredAnnual {
+        StoredAnnual {
+            doc_id: format!("rev-{period_end}"),
+            disclosed: Some(d(disclosed)),
+            financial: AnnualFinancial {
+                period_end: Some(d(period_end)),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn row_without_figures_is_not_the_latest_annual() {
+        let annuals = [
+            annual("2026-03-31", Some("2026-05-10"), 44.0, 110.0),
+            revision_row("2027-03-31", "2026-08-25"),
+        ];
+        let qs = [
+            quarter("2027-03-31", "2026-06-30", PeriodType::Q1, 30.0),
+            quarter("2026-03-31", "2025-12-31", PeriodType::Q3, 70.0),
+        ];
+        let (m, fin, quarters, latest) = build_inputs(vec![], &annuals, &[], &qs, &[]);
+        let fin = fin.unwrap();
+        assert_eq!(latest, Some(0), "数字のある 2026/03 期が最新");
+        assert_eq!(fin.doc_id, "doc-2026-03-31");
+        assert_eq!(fin.years.len(), 1, "空の行は5期の表にも入れない");
+        assert_eq!(m.dividends.len(), 1);
+        assert!(
+            quarters
+                .iter()
+                .all(|q| q.fiscal_year_end != d("2027-03-31") || q.quarter != 4),
+            "空の行から 2027/03 期の Q4 を作らない"
+        );
+    }
+
     #[test]
     fn fourth_quarter_comes_from_annual_minus_3q() {
         let annuals = [annual("2026-03-31", Some("2026-05-10"), 44.0, 110.0)];
@@ -303,7 +340,7 @@ mod tests {
         );
         let missing = StockCode::parse("9999").unwrap();
         let (snaps, skipped) = compute_all(
-            &[code, missing],
+            &[code.clone(), missing],
             hist,
             &StoredFinancials {
                 annuals: ann.clone(),
@@ -316,6 +353,33 @@ mod tests {
         let i = &snaps[0].indicators;
         assert!((i.dividend_yield.unwrap() - 0.04).abs() < 1e-9);
         assert_eq!(i.dividend_is_forecast, Some(false), "予想がなければ実績");
+        assert!((i.payout_ratio.unwrap() - 0.4).abs() < 1e-9);
+        assert_eq!(snaps[0].fin_doc_id.as_deref(), Some("doc-2026-03-31"));
+
+        // 来期の空の行が後から入っても、PER・配当性向は 2026/03 期の数字で出る
+        ann.get_mut("7203")
+            .unwrap()
+            .push(revision_row("2027-03-31", "2026-08-25"));
+        let bars: Vec<PriceBar> = (0..10)
+            .map(|i| PriceBar {
+                date: d("2026-09-01").add_days(i),
+                close: 1000.0,
+            })
+            .collect();
+        let mut hist = HashMap::new();
+        hist.insert("7203".to_string(), bars);
+        let (snaps, _) = compute_all(
+            &[code],
+            hist,
+            &StoredFinancials {
+                annuals: ann,
+                ..Default::default()
+            },
+            "r2",
+            0,
+        );
+        let i = &snaps[0].indicators;
+        assert!((i.per.unwrap() - 10.0).abs() < 1e-9);
         assert!((i.payout_ratio.unwrap() - 0.4).abs() < 1e-9);
         assert_eq!(snaps[0].fin_doc_id.as_deref(), Some("doc-2026-03-31"));
     }

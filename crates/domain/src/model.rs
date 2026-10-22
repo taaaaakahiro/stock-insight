@@ -124,6 +124,25 @@ pub struct AnnualFinancial {
     pub operating_cf: Option<f64>,
 }
 
+impl AnnualFinancial {
+    /// 期末のほかに数字が1つもない（配当予想・業績予想の修正が本決算として残った行など）
+    pub fn has_no_figures(&self) -> bool {
+        [
+            self.net_sales,
+            self.operating_income,
+            self.ordinary_income,
+            self.net_income,
+            self.equity,
+            self.eps,
+            self.bps,
+            self.dps,
+            self.operating_cf,
+        ]
+        .iter()
+        .all(Option::is_none)
+    }
+}
+
 /// 財務の取得結果（新しい期が先頭）
 #[derive(Debug, Clone, Default)]
 pub struct FinancialData {
