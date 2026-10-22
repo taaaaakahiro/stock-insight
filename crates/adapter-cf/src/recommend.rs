@@ -65,8 +65,11 @@ fn candidate_json(r: &StockRow) -> Value {
             "PER {per:.1}倍（15倍以下で、利益から見て株価が割安）"
         ));
     }
-    if let Some(n) = r.consecutive_increases.filter(|n| *n > 0) {
-        good.push(format!("{n}年連続で増配している"));
+    // 1年だけのときに「1年連続で増配」と書くと不自然なので、言い方を変える
+    match r.consecutive_increases {
+        Some(1) => good.push("前期に増配した".into()),
+        Some(n) if n > 1 => good.push(format!("{n}年連続で増配している")),
+        _ => {}
     }
     if yes(r.progressive_dividend) {
         good.push("有報で累進配当を掲げている".into());
@@ -279,6 +282,22 @@ mod tests {
             body["response_format"]["json_schema"]["properties"]["picks"]["maxItems"],
             10
         );
+    }
+
+    #[test]
+    fn one_year_streak_reads_as_last_year() {
+        let mut r = row("8306");
+        r.consecutive_increases = Some(1);
+        let good = candidate_json(&r)["良い点"].clone();
+        assert!(good.as_array().unwrap().contains(&json!("前期に増配した")));
+        assert!(!good.to_string().contains("1年連続"));
+
+        r.consecutive_increases = Some(2);
+        let good = candidate_json(&r)["良い点"].clone();
+        assert!(good
+            .as_array()
+            .unwrap()
+            .contains(&json!("2年連続で増配している")));
     }
 
     #[test]
