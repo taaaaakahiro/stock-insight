@@ -21,7 +21,9 @@ export type MetricKey =
   | "reprice_ratio"
   | "reprice_max_ratio"
   | "avg_rate"
-  | "occupancy";
+  | "occupancy"
+  | "doe_floor"
+  | "doe_margin";
 
 /** 一覧のタブ。株式以外は財務の指標がないので、使える指標を絞る */
 export type Kind = "stock" | "reit" | "etf";
@@ -44,6 +46,8 @@ export const METRICS: { key: MetricKey; label: string; unit: Unit; kinds: Kind[]
   { key: "per", label: "PER", unit: "times", kinds: STOCK },
   { key: "payout_ratio", label: "配当性向", unit: "pct", kinds: STOCK },
   { key: "doe", label: "DOE", unit: "pct", kinds: STOCK },
+  { key: "doe_floor", label: "DOE下限", unit: "pct", kinds: STOCK },
+  { key: "doe_margin", label: "DOEの余裕", unit: "pct", kinds: STOCK },
   { key: "consecutive_increases", label: "連続増配", unit: "years", kinds: STOCK },
   { key: "operating_margin", label: "営業利益率", unit: "pct", kinds: STOCK },
   { key: "sales_growth", label: "売上の伸び", unit: "pct", kinds: STOCK },
@@ -71,10 +75,19 @@ const REIT_TIPS: Partial<Record<MetricKey, string>> = {
   occupancy: "物件の賃貸可能面積で重みを付けた稼働率（有報の物件の表から）です。",
 };
 
+/** DOE の説明（DOE は 1株配当 ÷ BPS の簡易な値。会社は株主資本の平均などで計算することがある） */
+const DOE_TIPS: Partial<Record<MetricKey, string>> = {
+  doe: "1株配当（最新の本決算の実績）÷ 1株純資産（BPS）。会社の計算（株主資本の平均など）とは少しずれます。",
+  doe_floor:
+    "有価証券報告書・半期報告書に「DOE ○%を下限」「○%以上」と書かれた数字です。業績が落ちても、BPS × この割合の配当は守る方針です。",
+  doe_margin:
+    "今の DOE − DOE下限（ポイント）。今の DOE は会社予想の配当があればそれで（利回り × PBR）、なければ実績で出します。マイナスは、下限の方針より配当が少ないことを示します。",
+};
+
 /** 指標の説明（あるものだけ）。InfoTip に出す */
 export function metricTip(key: MetricKey, kind: Kind): string | undefined {
   if (key === "yield_percentile") return yieldPercentileTip(kind);
-  return REIT_TIPS[key];
+  return REIT_TIPS[key] ?? DOE_TIPS[key];
 }
 
 /** REIT の用途（data/reit_sectors.csv と同じキー） */

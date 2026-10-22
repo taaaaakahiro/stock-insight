@@ -78,6 +78,8 @@ pub(crate) struct Row {
     dividend_cut: Option<i64>,
     progressive_dividend: Option<i64>,
     no_dividend_cut: Option<i64>,
+    doe_floor: Option<f64>,
+    doe_goal: Option<f64>,
     #[serde(default)]
     reit_sector: Option<String>,
     #[serde(default)]
@@ -104,6 +106,9 @@ pub(crate) struct Row {
 
 impl From<Row> for StockRow {
     fn from(r: Row) -> Self {
+        let doe_forecast = (r.dividend_basis.as_deref() == Some("forecast"))
+            .then(|| domain::indicators::doe_from_yield(r.dividend_yield, r.pbr))
+            .flatten();
         StockRow {
             code: r.code,
             price: r.price,
@@ -138,6 +143,9 @@ impl From<Row> for StockRow {
             dividend_cut: r.dividend_cut.map(|v| v != 0),
             progressive_dividend: r.progressive_dividend.map(|v| v != 0),
             no_dividend_cut: r.no_dividend_cut.map(|v| v != 0),
+            doe_floor: r.doe_floor,
+            doe_goal: r.doe_goal,
+            doe_forecast,
             // reit_profile の行があるときだけ（期末日は必ず入る）
             reit: r.reit_period_end.clone().map(|period_end| ReitListFields {
                 sector: r.reit_sector,
@@ -207,6 +215,9 @@ struct DisclosureDbRow {
     dividend_raise: i64,
     doe_target: i64,
     payout_target: Option<f64>,
+    doe_floor: Option<f64>,
+    doe_goal: Option<f64>,
+    doe_phrase: Option<String>,
     phrases: String,
 }
 
@@ -222,6 +233,9 @@ impl From<DisclosureDbRow> for DisclosureRow {
             dividend_raise: r.dividend_raise != 0,
             doe_target: r.doe_target != 0,
             payout_target: r.payout_target,
+            doe_floor: r.doe_floor,
+            doe_goal: r.doe_goal,
+            doe_phrase: r.doe_phrase,
             phrases: serde_json::from_str(&r.phrases).unwrap_or_default(),
         }
     }

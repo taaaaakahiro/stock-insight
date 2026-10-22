@@ -245,6 +245,9 @@ async fn edinet(req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
                     "dividend_raise": d.dividend_raise,
                     "doe_target": d.doe_target,
                     "payout_target": d.payout_target,
+                    "doe_floor": d.doe_floor,
+                    "doe_goal": d.doe_goal,
+                    "doe_phrase": d.doe_phrase,
                     "phrases": d.phrases,
                 })).collect::<Vec<_>>(),
             })),
@@ -567,7 +570,7 @@ fn detail_json(d: &StockDetail) -> Value {
     })
 }
 fn row_json(r: &StockRow) -> Value {
-    json!({
+    let mut v = json!({
         "code": r.code,
         "price": r.price,
         "price_date": r.price_date,
@@ -609,7 +612,12 @@ fn row_json(r: &StockRow) -> Value {
             "avg_rate": x.avg_rate,
             "occupancy": x.occupancy,
         })),
-    })
+    });
+    // json! の再帰の上限に当たるので、DOE の方針は後から足す
+    v["doe_floor"] = json!(r.doe_floor);
+    v["doe_goal"] = json!(r.doe_goal);
+    v["doe_forecast"] = json!(r.doe_forecast);
+    v
 }
 
 /// from_json が付ける Content-Type を残したまま Cache-Control を足す

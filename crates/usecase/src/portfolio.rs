@@ -199,6 +199,9 @@ mod tests {
             dividend_cut: None,
             progressive_dividend: None,
             no_dividend_cut: None,
+            doe_floor: None,
+            doe_goal: None,
+            doe_forecast: None,
             reit: None,
         }
     }

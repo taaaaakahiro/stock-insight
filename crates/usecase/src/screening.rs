@@ -45,6 +45,11 @@ pub struct StockRow {
     /// 有報・半期報告書に累進配当・非減配の記述がある（EDINET。書類がなければ None）
     pub progressive_dividend: Option<bool>,
     pub no_dividend_cut: Option<bool>,
+    /// 有報・半期報告書に書かれた DOE の下限・目標（新しい書類の値。書かれていなければ None）
+    pub doe_floor: Option<f64>,
+    pub doe_goal: Option<f64>,
+    /// 会社予想の配当で見た DOE（予想がなければ None。実績は doe）
+    pub doe_forecast: Option<f64>,
     /// REIT の金利・稼働率（reit_profile。REIT 以外や未取り込みなら None）
     pub reit: Option<ReitListFields>,
 }
@@ -127,6 +132,10 @@ pub struct DisclosureRow {
     pub dividend_raise: bool,
     pub doe_target: bool,
     pub payout_target: Option<f64>,
+    /// DOE の下限・目標と、その数字を拾った文
+    pub doe_floor: Option<f64>,
+    pub doe_goal: Option<f64>,
+    pub doe_phrase: Option<String>,
     /// 手がかりの言葉を含む文
     pub phrases: Vec<String>,
 }

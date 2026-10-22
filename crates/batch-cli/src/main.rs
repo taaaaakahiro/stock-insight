@@ -33,6 +33,8 @@
 //! sync-edinet のオプション（--from / --until / --rate / --max-minutes / --raw-dir は sync-jq と同じ）:
 //!   --dry-run <file>        D1 を読み書きせず、--from〜--until の一覧から --limit 件だけ取って SQL と文章を書く
 //!   --limit <n>             --dry-run で取る書類の数（既定 5）
+//!   --refetch-doe           新しい書類のあと、保存済みで DOE に触れているのに下限・目標の数字がない書類を
+//!                           取り直す（DOE の数字を拾う前に取り込んだ分。文章も R2 用に書き直す）
 //!   R2 から消すファイルのキーは {raw-dir}/edinet-delete.txt に1行ずつ書く（ワークフローが消す）
 //!
 //! sync-reit のオプション（--from / --until / --rate / --max-minutes / --raw-dir は sync-jq と同じ）:
@@ -89,6 +91,7 @@ struct Args {
     raw_dir: String,
     limit: usize,
     refill_prices: bool,
+    refetch_doe: bool,
     out: Option<String>,
 }
 
@@ -111,6 +114,7 @@ fn parse_args() -> Result<Args, String> {
         raw_dir: "raw".into(),
         limit: 5,
         refill_prices: false,
+        refetch_doe: false,
         out: None,
     };
     while let Some(flag) = it.next() {
@@ -121,6 +125,7 @@ fn parse_args() -> Result<Args, String> {
             "--from-file" => a.from_file = Some(val()?),
             "--force" => a.force = true,
             "--refill-prices" => a.refill_prices = true,
+            "--refetch-doe" => a.refetch_doe = true,
             "--from" => a.from = Some(date(val()?)?),
             "--until" => a.until = Some(date(val()?)?),
             "--rate" => a.rate = val()?.parse().map_err(|_| "bad rate")?,
@@ -230,6 +235,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0011_reit",
         include_str!("../../../migrations/0011_reit.sql"),
+    ),
+    (
+        "0012_dividend_cut",
+        include_str!("../../../migrations/0012_dividend_cut.sql"),
+    ),
+    (
+        "0013_doe_policy",
+        include_str!("../../../migrations/0013_doe_policy.sql"),
     ),
 ];
 
@@ -724,7 +737,60 @@ async fn sync_edinet(args: Args) -> Result<(), String> {
         "sync-edinet: {fetched} fetched, listed until {next}, {}s",
         started.elapsed().as_secs()
     );
-    error.map_or(Ok(()), Err)
+    if let Some(e) = error {
+        return Err(e);
+    }
+    if args.refetch_doe {
+        refetch_doe(&ed, &store, &raw_dir, now, started, deadline).await?;
+    }
+    Ok(())
+}
+
+/// 保存済みで DOE に触れているのに下限・目標の数字がない書類を取り直す（この実行で取った分は除く）。
+/// 書類一覧の進み具合（EDINET_CURSOR_KEY）は変えない。時間切れなら、次に同じオプションで続きを取る
+async fn refetch_doe(
+    ed: &EdinetClient,
+    store: &d1::D1Store,
+    raw_dir: &std::path::Path,
+    now: i64,
+    started: Instant,
+    deadline: std::time::Duration,
+) -> Result<(), String> {
+    let docs = store
+        .edinet_docs_without_doe_values(now)
+        .await
+        .map_err(|e| e.0)?;
+    println!(
+        "sync-edinet: {} stored reports to refetch for DOE",
+        docs.len()
+    );
+    let mut pending = vec![];
+    let mut done = 0;
+    for doc in &docs {
+        if started.elapsed() > deadline {
+            println!("sync-edinet: time limit reached; refetch the rest next time");
+            break;
+        }
+        pending.push(
+            fetch_doc(ed, raw_dir, doc)
+                .await
+                .map_err(|e| format!("{} {}: {e}", doc.code, doc.doc_id))?,
+        );
+        done += 1;
+        if pending.len() >= EDINET_PERSIST_EVERY {
+            store
+                .save_edinet_docs(&pending, now)
+                .await
+                .map_err(|e| e.0)?;
+            pending.clear();
+        }
+    }
+    store
+        .save_edinet_docs(&pending, now)
+        .await
+        .map_err(|e| e.0)?;
+    println!("sync-edinet: {done} refetched for DOE");
+    Ok(())
 }
 
 /// 1通を取り、文章を R2 用のファイルに書き、配当方針の手がかりを返す
@@ -750,6 +816,9 @@ async fn fetch_doc(
             "no_dividend_cut": signals.no_cut,
             "dividend_raise": signals.raise,
             "doe_target": signals.doe_target,
+            "doe_floor": signals.doe_floor,
+            "doe_goal": signals.doe_goal,
+            "doe_phrase": signals.doe_phrase,
             "payout_target": signals.payout_target,
             "phrases": signals.phrases,
         },
@@ -765,6 +834,8 @@ async fn fetch_doc(
         (signals.no_cut, "非減配"),
         (signals.raise, "増配"),
         (signals.doe_target, "DOE"),
+        (signals.doe_floor.is_some(), "DOE下限"),
+        (signals.doe_goal.is_some(), "DOE目標"),
         (signals.payout_target.is_some(), "配当性向目標"),
     ];
     let on: Vec<&str> = flags.iter().filter(|(b, _)| *b).map(|(_, l)| *l).collect();

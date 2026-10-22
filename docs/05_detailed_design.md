@@ -141,9 +141,9 @@ CloudflareのCron Trigger（`30 9 * * 1-5` = 平日18:30 JST）は呼び出し�
 
 `edinet`（タイムアウト340分）:
 
-6. `batch-cli sync-edinet --rate 60 --max-minutes 300 --raw-dir raw`: EDINET の書類一覧（前回の続き。初回は過去400日分）から有報・半期報告書を選び、まだ持っていない書類の CSV を取って `edinet_docs` を更新、文章を `raw/edinet/<コード>/<種類>.json.gz` に書き出す。古くなった分の R2 のキーは `raw/edinet-delete.txt` に書く（詳細は [08](08_indicator_sources.md#取得元の-api)）
+6. `batch-cli sync-edinet --rate 60 --max-minutes 300 --raw-dir raw`: EDINET の書類一覧（前回の続き。初回は過去400日分）から有報・半期報告書を選び、まだ持っていない書類の CSV を取って `edinet_docs` を更新、文章を `raw/edinet/<コード>/<種類>.json.gz` に書き出す。古くなった分の R2 のキーは `raw/edinet-delete.txt` に書く（詳細は [08](08_indicator_sources.md#取得元の-api)）。ワークフローの入力 `refetch_doe=true` のときは `--refetch-doe` を付け、新しい書類のあとに、DOE に触れているのに下限・目標の数字がない保存済みの書類を取り直す（書類一覧の進み具合は変えない）
    - 続きの位置（`sync_state.edinet_listed_until`）は、読み終えた日・まだ取っていない最初の書類の提出日の前日・今日の前日のうち最も早い日にする。今日の一覧はバッチの後にも書類が増えうるので、翌日もう一度読む（取得済みの書類は飛ばす）
-7. R2 へのアップロード: `raw/edinet/` のファイルを置き、`edinet-delete.txt` のキーを消す（途中で失敗しても、取れた分は置く）
+7. R2 へのアップロード: `raw/edinet/` のファイルを置き、`edinet-delete.txt` のキーを消す（途中で失敗しても、取れた分は置く。R2 の一時的なエラーに備えて1件ずつ3回までやり直す）
 
 J-Quants を1ジョブで順に取り込むのは、J-Quants が日付指定で全銘柄をまとめて返すため銘柄ごとの並列取得が要らず、呼び出しの上限（60件/分）が律速になるから。EDINET は J-Quants と上限が別なので、別のジョブにして並列に動かす。
 
@@ -173,7 +173,7 @@ J-Quants を1ジョブで順に取り込むのは、J-Quants が日付指定で�
 | financials_annual | code, period_end (PK: code+period_end), doc_id, net_sales, operating_income, ordinary_income, net_income, equity, eps, bps, dps, operating_cf, fetched_at, disclosed | 0001（0004 で disclosed を追加） |
 | financials_quarterly | code, fiscal_year_end, period_type (PK: code+fiscal_year_end+period_type), period_end, doc_id, disclosed, net_sales, operating_income, ordinary_income, net_income, fetched_at | 0005 |
 | price_history | code (PK), closes（`YYYYMMDD,終値;…`）, last_date, updated_at | 0004 |
-| edinet_docs | code, doc_kind (PK: code+doc_kind。annual/semiannual), doc_id, submitted, period_end, r2_key, progressive_dividend, no_dividend_cut, dividend_raise, doe_target, payout_target, phrases（JSON の文字列配列）, fetched_at | 0007 |
+| edinet_docs | code, doc_kind (PK: code+doc_kind。annual/semiannual), doc_id, submitted, period_end, r2_key, progressive_dividend, no_dividend_cut, dividend_raise, doe_target, payout_target, phrases（JSON の文字列配列）, fetched_at, doe_floor, doe_goal, doe_phrase（DOE の下限・目標と、その数字を拾った文） | 0007, 0013 |
 | sync_state | key (PK。`jq_synced_until`・`edinet_listed_until`), value, updated_at | 0004 |
 | splits | code, date（権利落ち日）(PK: code+date), factor（`AdjFactor`。1:2 の分割なら 0.5）, fetched_at | 0009 |
 | recommendations | date（株価の日付）, rank (PK: date+rank), code, reason, model, created_at | 0008 |

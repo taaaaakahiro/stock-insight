@@ -40,6 +40,11 @@ export type StockRow = {
   /** 有報・半期報告書（EDINET）の記述。書類をまだ取っていなければ null */
   progressive_dividend: boolean | null;
   no_dividend_cut: boolean | null;
+  /** 有報・半期報告書に書かれた DOE の下限・目標（新しい書類の値。書かれていなければ null） */
+  doe_floor: number | null;
+  doe_goal: number | null;
+  /** 会社予想の配当で見た DOE（予想がなければ null。実績は doe） */
+  doe_forecast: number | null;
   /** REIT の金利・稼働率（有報から。REIT 以外や未取り込みなら null）。比率は小数 */
   reit?: ReitListFields | null;
 };
@@ -130,6 +135,10 @@ export type EdinetDoc = {
   doe_target: boolean;
   /** 配当性向の目標（0.3 = 30%） */
   payout_target: number | null;
+  /** DOE の下限・目標（0.035 = 3.5%）と、その数字を拾った文 */
+  doe_floor: number | null;
+  doe_goal: number | null;
+  doe_phrase: string | null;
   /** 手がかりの言葉を含む文 */
   phrases: string[];
 };

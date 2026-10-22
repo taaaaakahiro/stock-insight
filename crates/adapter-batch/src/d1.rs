@@ -166,17 +166,27 @@ impl D1Store {
             .await?;
         Ok(rows
             .iter()
-            .filter_map(|r| {
-                let doc = DocRef {
-                    code: r["code"].as_str()?.to_string(),
-                    kind: DocKind::parse(r["doc_kind"].as_str()?)?,
-                    doc_id: r["doc_id"].as_str()?.to_string(),
-                    submitted: Date::parse(r["submitted"].as_str()?)?,
-                    period_end: r["period_end"].as_str().and_then(Date::parse),
-                };
-                Some(((doc.code.clone(), doc.kind), doc))
-            })
+            .filter_map(doc_ref)
+            .map(|doc| ((doc.code.clone(), doc.kind), doc))
             .collect())
+    }
+
+    /// DOE に触れているのに下限・目標の数字がない書類（before より前に取ったもの）。DOE の数字を拾う前に
+    /// 取り込んだ書類を取り直すために使う
+    pub async fn edinet_docs_without_doe_values(
+        &self,
+        before: i64,
+    ) -> Result<Vec<DocRef>, PortError> {
+        let rows = self
+            .query(&Stmt {
+                sql: "SELECT code, doc_kind, doc_id, submitted, period_end FROM edinet_docs \
+                      WHERE doe_target = 1 AND doe_floor IS NULL AND doe_goal IS NULL AND fetched_at < ? \
+                      ORDER BY submitted, doc_id"
+                    .into(),
+                params: vec![Val::Int(before)],
+            })
+            .await?;
+        Ok(rows.iter().filter_map(doc_ref).collect())
     }
 
     pub async fn save_edinet_docs(&self, docs: &[EdinetDoc], now: i64) -> Result<(), PortError> {
@@ -598,6 +608,17 @@ pub fn split_sql(script: &str) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+/// edinet_docs の1行（code, doc_kind, doc_id, submitted, period_end）
+fn doc_ref(r: &serde_json::Value) -> Option<DocRef> {
+    Some(DocRef {
+        code: r["code"].as_str()?.to_string(),
+        kind: DocKind::parse(r["doc_kind"].as_str()?)?,
+        doc_id: r["doc_id"].as_str()?.to_string(),
+        submitted: Date::parse(r["submitted"].as_str()?)?,
+        period_end: r["period_end"].as_str().and_then(Date::parse),
+    })
 }
 
 #[cfg(test)]

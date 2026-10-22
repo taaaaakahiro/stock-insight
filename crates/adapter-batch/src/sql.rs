@@ -383,18 +383,23 @@ pub fn edinet_docs_stmts(docs: &[EdinetDoc], fetched_at: i64) -> Vec<Stmt> {
                 Val::opt_f(s.payout_target),
                 Val::Text(serde_json::to_string(&s.phrases).unwrap_or_else(|_| "[]".into())),
                 Val::Int(fetched_at),
+                Val::opt_f(s.doe_floor),
+                Val::opt_f(s.doe_goal),
+                s.doe_phrase.clone().map_or(Val::Null, Val::Text),
             ]
         })
         .collect();
     multi_row(
         "INSERT INTO edinet_docs (code, doc_kind, doc_id, submitted, period_end, r2_key, progressive_dividend, \
-         no_dividend_cut, dividend_raise, doe_target, payout_target, phrases, fetched_at)",
-        13,
+         no_dividend_cut, dividend_raise, doe_target, payout_target, phrases, fetched_at, \
+         doe_floor, doe_goal, doe_phrase)",
+        16,
         "ON CONFLICT(code, doc_kind) DO UPDATE SET doc_id = excluded.doc_id, submitted = excluded.submitted, \
          period_end = excluded.period_end, r2_key = excluded.r2_key, \
          progressive_dividend = excluded.progressive_dividend, no_dividend_cut = excluded.no_dividend_cut, \
          dividend_raise = excluded.dividend_raise, doe_target = excluded.doe_target, \
-         payout_target = excluded.payout_target, phrases = excluded.phrases, fetched_at = excluded.fetched_at",
+         payout_target = excluded.payout_target, phrases = excluded.phrases, fetched_at = excluded.fetched_at, \
+         doe_floor = excluded.doe_floor, doe_goal = excluded.doe_goal, doe_phrase = excluded.doe_phrase",
         rows,
         usize::MAX,
     )
@@ -641,17 +646,22 @@ mod tests {
             signals: DividendSignals {
                 progressive: true,
                 payout_target: Some(0.3),
+                doe_floor: Some(0.035),
+                doe_phrase: Some("DOE3.5%を下限とします。".into()),
                 phrases: vec!["累進配当を基本方針とし…".into()],
                 ..Default::default()
             },
         };
         let stmts = edinet_docs_stmts(&vec![doc; 8], 1);
-        assert_eq!(stmts.len(), 2, "13列なので1文7行まで");
+        assert_eq!(stmts.len(), 2, "16列なので1文6行まで");
         let p = &stmts[0].params;
         assert_eq!(p[5], Val::Text("edinet/7203/annual.json.gz".into()));
         assert_eq!(p[6], Val::Int(1));
         assert_eq!(p[7], Val::Int(0));
         assert_eq!(p[11], Val::Text(r#"["累進配当を基本方針とし…"]"#.into()));
+        assert_eq!(p[13], Val::Real(0.035));
+        assert_eq!(p[14], Val::Null);
+        assert_eq!(p[15], Val::Text("DOE3.5%を下限とします。".into()));
         let del = delete_edinet_doc_stmt(&("7203".into(), DocKind::Semiannual));
         assert_eq!(
             del.render(),

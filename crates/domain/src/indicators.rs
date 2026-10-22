@@ -161,6 +161,15 @@ pub fn is_uptrend(newest_first: &[f64]) -> Option<bool> {
     Some(num / den > 0.0)
 }
 
+/// 会社予想の配当で見た DOE。配当利回り × PBR（= 1株配当 ÷ 株価 × 株価 ÷ BPS）。
+/// 株価と BPS の分割の基準は PBR でそろっているので、配当と同じ基準の BPS で割ったことになる
+pub fn doe_from_yield(dividend_yield: Option<f64>, pbr: Option<f64>) -> Option<f64> {
+    match (dividend_yield, pbr) {
+        (Some(y), Some(p)) if y >= 0.0 && p > 0.0 => Some(y * p),
+        _ => None,
+    }
+}
+
 fn ratio(a: Option<f64>, b: Option<f64>) -> Option<f64> {
     match (a, b) {
         (Some(a), Some(b)) if b > 0.0 => Some(a / b),
@@ -242,6 +251,20 @@ pub fn compute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doe_from_yield_is_yield_times_pbr() {
+        // 配当 60円・株価 2,000円・BPS 1,600円 → 利回り 3%・PBR 1.25倍・DOE 3.75%
+        let doe = doe_from_yield(Some(0.03), Some(1.25)).unwrap();
+        assert!((doe - 0.0375).abs() < 1e-12);
+        assert_eq!(doe_from_yield(Some(0.03), None), None);
+        assert_eq!(
+            doe_from_yield(Some(0.03), Some(0.0)),
+            None,
+            "BPS がない・債務超過"
+        );
+        assert_eq!(doe_from_yield(None, Some(1.0)), None);
+    }
 
     fn d(s: &str) -> Date {
         Date::parse(s).unwrap()
