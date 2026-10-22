@@ -3,7 +3,7 @@
 use crate::daily::{build_inputs, StoredAnnual};
 use crate::screening::StockRow;
 use crate::PortError;
-use domain::analysis::{CumulativePeriod, QuarterResult};
+use domain::analysis::{quarter_growth, CumulativePeriod, QuarterGrowth};
 use domain::split::Split;
 use domain::{yield_series, AnnualFinancial, Date, PriceBar, StockCode};
 
@@ -14,8 +14,8 @@ pub struct StockDetail {
     pub latest: StockRow,
     /// 年次の財務（新しい期が先頭、最大5期）
     pub annual: Vec<AnnualFinancial>,
-    /// 四半期単独の損益（古い順、最大20四半期）
-    pub quarters: Vec<QuarterResult>,
+    /// 四半期単独の損益と前年の同じ四半期からの伸び率（古い順、最大20四半期）
+    pub quarters: Vec<QuarterGrowth>,
     /// 配当利回りの推移（週1点、古い順）
     pub yield_series: Vec<(Date, f64)>,
     /// 終値の推移（週1点、古い順）
@@ -54,6 +54,8 @@ pub async fn stock_detail<Q: StockDetailQuery>(
     let (market, fin, quarters, _) = build_inputs(bars, &annuals, &quarterlies, &splits);
     let mut ys = yield_series(&market);
     ys.reverse();
+    // 最も古い年度の伸び率も出せるよう、絞り込む前に前年と比べる
+    let quarters = quarter_growth(&quarters);
     let n = quarters.len();
     Ok(Some(StockDetail {
         latest,
@@ -179,13 +181,14 @@ mod tests {
         assert_eq!(det.annual[0].dps, Some(44.0), "新しい期が先頭");
         // FY2024（Q4 は 3Q がないので不明）、2025年度の 1Q、FY2025（同じく不明）の3件、古い順
         assert_eq!(det.quarters.len(), 3);
-        let q1 = det.quarters.iter().find(|q| q.quarter == 1).unwrap();
-        assert_eq!(q1.net_income, Some(30.0));
+        let q1 = det.quarters.iter().find(|q| q.result.quarter == 1).unwrap();
+        assert_eq!(q1.result.net_income, Some(30.0));
+        assert_eq!(q1.net_growth, None, "前年の 1Q がない");
         assert!(det
             .quarters
             .iter()
-            .filter(|q| q.quarter == 4)
-            .all(|q| q.net_income.is_none()));
+            .filter(|q| q.result.quarter == 4)
+            .all(|q| q.result.net_income.is_none()));
         assert_eq!(det.yield_series.len(), 12, "60営業日 → 週1点で12点");
         assert!(det.yield_series[0].0 < det.yield_series[11].0, "古い順");
         assert!((det.yield_series[11].1 - 0.044).abs() < 1e-9);

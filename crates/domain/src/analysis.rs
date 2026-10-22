@@ -153,16 +153,10 @@ pub fn yoy_growth(periods: &[CumulativePeriod]) -> (Option<f64>, Option<f64>) {
     else {
         return (None, None);
     };
-    // 決算期の変更で期末日が数日ずれても同じ期とみなす
-    let one_year_ago = latest.fiscal_year_end.to_days() - 365;
     let prev = periods.iter().find(|p| {
         p.period_type == latest.period_type
-            && (p.fiscal_year_end.to_days() - one_year_ago).abs() <= 15
+            && is_previous_year(p.fiscal_year_end, latest.fiscal_year_end)
     });
-    let growth = |cur: Option<f64>, prev: Option<f64>| {
-        let (c, p) = (cur?, prev?);
-        (p > 0.0).then(|| c / p - 1.0)
-    };
     match prev {
         Some(p) => (
             growth(latest.net_sales, p.net_sales),
@@ -170,6 +164,47 @@ pub fn yoy_growth(periods: &[CumulativePeriod]) -> (Option<f64>, Option<f64>) {
         ),
         None => (None, None),
     }
+}
+
+/// `prev` が `cur` の1年前の決算期か。決算期の変更で期末日が数日ずれても同じ期とみなす
+fn is_previous_year(prev: Date, cur: Date) -> bool {
+    (prev.to_days() - (cur.to_days() - 365)).abs() <= 15
+}
+
+/// 伸び率（0.1 = 10% 増）。前年の値がないか 0 以下（赤字からの改善など）なら None
+fn growth(cur: Option<f64>, prev: Option<f64>) -> Option<f64> {
+    let (c, p) = (cur?, prev?);
+    (p > 0.0).then(|| c / p - 1.0)
+}
+
+/// 四半期単独の損益と、前年の同じ四半期からの伸び率（詳細ページの業績表）
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuarterGrowth {
+    pub result: QuarterResult,
+    pub sales_growth: Option<f64>,
+    pub operating_growth: Option<f64>,
+    pub ordinary_growth: Option<f64>,
+    pub net_growth: Option<f64>,
+}
+
+/// 各四半期に、前年度の同じ四半期（1Q なら前年の 1Q）との伸び率を付ける。並びは入力のまま
+pub fn quarter_growth(quarters: &[QuarterResult]) -> Vec<QuarterGrowth> {
+    quarters
+        .iter()
+        .map(|q| {
+            let prev = quarters.iter().find(|p| {
+                p.quarter == q.quarter && is_previous_year(p.fiscal_year_end, q.fiscal_year_end)
+            });
+            let g = |f: fn(&QuarterResult) -> Option<f64>| growth(f(q), prev.and_then(f));
+            QuarterGrowth {
+                result: q.clone(),
+                sales_growth: g(|x| x.net_sales),
+                operating_growth: g(|x| x.operating_income),
+                ordinary_growth: g(|x| x.ordinary_income),
+                net_growth: g(|x| x.net_income),
+            }
+        })
+        .collect()
 }
 
 /// バリュー株の目安: PBR と PER の両方が基準以下（PER は黒字が前提）
@@ -263,6 +298,54 @@ mod tests {
         loss[0].operating_income = Some(-5.0);
         assert_eq!(yoy_growth(&loss).1, None, "前年が赤字なら伸び率は出さない");
         assert_eq!(yoy_growth(&[]), (None, None));
+    }
+
+    #[test]
+    fn quarter_growth_compares_same_quarter_last_year() {
+        let periods = [
+            cum("2025-03-31", "2024-06-30", PeriodType::Q1, 10.0),
+            cum("2025-03-31", "2024-09-30", PeriodType::Q2, 18.0),
+            cum("2026-03-31", "2025-06-30", PeriodType::Q1, 12.0),
+            cum("2026-03-31", "2025-09-30", PeriodType::Q2, 26.0),
+        ];
+        let g = quarter_growth(&standalone_quarters(&periods));
+        assert_eq!(g.len(), 4);
+        assert_eq!(g[0].net_growth, None, "前年がない");
+        let q1 = &g[2];
+        assert_eq!(
+            (q1.result.quarter, q1.result.fiscal_year_end),
+            (1, d("2026-03-31"))
+        );
+        assert!(
+            (q1.net_growth.unwrap() - 0.2).abs() < 1e-9,
+            "1Q どうし 10 → 12"
+        );
+        assert!((q1.sales_growth.unwrap() - 0.2).abs() < 1e-9);
+        assert_eq!(q1.ordinary_growth, None, "値がない項目");
+        assert!(
+            (g[3].net_growth.unwrap() - 0.75).abs() < 1e-9,
+            "2Q 単独 8 → 14"
+        );
+    }
+
+    #[test]
+    fn quarter_growth_skips_loss_base_and_tolerates_shifted_year_end() {
+        let periods = [
+            cum("2025-03-28", "2024-06-30", PeriodType::Q1, -4.0),
+            cum("2026-03-31", "2025-06-30", PeriodType::Q1, 6.0),
+        ];
+        let g = quarter_growth(&standalone_quarters(&periods));
+        assert_eq!(g[1].net_growth, None, "前年が赤字なら伸び率は出さない");
+        assert!(g[1].sales_growth.is_none());
+        let periods = [
+            cum("2025-03-28", "2024-06-30", PeriodType::Q1, 4.0),
+            cum("2026-03-31", "2025-06-30", PeriodType::Q1, 6.0),
+        ];
+        let g = quarter_growth(&standalone_quarters(&periods));
+        assert!(
+            (g[1].net_growth.unwrap() - 0.5).abs() < 1e-9,
+            "期末日が数日ずれても前年とみなす"
+        );
     }
 
     #[test]
