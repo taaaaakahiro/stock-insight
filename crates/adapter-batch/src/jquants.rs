@@ -5,6 +5,7 @@
 
 use crate::http;
 use domain::analysis::{CumulativePeriod, PeriodType};
+use domain::split::Split;
 use domain::{AnnualFinancial, Date, PriceBar, StockCode};
 use serde_json::Value;
 use std::cell::Cell;
@@ -97,6 +98,17 @@ impl JQuantsClient {
 /// 日足の行から終値（分割調整前）だけを取り出す
 pub fn closes(rows: &[Value]) -> Vec<(StockCode, PriceBar)> {
     rows.iter().filter_map(close_bar).collect()
+}
+
+/// 日足の行から株式分割・併合（AdjFactor が 1 でない日）を取り出す
+pub fn splits(rows: &[Value]) -> Vec<(StockCode, Split)> {
+    rows.iter()
+        .filter_map(|r| {
+            let code = code_from_jquants(r["Code"].as_str()?)?;
+            let date = Date::parse(r["Date"].as_str()?)?;
+            Some((code, Split::new(date, r["AdjFactor"].as_f64()?)?))
+        })
+        .collect()
 }
 
 /// 財務情報サマリーの行から本決算だけを取り出す
@@ -287,8 +299,8 @@ mod tests {
     fn parses_daily_bars() {
         let v: Value = serde_json::from_str(
             r#"{"data":[
-              {"Date":"2026-10-21","Code":"72030","O":3080,"H":3100,"L":3070,"C":3094.0,"AdjC":3094.0},
-              {"Date":"2026-10-21","Code":"130A0","C":512},
+              {"Date":"2026-10-21","Code":"72030","O":3080,"H":3100,"L":3070,"C":3094.0,"AdjC":3094.0,"AdjFactor":1.0},
+              {"Date":"2026-10-21","Code":"130A0","C":512,"AdjFactor":0.5},
               {"Date":"2026-10-21","Code":"99990","C":null}
             ]}"#,
         )
@@ -304,6 +316,14 @@ mod tests {
         assert_eq!(bars[0].1.close, 3094.0);
         assert_eq!(bars[1].0.as_str(), "130A");
         assert_eq!(percent_encode("a b/+="), "a%20b%2F%2B%3D");
+        let s = splits(v["data"].as_array().unwrap());
+        assert_eq!(
+            s.len(),
+            1,
+            "AdjFactor が 1 の日と、項目がない行は分割ではない"
+        );
+        assert_eq!(s[0].0.as_str(), "130A");
+        assert_eq!(s[0].1.factor, 0.5);
     }
 
     #[test]

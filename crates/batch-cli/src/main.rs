@@ -296,6 +296,8 @@ struct Pending {
     changed: HashSet<String>,
     annuals: Vec<AnnualReport>,
     periods: Vec<PeriodReport>,
+    /// 株式分割・併合（AdjFactor が 1 でない日）
+    splits: Vec<(String, domain::split::Split)>,
 }
 
 async fn sync_jq(args: Args) -> Result<(), String> {
@@ -358,6 +360,10 @@ async fn sync_jq(args: Args) -> Result<(), String> {
             // 取り直した日の生データは前に取り込んだときのものと同じなので、R2 には上げ直さない
             if !refill {
                 raw::write_day(&raw_dir, "bars", day, &rows).map_err(|e| e.0)?;
+            }
+            for (code, s) in jquants::splits(&rows) {
+                println!("{day}: split {} x{}", code.as_str(), s.factor);
+                pending.splits.push((code.as_str().to_string(), s));
             }
             let closes = jquants::closes(&rows);
             let n = closes.len();
@@ -514,6 +520,10 @@ async fn persist(
         .await
         .map_err(|e| e.0)?;
     store
+        .save_splits(&pending.splits, now)
+        .await
+        .map_err(|e| e.0)?;
+    store
         .save_annual_reports(&pending.annuals, now)
         .await
         .map_err(|e| e.0)?;
@@ -522,8 +532,9 @@ async fn persist(
         .await
         .map_err(|e| e.0)?;
     println!(
-        "persist: {} price histories, {} annual reports, {} quarterly rows",
+        "persist: {} price histories, {} splits, {} annual reports, {} quarterly rows",
         rows.len(),
+        pending.splits.len(),
         pending.annuals.len(),
         pending.periods.len()
     );
@@ -799,12 +810,14 @@ async fn compute(args: Args) -> Result<(), String> {
     let histories = store.load_price_histories().await.map_err(|e| e.0)?;
     let annuals = store.load_annuals().await.map_err(|e| e.0)?;
     let quarterlies = store.load_quarterlies().await.map_err(|e| e.0)?;
+    let splits = store.load_splits().await.map_err(|e| e.0)?;
     println!(
-        "compute: {} codes, {} price histories, {} with annual financials, {} with quarterly rows",
+        "compute: {} codes, {} price histories, {} with annual financials, {} with quarterly rows, {} with splits",
         codes.len(),
         histories.len(),
         annuals.len(),
-        quarterlies.len()
+        quarterlies.len(),
+        splits.len()
     );
     let mut run = BatchRun {
         run_id: run_id.clone(),
@@ -816,8 +829,15 @@ async fn compute(args: Args) -> Result<(), String> {
         status: "running",
     };
     store.save_run(&run).await.map_err(|e| e.0)?;
-    let (snaps, skipped) =
-        usecase::daily::compute_all(&codes, histories, &annuals, &quarterlies, &run_id, started);
+    let (snaps, skipped) = usecase::daily::compute_all(
+        &codes,
+        histories,
+        &annuals,
+        &quarterlies,
+        &splits,
+        &run_id,
+        started,
+    );
     store.save_snapshots(&snaps).await.map_err(|e| e.0)?;
     run.succeeded = snaps.len();
     run.failed = skipped;

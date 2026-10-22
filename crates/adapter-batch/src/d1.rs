@@ -4,10 +4,12 @@
 
 use crate::sql::{
     annual_reports_stmts, delete_edinet_doc_stmt, edinet_docs_stmts, period_reports_stmts,
-    price_history_stmts, run_stmt, set_state_stmt, snapshots_stmts, stocks_stmts, Stmt, Val,
+    price_history_stmts, run_stmt, set_state_stmt, snapshots_stmts, splits_stmts, stocks_stmts,
+    Stmt, Val,
 };
 use domain::analysis::{CumulativePeriod, PeriodType};
 use domain::disclosure::DocKind;
+use domain::split::Split;
 use domain::stock_master::ListedStock;
 use domain::{AnnualFinancial, Date, PriceBar};
 use std::cell::RefCell;
@@ -223,6 +225,46 @@ impl D1Store {
             self.exec(&s).await?;
         }
         Ok(())
+    }
+
+    pub async fn save_splits(&self, rows: &[(String, Split)], now: i64) -> Result<(), PortError> {
+        for s in splits_stmts(rows, now) {
+            self.exec(&s).await?;
+        }
+        Ok(())
+    }
+
+    /// 全銘柄の株式分割・併合（銘柄ごとに日付の古い順）
+    pub async fn load_splits(&self) -> Result<HashMap<String, Vec<Split>>, PortError> {
+        let mut out: HashMap<String, Vec<Split>> = HashMap::new();
+        let mut after = 0i64;
+        loop {
+            let rows = self
+                .query(&Stmt {
+                    sql: "SELECT rowid AS rid, code, date, factor FROM splits                           WHERE rowid > ? ORDER BY rowid LIMIT 2000"
+                        .into(),
+                    params: vec![Val::Int(after)],
+                })
+                .await?;
+            let Some(last) = rows.last().and_then(|r| r["rid"].as_i64()) else {
+                break;
+            };
+            after = last;
+            for r in &rows {
+                let split = r["date"]
+                    .as_str()
+                    .and_then(Date::parse)
+                    .zip(r["factor"].as_f64())
+                    .and_then(|(d, f)| Split::new(d, f));
+                if let (Some(code), Some(s)) = (r["code"].as_str(), split) {
+                    out.entry(code.to_string()).or_default().push(s);
+                }
+            }
+        }
+        for v in out.values_mut() {
+            v.sort_by_key(|s| s.date);
+        }
+        Ok(out)
     }
 
     /// 全銘柄の年次財務（rowid 順に少しずつ読む）

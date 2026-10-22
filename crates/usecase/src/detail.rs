@@ -4,6 +4,7 @@ use crate::daily::{build_inputs, StoredAnnual};
 use crate::screening::StockRow;
 use crate::PortError;
 use domain::analysis::{CumulativePeriod, QuarterResult};
+use domain::split::Split;
 use domain::{yield_series, AnnualFinancial, Date, PriceBar, StockCode};
 
 /// 詳細ページに出す1銘柄分
@@ -28,6 +29,8 @@ pub trait StockDetailQuery {
     async fn price_history(&self, code: &StockCode) -> Result<Vec<PriceBar>, PortError>;
     async fn annuals(&self, code: &StockCode) -> Result<Vec<StoredAnnual>, PortError>;
     async fn quarterlies(&self, code: &StockCode) -> Result<Vec<CumulativePeriod>, PortError>;
+    /// 株式分割・併合（日付の古い順）
+    async fn splits(&self, code: &StockCode) -> Result<Vec<Split>, PortError>;
 }
 
 const MAX_ANNUAL: usize = 5;
@@ -46,8 +49,9 @@ pub async fn stock_detail<Q: StockDetailQuery>(
     let bars = repo.price_history(code).await?;
     let annuals = repo.annuals(code).await?;
     let quarterlies = repo.quarterlies(code).await?;
+    let splits = repo.splits(code).await?;
     let latest_disclosed = annuals.iter().filter_map(|a| a.disclosed).max();
-    let (market, fin, quarters, _) = build_inputs(bars, &annuals, &quarterlies);
+    let (market, fin, quarters, _) = build_inputs(bars, &annuals, &quarterlies, &splits);
     let mut ys = yield_series(&market);
     ys.reverse();
     let n = quarters.len();
@@ -159,6 +163,9 @@ mod tests {
                 ordinary_income: None,
                 net_income: Some(30.0),
             }])
+        }
+        async fn splits(&self, _: &StockCode) -> Result<Vec<Split>, PortError> {
+            Ok(vec![])
         }
     }
 
