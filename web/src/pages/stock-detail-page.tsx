@@ -1,5 +1,6 @@
 import { ArrowLeft } from "lucide-react";
 import { useEffect, useState } from "react";
+import { DividendPolicy } from "@/components/dividend-policy";
 import { DocPreview } from "@/components/doc-preview";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
 import { ReitDebt } from "@/components/reit-debt";
@@ -86,7 +87,8 @@ function Detail({ d }: { d: StockDetail }) {
           { label: "PBR", value: times(s.pbr) },
           { label: "PER", value: times(s.per) },
           { label: "配当性向", value: pct(s.payout_ratio, 1) },
-          { label: "DOE", value: pct(s.doe) },
+          { label: "DOE（実績）", value: pct(s.doe) },
+          { label: "DOE（予想）", value: pct(s.doe_forecast) },
           { label: "連続増配", value: count(s.consecutive_increases) },
           { label: "営業利益率", value: pct(s.operating_margin, 1) },
         ]
@@ -117,6 +119,12 @@ function Detail({ d }: { d: StockDetail }) {
       </header>
 
       {kind === "reit" && <ReitDebt code={s.code} />}
+
+      {stock && (
+        <section aria-label="配当方針">
+          <DividendPolicy r={s} />
+        </section>
+      )}
 
       {kind !== "etf" && (
         <section aria-labelledby="dps-chart">

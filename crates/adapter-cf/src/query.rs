@@ -22,6 +22,23 @@ const REIT_DEBT: &str =
     "NULLIF(r.rate_fixed + r.rate_swap_fixed + r.rate_swap_amount + r.rate_floating \
      + r.rate_unknown + r.bonds, 0)";
 
+/// 有報・半期報告書に書かれた DOE の下限・目標。両方の書類にあれば新しいほう
+macro_rules! doe_floor_sql {
+    () => {
+        "(SELECT e.doe_floor FROM edinet_docs e WHERE e.code = i.code AND e.doe_floor IS NOT NULL \
+         ORDER BY e.submitted DESC LIMIT 1)"
+    };
+}
+macro_rules! doe_goal_sql {
+    () => {
+        "(SELECT e.doe_goal FROM edinet_docs e WHERE e.code = i.code AND e.doe_goal IS NOT NULL \
+         ORDER BY e.submitted DESC LIMIT 1)"
+    };
+}
+/// 比べる DOE: 会社予想の配当があれば 利回り × PBR（予想の配当 ÷ BPS）、なければ実績の DOE
+const DOE_NOW: &str =
+    "(CASE WHEN i.dividend_basis = 'forecast' THEN i.dividend_yield * i.pbr ELSE i.doe END)";
+
 /// 指標の SQL の式。株式などは indicators_latest の列、REIT は reit_profile から計算する（比率は小数）
 pub fn metric_sql(m: Metric) -> String {
     match m {
@@ -31,6 +48,8 @@ pub fn metric_sql(m: Metric) -> String {
         Metric::RepriceMaxRatio => format!("(r.reprice_1y_max * 1.0 / {REIT_DEBT})"),
         Metric::AvgRate => "(r.avg_rate / 100.0)".into(),
         Metric::Occupancy => "(r.occupancy / 100.0)".into(),
+        Metric::DoeFloor => doe_floor_sql!().into(),
+        Metric::DoeMargin => format!("({DOE_NOW} - {})", doe_floor_sql!()),
         _ => format!("i.{}", m.key()),
     }
 }
@@ -49,13 +68,18 @@ fn reit_columns() -> String {
     )
 }
 
-pub const LIST_COLUMNS: &str =
+pub const LIST_COLUMNS: &str = concat!(
     "i.code, i.price, i.price_date, i.dividend_ttm, i.dividend_basis, i.dividend_yield, i.yield_percentile, i.pbr, i.per, \
      i.payout_ratio, i.doe, i.consecutive_increases, i.operating_margin, i.no_loss_years, i.profit_uptrend, \
      i.valuation, i.fetched_at, s.name, COALESCE(s.kind, 'stock') AS kind, s.market, s.sector33, s.size_class, \
      i.dividend_every_year, i.no_quarterly_loss, i.is_value, i.data_years, i.sales_growth, i.op_growth, i.dividend_cut, \
      (SELECT MAX(e.progressive_dividend) FROM edinet_docs e WHERE e.code = i.code) AS progressive_dividend, \
-     (SELECT MAX(e.no_dividend_cut) FROM edinet_docs e WHERE e.code = i.code) AS no_dividend_cut";
+     (SELECT MAX(e.no_dividend_cut) FROM edinet_docs e WHERE e.code = i.code) AS no_dividend_cut, ",
+    doe_floor_sql!(),
+    " AS doe_floor, ",
+    doe_goal_sql!(),
+    " AS doe_goal"
+);
 
 /// マスタにまだない銘柄も消えないよう LEFT JOIN（種類は株式として扱う）。REIT の要約も LEFT JOIN
 const FROM: &str = "FROM indicators_latest i LEFT JOIN stocks s ON s.code = i.code \
@@ -180,7 +204,7 @@ pub fn portfolio_rows() -> String {
 /// 1銘柄の EDINET の書類と配当方針の手がかり（? は銘柄コード）
 pub const EDINET_DOCS: &str =
     "SELECT doc_kind, doc_id, submitted, period_end, progressive_dividend, \
-     no_dividend_cut, dividend_raise, doe_target, payout_target, phrases \
+     no_dividend_cut, dividend_raise, doe_target, payout_target, doe_floor, doe_goal, doe_phrase, phrases \
      FROM edinet_docs WHERE code = ? ORDER BY doc_kind";
 
 pub const PORTFOLIO_CODES: &str =
@@ -356,6 +380,28 @@ mod tests {
             "SELECT {LIST_COLUMNS}, {}, {LATEST_EPS} FROM portfolio_items",
             reit_columns()
         )));
+    }
+
+    #[test]
+    fn doe_columns_use_the_newest_document_and_forecast() {
+        assert!(LIST_COLUMNS.ends_with(&format!(
+            "{} AS doe_floor, {} AS doe_goal",
+            doe_floor_sql!(),
+            doe_goal_sql!()
+        )));
+        assert!(doe_floor_sql!().contains("ORDER BY e.submitted DESC LIMIT 1"));
+        let margin = metric_sql(Metric::DoeMargin);
+        assert!(margin.starts_with(
+            "((CASE WHEN i.dividend_basis = 'forecast' THEN i.dividend_yield * i.pbr"
+        ));
+        assert!(margin.ends_with(&format!(" - {})", doe_floor_sql!())));
+        let f = ScreeningFilter {
+            sort: SortKey::Metric(Metric::DoeMargin),
+            ..Default::default()
+        };
+        assert!(list(&f)
+            .sql
+            .contains(&format!("ORDER BY {margin} IS NULL, {margin}")));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { DocPreview } from "@/components/doc-preview";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
-import { DividendAmount, NameCell } from "@/components/results-table";
+import { DividendAmount, DoeMargin, doeNow, NameCell } from "@/components/results-table";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -83,6 +83,21 @@ function Payout({ h }: { h: Holding }) {
   return <span className={cn(warn && "font-medium text-expensive")}>{pct(h.payout_ratio, 1)}</span>;
 }
 
+/** 今の DOE（予想があれば予想）と、有報の DOE の下限・余裕 */
+function Doe({ h }: { h: Holding }) {
+  if (h.kind !== "stock") return pct(null);
+  return (
+    <span>
+      {pct(doeNow(h))}
+      {h.doe_floor != null && (
+        <span className="block text-xs text-muted-foreground">
+          下限 {pct(h.doe_floor, 1)}・<DoeMargin r={h} />
+        </span>
+      )}
+    </span>
+  );
+}
+
 function Pbr({ h }: { h: Holding }) {
   const warn = h.signals.includes("high_pbr");
   return <span className={cn(warn && "font-medium text-expensive")}>{times(h.pbr)}</span>;
@@ -160,6 +175,7 @@ export function PortfolioPage() {
               <TableHead className="text-right">配当利回り</TableHead>
               <TableHead className="text-right">配当性向</TableHead>
               <TableHead className="text-right">PBR</TableHead>
+              <TableHead className="text-right">DOE</TableHead>
               <TableHead>売りサイン</TableHead>
             </TableRow>
           </TableHeader>
@@ -183,6 +199,9 @@ export function PortfolioPage() {
                 </TableCell>
                 <TableCell className="text-right tabular-nums">
                   <Pbr h={h} />
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  <Doe h={h} />
                 </TableCell>
                 <TableCell>
                   <Signals h={h} />
@@ -210,7 +229,7 @@ export function PortfolioPage() {
             <div className="mb-3">
               <Signals h={h} />
             </div>
-            <dl className="grid grid-cols-4 gap-x-3 text-sm">
+            <dl className="grid grid-cols-3 gap-x-3 gap-y-2 text-sm">
               <div>
                 <dt className="text-xs text-muted-foreground">株価</dt>
                 <dd className="tabular-nums">{yen(h.price)}</dd>
@@ -234,6 +253,12 @@ export function PortfolioPage() {
                 <dt className="text-xs text-muted-foreground">PBR</dt>
                 <dd className="tabular-nums">
                   <Pbr h={h} />
+                </dd>
+              </div>
+              <div className="col-span-2">
+                <dt className="text-xs text-muted-foreground">DOE</dt>
+                <dd className="tabular-nums">
+                  <Doe h={h} />
                 </dd>
               </div>
             </dl>

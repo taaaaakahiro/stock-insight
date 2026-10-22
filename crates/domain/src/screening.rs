@@ -29,10 +29,14 @@ pub enum Metric {
     AvgRate,
     /// REIT: 面積加重の稼働率
     Occupancy,
+    /// 有報・半期報告書に書かれた DOE の下限
+    DoeFloor,
+    /// DOE（会社予想の配当があればそれで、なければ実績）− DOE の下限
+    DoeMargin,
 }
 
 impl Metric {
-    pub const ALL: [Metric; 18] = [
+    pub const ALL: [Metric; 20] = [
         Metric::Price,
         Metric::Dividend,
         Metric::DividendYield,
@@ -51,6 +55,8 @@ impl Metric {
         Metric::RepriceMaxRatio,
         Metric::AvgRate,
         Metric::Occupancy,
+        Metric::DoeFloor,
+        Metric::DoeMargin,
     ];
 
     /// APIのクエリ名（株式などの指標は D1 の列名と同じ）
@@ -74,6 +80,8 @@ impl Metric {
             Metric::RepriceMaxRatio => "reprice_max_ratio",
             Metric::AvgRate => "avg_rate",
             Metric::Occupancy => "occupancy",
+            Metric::DoeFloor => "doe_floor",
+            Metric::DoeMargin => "doe_margin",
         }
     }
 

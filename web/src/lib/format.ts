@@ -14,6 +14,13 @@ export function growth(ratio: number | null | undefined): string {
   return `${ratio > 0 ? "+" : ""}${(ratio * 100).toFixed(1)}%`;
 }
 
+/** 比率の差。0.0112 → "+1.12pt"、-0.0086 → "-0.86pt" */
+export function points(diff: number | null | undefined): string {
+  if (diff == null || !Number.isFinite(diff)) return NONE;
+  const v = Math.round(diff * 10000) / 100;
+  return `${v > 0 ? "+" : ""}${v.toFixed(2)}pt`;
+}
+
 /** 1.234 → "1.23倍" */
 export function times(x: number | null | undefined): string {
   if (x == null || !Number.isFinite(x)) return NONE;

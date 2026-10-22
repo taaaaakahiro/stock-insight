@@ -23,7 +23,7 @@ import {
   reitSectorLabel,
   SIZES,
 } from "@/lib/filters";
-import { count, growth, pct, times, yen } from "@/lib/format";
+import { count, growth, pct, points, times, yen } from "@/lib/format";
 import { navigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
@@ -67,7 +67,27 @@ const RENDER: Record<MetricKey, (r: StockRow) => React.ReactNode> = {
   reprice_max_ratio: (r) => pct(r.reit?.reprice_max_ratio, 1),
   avg_rate: (r) => pct(r.reit?.avg_rate, 2),
   occupancy: (r) => pct(r.reit?.occupancy, 1),
+  doe_floor: (r) => pct(r.doe_floor, 1),
+  doe_margin: (r) => <DoeMargin r={r} />,
 };
+
+/** 比べる DOE: 利回りが会社予想の配当なら予想の DOE、実績なら実績の DOE（API の doe_margin と同じ） */
+export const doeNow = (r: StockRow) => (r.dividend_basis === "forecast" ? r.doe_forecast : r.doe);
+
+/** DOE の余裕（今の DOE − 下限）。下限を割っていれば赤 */
+export function DoeMargin({ r }: { r: StockRow }) {
+  const now = doeNow(r);
+  if (now == null || r.doe_floor == null) return points(null);
+  const diff = now - r.doe_floor;
+  return (
+    <span className={cn(diff < 0 ? "text-expensive" : "text-cheap")}>
+      {points(diff)}
+      <span className="ml-1 text-[10px] text-muted-foreground">
+        {r.doe_forecast != null ? "予想" : "実績"}
+      </span>
+    </span>
+  );
+}
 
 // 表の列の並び（株価を先頭に）
 const ORDER: MetricKey[] = [
@@ -79,6 +99,8 @@ const ORDER: MetricKey[] = [
   "per",
   "payout_ratio",
   "doe",
+  "doe_floor",
+  "doe_margin",
   "consecutive_increases",
   "operating_margin",
   "sales_growth",

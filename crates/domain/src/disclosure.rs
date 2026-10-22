@@ -92,6 +92,13 @@ pub struct DividendSignals {
     pub raise: bool,
     /// DOE（株主資本配当率）を目標にしている
     pub doe_target: bool,
+    /// DOE の下限（0.035 = 3.5%）。「下限」「最低」「を下回らない」と書かれた数字と、目標とはっきり書かずに
+    /// 「X%以上」とした数字。引き上げなら新しい値
+    pub doe_floor: Option<f64>,
+    /// DOE の目標（「目標」「目途」「目安」「目指す」、または「以上」のない「程度」「水準」「方針」の数字）
+    pub doe_goal: Option<f64>,
+    /// DOE の下限（なければ目標）の数字を拾った文（MAX_PHRASE_CHARS 文字まで）
+    pub doe_phrase: Option<String>,
     /// 配当性向の目標（0.3 = 30%）。範囲なら下限
     pub payout_target: Option<f64>,
     /// 手がかりの言葉を含む文（最大 MAX_PHRASES、各 MAX_PHRASE_CHARS 文字まで）
@@ -122,16 +129,34 @@ const RAISE: &[&str] = &["増配"];
 const DOE: &[&str] = &["DOE", "株主資本配当率", "純資産配当率", "自己資本配当率"];
 const PAYOUT: &str = "配当性向";
 
+/// DOE の言葉の後ろのこの文字数以内の数字を、その DOE の値とみなす
+const DOE_WINDOW_CHARS: usize = 40;
+/// DOE の値を探すのを、ここで止める（ほかの指標の % を拾わないように）
+const DOE_STOP: &[&str] = &["配当性向", "総還元", "ROE", "自己資本比率", "。"];
+const DOE_FLOOR_WORDS: &[&str] = &["下限", "最低", "下回らない", "下回ることなく", "確保"];
+/// はっきり目標と書く言葉（「X%以上を目標」は目標）
+const DOE_GOAL_WORDS: &[&str] = &["目標", "目途", "目処", "めど", "目安", "目指", "目線"];
+/// 目標とみなす弱い言葉（「以上」があれば下限を優先する）
+const DOE_LOOSE_GOAL_WORDS: &[&str] = &["程度", "水準", "方針", "基本", "基準"];
+/// 方針ではない数字（特別配当の大きさ、当期の実績）
+const DOE_NOT_POLICY: &[&str] = &["特別配当", "記念配当", "実績", "となりました", "でした"];
+/// DOE として扱う上限。これより大きい数字は読み違いとみなす
+const DOE_MAX: f64 = 0.2;
+
 const MAX_PHRASES: usize = 5;
 const MAX_PHRASE_CHARS: usize = 160;
 /// 「配当性向」の後ろのこの文字数以内に「30%」などがあれば目標とみなす
 const PAYOUT_WINDOW_CHARS: usize = 25;
 
-/// 項目ごとの文章から手がかりを拾う。配当政策の文を先に並べる
+/// 項目ごとの文章から手がかりを拾う。配当政策の文を先に並べる。
+/// DOE の下限・目標は文ごとに違うこと（従来の計画と新しい計画）があるので、いちばん大きい値を取る
+/// （引き上げのほうが多く、古い値は「従来の…から」と書かれることが多い）
 pub fn detect(sections: &[(Section, &str)]) -> DividendSignals {
     let mut sorted: Vec<&(Section, &str)> = sections.iter().collect();
     sorted.sort_by_key(|(s, _)| *s);
     let mut sig = DividendSignals::default();
+    let mut floor_phrase = None;
+    let mut goal_phrase = None;
     for (_, text) in sorted {
         for sentence in text.split('。').map(str::trim).filter(|s| !s.is_empty()) {
             let has = |words: &[&str]| words.iter().any(|w| sentence.contains(w));
@@ -147,11 +172,23 @@ pub fn detect(sections: &[(Section, &str)]) -> DividendSignals {
             if sig.payout_target.is_none() {
                 sig.payout_target = payout;
             }
+            if doe {
+                let (floor, goal) = doe_policy(sentence);
+                if let Some(v) = floor.filter(|v| sig.doe_floor.is_none_or(|f| *v > f)) {
+                    sig.doe_floor = Some(v);
+                    floor_phrase = Some(cut_sentence(sentence));
+                }
+                if let Some(v) = goal.filter(|v| sig.doe_goal.is_none_or(|g| *v > g)) {
+                    sig.doe_goal = Some(v);
+                    goal_phrase = Some(cut_sentence(sentence));
+                }
+            }
             if progressive || no_cut || raise || doe || payout.is_some() {
                 push_phrase(&mut sig.phrases, sentence);
             }
         }
     }
+    sig.doe_phrase = floor_phrase.or(goal_phrase);
     sig
 }
 
@@ -159,15 +196,103 @@ fn push_phrase(phrases: &mut Vec<String>, sentence: &str) {
     if phrases.len() >= MAX_PHRASES {
         return;
     }
+    let s = cut_sentence(sentence);
+    if !phrases.contains(&s) {
+        phrases.push(s);
+    }
+}
+
+/// MAX_PHRASE_CHARS 文字までにして、句点か「…」を付ける
+fn cut_sentence(sentence: &str) -> String {
     let mut s: String = sentence.chars().take(MAX_PHRASE_CHARS).collect();
     if sentence.chars().count() > MAX_PHRASE_CHARS {
         s.push('…');
     } else {
         s.push('。');
     }
-    if !phrases.contains(&s) {
-        phrases.push(s);
+    s
+}
+
+/// 1文から DOE の（下限, 目標）を拾う。DOE の言葉ごとに、後ろの DOE_WINDOW_CHARS 文字（ほかの指標が
+/// 出てきたらそこまで）にある % の数字を見る。「2.5%から3.5%へ」は新しい値、「3~4%」は下限の数字。
+/// 下限の言葉があれば下限、目標とはっきり書いてあれば目標、「以上」なら下限、弱い目標の言葉なら目標。
+/// どの言葉もない数字（当期の実績など）と、「従来の3.5%から」のように新しい値のない古い値は拾わない
+fn doe_policy(sentence: &str) -> (Option<f64>, Option<f64>) {
+    if DOE_NOT_POLICY.iter().any(|w| sentence.contains(w)) {
+        return (None, None);
     }
+    let mut floor = None;
+    let mut goal = None;
+    for word in DOE {
+        for (at, _) in sentence.match_indices(word) {
+            let rest = &sentence[at + word.len()..];
+            let mut window: String = rest.chars().take(DOE_WINDOW_CHARS).collect();
+            if let Some(stop) = DOE_STOP.iter().filter_map(|w| window.find(w)).min() {
+                window.truncate(stop);
+            }
+            let Some(v) = doe_value(&window) else {
+                continue;
+            };
+            let has = |words: &[&str]| words.iter().any(|w| window.contains(w));
+            if has(DOE_FLOOR_WORDS) {
+                floor = floor.or(Some(v));
+            } else if has(DOE_GOAL_WORDS) {
+                goal = goal.or(Some(v));
+            } else if window.contains("以上") {
+                floor = floor.or(Some(v));
+            } else if has(DOE_LOOSE_GOAL_WORDS) {
+                goal = goal.or(Some(v));
+            }
+        }
+    }
+    (floor, goal)
+}
+
+/// 窓の中の % の数字（小数）。「AからBへ」は B、範囲は下限の数字
+fn doe_value(window: &str) -> Option<f64> {
+    let pcts: Vec<(usize, f64)> = window
+        .match_indices('%')
+        .filter_map(|(i, _)| {
+            let head = &window[..i];
+            let digits: String = head
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let v: f64 = digits.trim_start_matches('.').parse().ok()?;
+            Some((i, v / 100.0))
+        })
+        .collect();
+    let (first_at, first) = *pcts.first()?;
+    // 「2.5%から3.5%へ」: から の後ろの数字を取る。後ろに数字がなければ古い値なので拾わない
+    let v = match window[first_at..].find("から") {
+        Some(k) => pcts.iter().find(|(i, _)| *i > first_at + k)?.1,
+        // 「3~4%」「3〜4%」: % の前の範囲は最初の数字（下限）
+        None => range_low(&window[..first_at]).unwrap_or(first),
+    };
+    // 0.018000000000000002 のような誤差を落とす（0.01% 単位）
+    let v = (v * 10_000.0).round() / 10_000.0;
+    (0.0 < v && v <= DOE_MAX).then_some(v)
+}
+
+/// 「3~4」「3〜4」「3-4」のように % の直前が範囲なら、下限の数字（小数）
+fn range_low(head: &str) -> Option<f64> {
+    let tail: String = head
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit() || matches!(c, '.' | '~' | '〜' | '～' | '-' | '－'))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let low = tail.split(['~', '〜', '～', '-', '－']).collect::<Vec<_>>();
+    if low.len() < 2 {
+        return None;
+    }
+    low[0].parse::<f64>().ok().map(|v| v / 100.0)
 }
 
 /// 「配当性向30%以上」「配当性向は35～40%」などの数値（下限）。文に「配当性向」がなければ None
@@ -310,6 +435,52 @@ mod tests {
         assert!(
             s.phrases[0].starts_with("DOE3%"),
             "配当政策の文を先に並べる"
+        );
+    }
+
+    #[test]
+    fn doe_floor_and_goal_from_policy_sentences() {
+        let cases: &[(&str, Option<f64>, Option<f64>)] = &[
+            ("「株主資本配当率1.5%」を下限に設定し「連結配当性向20%以上」を目安とする方針としております", Some(0.015), None),
+            ("DOEの下限を従来の2.5%から3.5%へ引き上げると共に、総還元性向について新たに40%", Some(0.035), None),
+            ("DOE3.5%下限(注2)及び総還元性向40%程度を目標", Some(0.035), None),
+            ("自己資本配当率(DOE)」3.0%以上(安定した利益配分の指標)かつ、配当性向30%以上", Some(0.03), None),
+            ("株主資本配当率(DOE)4.0%を目途とすることに変更いたします", None, Some(0.04)),
+            ("DOE目標を3.5%程度に引上げました", None, Some(0.035)),
+            ("DOE 10%程度を目線に、持続的な累進配当を行うことを目標としています", None, Some(0.1)),
+            ("純資産配当率(DOE)目標4%以上」に変更いたしました", None, Some(0.04)),
+            ("DOE3~4%を目安とします", None, Some(0.03)),
+            ("DOE2.0%以上を確保することを基本方針とし", Some(0.02), None),
+            ("DOE(株主資本配当率)2.5%以上の配当を基本", Some(0.025), None),
+            ("純資産配当率(DOE)の段階的な引き上げを実施し、3%以上を目指します", None, Some(0.03)),
+            ("従来のDOE3.5%水準から、総還元性向100%(フルペイアウト)に", None, None),
+            ("DOE1.8%をその下限として設定しております", Some(0.018), None),
+            ("自己資本配当率につきましては3.5%、連結配当性向につきましては58.2%となります", None, None),
+            ("DOE0.5%相当の特別配当を実施いたします", None, None),
+            ("当期のDOEは3.2%となりました", None, None),
+            ("DOE(株主資本配当率)を採用しております", None, None),
+        ];
+        for (text, floor, goal) in cases {
+            assert_eq!(doe_policy(text), (*floor, *goal), "{text}");
+        }
+    }
+
+    #[test]
+    fn detect_takes_largest_doe_values_and_floor_sentence() {
+        let policy = "中期経営計画2025ではDOE2.5%を下限の配当水準としました。\
+                      中期経営計画2028ではDOE3.5%を下限とします。中期的にはDOE4%を目標とします。";
+        let s = detect(&[(Section::DividendPolicy, policy)]);
+        assert_eq!(s.doe_floor, Some(0.035), "新しい計画の引き上げた下限");
+        assert_eq!(s.doe_goal, Some(0.04));
+        assert_eq!(
+            s.doe_phrase.as_deref(),
+            Some("中期経営計画2028ではDOE3.5%を下限とします。"),
+            "下限の文を出す"
+        );
+        let goal_only = detect(&[(Section::DividendPolicy, "DOE4%を目途とします。")]);
+        assert_eq!(
+            goal_only.doe_phrase.as_deref(),
+            Some("DOE4%を目途とします。")
         );
     }
 
