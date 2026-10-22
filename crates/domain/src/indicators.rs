@@ -33,6 +33,8 @@ pub struct Indicators {
     pub op_growth: Option<f64>,
     /// dividend_ttm が会社予想なら true、実績なら false、配当の開示がなければ None
     pub dividend_is_forecast: Option<bool>,
+    /// 減配した、または減配の予想を出した（比べる配当がなければ None）
+    pub dividend_cut: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +123,24 @@ pub fn percentile_rank(samples: &[f64], current: f64) -> Option<f64> {
 /// 新しい順に並んだ値の連続増加回数
 pub fn consecutive_increases(newest_first: &[f64]) -> u32 {
     newest_first.windows(2).take_while(|w| w[0] > w[1]).count() as u32
+}
+
+/// 分割の調整で出る端数を同じ額とみなす幅（相対）
+const SAME_DIVIDEND_EPS: f64 = 1e-6;
+
+/// 減配か。直近の実績が前期の実績より少ないか、会社予想が直近の実績より少なければ true。
+/// 据え置きは減配に含めない。どちらも比べられなければ None
+pub fn dividend_cut(actual_newest_first: &[f64], forecast: Option<f64>) -> Option<bool> {
+    let less = |a: f64, b: f64| a < b * (1.0 - SAME_DIVIDEND_EPS);
+    let latest = actual_newest_first.first().copied();
+    let by_actual = latest
+        .zip(actual_newest_first.get(1).copied())
+        .map(|(l, p)| less(l, p));
+    let by_forecast = forecast.zip(latest).map(|(f, l)| less(f, l));
+    match (by_actual, by_forecast) {
+        (None, None) => None,
+        (a, f) => Some(a == Some(true) || f == Some(true)),
+    }
 }
 
 /// 最小二乗法の傾きが正か（古い順に並べ替えて計算）
@@ -212,6 +232,10 @@ pub fn compute(
         sales_growth: None,
         op_growth: None,
         dividend_is_forecast: current.map(|d| d.forecast),
+        dividend_cut: dividend_cut(
+            &dps_series,
+            current.filter(|d| d.forecast).map(|d| d.annual),
+        ),
     })
 }
 
@@ -269,6 +293,35 @@ mod tests {
         assert_eq!(is_uptrend(&[5.0, 4.0, 3.0]), Some(true));
         assert_eq!(is_uptrend(&[3.0, 4.0, 5.0]), Some(false));
         assert_eq!(is_uptrend(&[1.0, 2.0]), None);
+    }
+
+    #[test]
+    fn dividend_cut_by_actual_or_forecast() {
+        assert_eq!(dividend_cut(&[25.0, 30.0], None), Some(true), "実績で減配");
+        assert_eq!(
+            dividend_cut(&[30.0, 30.0], None),
+            Some(false),
+            "据え置きは減配ではない"
+        );
+        assert_eq!(
+            dividend_cut(&[30.0, 28.0], Some(26.0)),
+            Some(true),
+            "減配予想"
+        );
+        assert_eq!(dividend_cut(&[30.0, 28.0], Some(30.0)), Some(false));
+        assert_eq!(
+            dividend_cut(&[25.0, 30.0], Some(30.0)),
+            Some(true),
+            "直近の減配は予想が戻っても出す"
+        );
+        assert_eq!(dividend_cut(&[30.0], Some(0.0)), Some(true), "無配予想");
+        assert_eq!(
+            dividend_cut(&[30.0 / 3.0, 10.0], None),
+            Some(false),
+            "分割の調整の端数は減配にしない"
+        );
+        assert_eq!(dividend_cut(&[30.0], None), None);
+        assert_eq!(dividend_cut(&[], Some(30.0)), None);
     }
 
     #[test]

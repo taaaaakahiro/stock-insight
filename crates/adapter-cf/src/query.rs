@@ -53,7 +53,7 @@ pub const LIST_COLUMNS: &str =
     "i.code, i.price, i.price_date, i.dividend_ttm, i.dividend_basis, i.dividend_yield, i.yield_percentile, i.pbr, i.per, \
      i.payout_ratio, i.doe, i.consecutive_increases, i.operating_margin, i.no_loss_years, i.profit_uptrend, \
      i.valuation, i.fetched_at, s.name, COALESCE(s.kind, 'stock') AS kind, s.market, s.sector33, s.size_class, \
-     i.dividend_every_year, i.no_quarterly_loss, i.is_value, i.data_years, i.sales_growth, i.op_growth, \
+     i.dividend_every_year, i.no_quarterly_loss, i.is_value, i.data_years, i.sales_growth, i.op_growth, i.dividend_cut, \
      (SELECT MAX(e.progressive_dividend) FROM edinet_docs e WHERE e.code = i.code) AS progressive_dividend, \
      (SELECT MAX(e.no_dividend_cut) FROM edinet_docs e WHERE e.code = i.code) AS no_dividend_cut";
 

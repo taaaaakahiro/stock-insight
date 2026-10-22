@@ -157,6 +157,7 @@ mod tests {
             data_years: Some(5),
             sales_growth: None,
             op_growth: None,
+            dividend_cut: None,
             progressive_dividend: None,
             no_dividend_cut: None,
             reit: None,

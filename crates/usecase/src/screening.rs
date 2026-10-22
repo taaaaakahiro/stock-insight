@@ -40,6 +40,8 @@ pub struct StockRow {
     /// 売上高・営業利益の前年同期比（J-Quants の決算短信から）
     pub sales_growth: Option<f64>,
     pub op_growth: Option<f64>,
+    /// 減配した、または会社予想が減配（比べる配当がなければ None）
+    pub dividend_cut: Option<bool>,
     /// 有報・半期報告書に累進配当・非減配の記述がある（EDINET。書類がなければ None）
     pub progressive_dividend: Option<bool>,
     pub no_dividend_cut: Option<bool>,

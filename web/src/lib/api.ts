@@ -35,6 +35,8 @@ export type StockRow = {
   /** 売上高・営業利益の前年同期比（直近の決算の期首からの累計どうし） */
   sales_growth: number | null;
   op_growth: number | null;
+  /** 減配した、または会社予想が減配（比べる配当がなければ null） */
+  dividend_cut: boolean | null;
   /** 有報・半期報告書（EDINET）の記述。書類をまだ取っていなければ null */
   progressive_dividend: boolean | null;
   no_dividend_cut: boolean | null;
@@ -184,7 +186,7 @@ export type SellSignal =
   | "high_pbr"
   | "loss_dividend"
   | "expensive"
-  | "no_increase"
+  | "dividend_cut"
   | "profit_downtrend"
   | "loss";
 
