@@ -15,7 +15,7 @@ import {
 import { type AnnualRow, ApiError, apiGet, type QuarterRow, type StockDetail } from "@/lib/api";
 import { useAuthState } from "@/lib/auth";
 import { type Kind, metricLabel } from "@/lib/filters";
-import { count, jstDateTime, oku, pct, times, yen, yen1, ymd } from "@/lib/format";
+import { count, growth, jstDateTime, oku, pct, times, yen, yen1, ymd } from "@/lib/format";
 import { backToList } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
@@ -113,6 +113,21 @@ function Detail({ d }: { d: StockDetail }) {
         </p>
       </header>
 
+      {kind !== "etf" && (
+        <section aria-labelledby="dps-chart">
+          <h3 id="dps-chart" className="mb-2 text-sm">
+            1株{divWord}は増えているか・増配の余地はあるか（本決算、最大5期）
+          </h3>
+          {d.annual.some((r) => r.dps != null) ? (
+            <DpsChart rows={d.annual} divWord={divWord} />
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              1株{divWord}の開示がまだ取り込まれていません。
+            </p>
+          )}
+        </section>
+      )}
+
       <section aria-label="主要な指標">
         <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           {metrics.map((m) => (
@@ -122,19 +137,6 @@ function Detail({ d }: { d: StockDetail }) {
             </div>
           ))}
         </dl>
-      </section>
-
-      <section aria-labelledby="yield-chart">
-        <h3 id="yield-chart" className="mb-2 text-sm">
-          {divWord}利回りの推移（週1点、最長5年）
-        </h3>
-        {d.yield_series.length >= 2 ? (
-          <YieldChart series={d.yield_series} />
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            {stock ? "配当" : "分配金"}の開示が取り込まれていないため、推移はまだ出せません。
-          </p>
-        )}
       </section>
 
       <section aria-labelledby="price-chart">
@@ -266,13 +268,120 @@ function QuarterTable({ rows }: { rows: QuarterRow[] }) {
   );
 }
 
-/** 下から何%の位置にある値か（同じ値は半分だけ数える。indicators.rs と同じ） */
-function percentile(sorted: number[], p: number): number {
-  if (sorted.length === 0) return 0;
-  const i = (sorted.length - 1) * p;
-  const lo = sorted[Math.floor(i)] ?? 0;
-  const hi = sorted[Math.ceil(i)] ?? lo;
-  return lo + (hi - lo) * (i - Math.floor(i));
+/** "2026-03-31" → "2026/03"（決算期の表記） */
+const fiscalMonth = (p: string | null | undefined) => (p ? p.slice(0, 7).replace("-", "/") : "—");
+
+const BAR_H = 240;
+const BAR_PAD = { top: 22, bottom: 56 };
+
+/**
+ * 1株配当の棒グラフ。後ろの枠は1株利益（EPS）で、枠と棒のすき間が増配の余地。
+ * 前の期より減った期は赤で強調する（色だけに頼らず増減率も添える）
+ */
+function DpsChart({ rows, divWord }: { rows: AnnualRow[]; divWord: string }) {
+  // API は新しい期が先頭。グラフは左から古い順
+  const list = [...rows].reverse();
+  const max = Math.max(...list.flatMap((r) => [r.dps ?? 0, r.eps ?? 0])) || 1;
+  const slot = (W - PAD.left - PAD.right) / list.length;
+  const barW = Math.min(56, slot * 0.5);
+  const plotH = BAR_H - BAR_PAD.top - BAR_PAD.bottom;
+  const base = BAR_H - BAR_PAD.bottom;
+  const height = (v: number | null) => (v != null && v > 0 ? (plotH * v) / max : 0);
+  const change = (i: number): number | null => {
+    const cur = list[i]?.dps;
+    const prev = list[i - 1]?.dps;
+    return cur != null && prev != null && prev > 0 ? cur / prev - 1 : null;
+  };
+  const first = list.find((r) => r.dps != null);
+  const latest = list.at(-1);
+  const total =
+    first?.dps && latest?.dps != null && first !== latest ? latest.dps / first.dps - 1 : null;
+  return (
+    <figure>
+      <svg
+        viewBox={`0 0 ${W} ${BAR_H}`}
+        role="img"
+        aria-label={`1株${divWord}と1株利益の推移。${list
+          .map(
+            (r) =>
+              `${fiscalMonth(r.period_end)}期 ${divWord}${yen1(r.dps)}・利益${yen1(r.eps)}・性向${pct(r.payout_ratio, 0)}`,
+          )
+          .join("、")}`}
+        className="h-auto w-full text-xs"
+      >
+        <line x1={PAD.left} x2={W - PAD.right} y1={base} y2={base} className="stroke-border" />
+        <text x={PAD.left - 8} y={base + 15} textAnchor="end" className="fill-muted-foreground">
+          期
+        </text>
+        <text x={PAD.left - 8} y={base + 31} textAnchor="end" className="fill-muted-foreground">
+          前期比
+        </text>
+        <text x={PAD.left - 8} y={base + 47} textAnchor="end" className="fill-muted-foreground">
+          {divWord}性向
+        </text>
+        {list.map((r, i) => {
+          const cx = PAD.left + slot * (i + 0.5);
+          const h = height(r.dps);
+          const eh = height(r.eps);
+          const g = change(i);
+          const cut = g != null && g < 0;
+          return (
+            <g key={r.period_end ?? i}>
+              {eh > 0 && (
+                <rect
+                  x={cx - barW / 2 - 4}
+                  y={base - eh}
+                  width={barW + 8}
+                  height={eh}
+                  rx={2}
+                  className="fill-cheap/10 stroke-cheap"
+                  strokeDasharray="3 2"
+                />
+              )}
+              {r.dps != null && (
+                <rect
+                  x={cx - barW / 2}
+                  y={base - h}
+                  width={barW}
+                  height={h}
+                  rx={2}
+                  className={cut ? "fill-expensive" : "fill-foreground/70"}
+                />
+              )}
+              {eh > 0 && (
+                <text x={cx} y={base - eh - 6} textAnchor="middle" className="fill-cheap">
+                  利益 {yen1(r.eps)}
+                </text>
+              )}
+              <text x={cx} y={base - h - 6} textAnchor="middle" className="fill-foreground">
+                {yen1(r.dps)}
+              </text>
+              <text x={cx} y={base + 15} textAnchor="middle" className="fill-muted-foreground">
+                {fiscalMonth(r.period_end)}
+              </text>
+              <text
+                x={cx}
+                y={base + 31}
+                textAnchor="middle"
+                className={cut ? "fill-expensive" : "fill-muted-foreground"}
+              >
+                {growth(g)}
+              </text>
+              <text x={cx} y={base + 47} textAnchor="middle" className="fill-muted-foreground">
+                {pct(r.payout_ratio, 0)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+      <figcaption className="mt-1 text-xs text-muted-foreground">
+        棒は決算短信の年間{divWord}（実績）、緑の点線の枠は1株利益（EPS）。
+        {`枠と棒のすき間が大きい（${divWord}性向が低い）ほど、利益から見て増配の余地がある。`}
+        前の期より減った期は赤。
+        {total != null && ` ${fiscalMonth(first?.period_end)}期から直近まで ${growth(total)}。`}
+      </figcaption>
+    </figure>
+  );
 }
 
 const W = 640;
@@ -287,91 +396,6 @@ function scales(values: number[]) {
   const x = (i: number, n: number) =>
     PAD.left + ((W - PAD.left - PAD.right) * i) / Math.max(1, n - 1);
   return { min, max, x, y };
-}
-
-/** 利回りの折れ線。上位20%（株価が過去と比べて安い）と下位20%（高い）の帯を重ねる */
-function YieldChart({ series }: { series: [string, number][] }) {
-  const values = series.map(([, v]) => v);
-  const sorted = [...values].sort((a, b) => a - b);
-  const p20 = percentile(sorted, 0.2);
-  const p80 = percentile(sorted, 0.8);
-  const { min, max, x, y } = scales(values);
-  const path = values
-    .map((v, i) => `${i ? "L" : "M"}${x(i, values.length).toFixed(1)},${y(v).toFixed(1)}`)
-    .join(" ");
-  const last = values.at(-1) ?? 0;
-  const first = series[0]?.[0] ?? "";
-  const lastDate = series.at(-1)?.[0] ?? "";
-  return (
-    <figure>
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        role="img"
-        aria-label={`利回りの推移。${ymd(first)}から${ymd(lastDate)}。今は${pct(last)}`}
-        className="h-auto w-full text-xs"
-      >
-        <rect
-          x={PAD.left}
-          y={PAD.top}
-          width={W - PAD.left - PAD.right}
-          height={y(p80) - PAD.top}
-          className="fill-cheap/10"
-        />
-        <rect
-          x={PAD.left}
-          y={y(p20)}
-          width={W - PAD.left - PAD.right}
-          height={H - PAD.bottom - y(p20)}
-          className="fill-expensive/10"
-        />
-        <line
-          x1={PAD.left}
-          x2={W - PAD.right}
-          y1={y(p80)}
-          y2={y(p80)}
-          className="stroke-cheap"
-          strokeDasharray="4 3"
-        />
-        <line
-          x1={PAD.left}
-          x2={W - PAD.right}
-          y1={y(p20)}
-          y2={y(p20)}
-          className="stroke-expensive"
-          strokeDasharray="4 3"
-        />
-        <path d={path} fill="none" className="stroke-foreground" strokeWidth={1.5} />
-        <circle
-          cx={x(values.length - 1, values.length)}
-          cy={y(last)}
-          r={3.5}
-          className="fill-foreground"
-        />
-        <text x={PAD.left - 6} y={y(max) + 4} textAnchor="end" className="fill-muted-foreground">
-          {pct(max, 1)}
-        </text>
-        <text x={PAD.left - 6} y={y(min) + 4} textAnchor="end" className="fill-muted-foreground">
-          {pct(min, 1)}
-        </text>
-        <text x={W - PAD.right} y={y(p80) - 3} textAnchor="end" className="fill-cheap">
-          上位20% {pct(p80, 1)}
-        </text>
-        <text x={W - PAD.right} y={y(p20) + 11} textAnchor="end" className="fill-expensive">
-          下位20% {pct(p20, 1)}
-        </text>
-        <text x={PAD.left} y={H - 6} className="fill-muted-foreground">
-          {ymd(first)}
-        </text>
-        <text x={W - PAD.right} y={H - 6} textAnchor="end" className="fill-muted-foreground">
-          {ymd(lastDate)}
-        </text>
-      </svg>
-      <figcaption className="mt-1 text-xs text-muted-foreground">
-        緑の帯は利回りが過去の上位20%（株価が過去と比べて安い）、赤の帯は下位20%（高い）。今は{" "}
-        {pct(last)}。
-      </figcaption>
-    </figure>
-  );
 }
 
 function LineChart({
