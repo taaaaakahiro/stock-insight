@@ -51,15 +51,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             target
           key: batch-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
       - run: cargo build -q -p batch-cli --release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: batch-cli
           path: target/release/batch-cli
@@ -71,7 +71,7 @@ jobs:
     if: github.event.inputs.probe == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: batch-cli
       - run: chmod +x batch-cli
@@ -91,7 +91,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ""
           D1_DATABASE_ID: ""
           CLOUDFLARE_API_TOKEN: ""
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: probe-sql
           path: |
@@ -106,7 +106,7 @@ jobs:
     outputs:
       run: ${{ steps.check.outputs.run }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: batch-cli
       - run: chmod +x batch-cli
@@ -120,7 +120,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: batch-cli
       - run: chmod +x batch-cli
@@ -134,7 +134,7 @@ jobs:
     # 初回の5年分は1時間以上。途中で止まっても次回は続きから
     timeout-minutes: 340
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: batch-cli
       - run: chmod +x batch-cli
@@ -163,7 +163,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: batch-cli
       - run: chmod +x batch-cli
@@ -176,7 +176,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 340
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: batch-cli
       - run: chmod +x batch-cli
