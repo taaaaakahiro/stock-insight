@@ -128,6 +128,7 @@ mod tests {
                 op_growth: None,
                 progressive_dividend: None,
                 no_dividend_cut: None,
+                reit: None,
             }))
         }
         async fn price_history(&self, _: &StockCode) -> Result<Vec<PriceBar>, PortError> {

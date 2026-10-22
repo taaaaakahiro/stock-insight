@@ -9,6 +9,8 @@
 //!   batch-cli sync-edinet [options]       EDINET から有報・半期報告書（銘柄・種類ごとに最新の1通）を取り、
 //!                                         配当政策などの文章を R2 用に書き出し、配当方針の手がかりを D1 に保存する。
 //!                                         前回の続きから今日まで。初回は過去400日分の書類一覧から
+//!   batch-cli sync-reit [options]         EDINET の REIT の有報から借入金と物件を読み、要約・明細・決算ごとの推移を D1 に保存する。
+//!                                         前回の続きから今日まで。初回は過去400日分の書類一覧から
 //!   batch-cli reit-probe [options]        EDINET の REIT の有報から借入金明細と物件一覧を読み、BS・表の合計と
 //!                                         突き合わせて読み取りの精度を出す（D1 には触れない）
 //!   batch-cli compute [--label daily]     保存済みの株価と財務から、全銘柄の指標を計算して保存
@@ -32,6 +34,10 @@
 //!   --dry-run <file>        D1 を読み書きせず、--from〜--until の一覧から --limit 件だけ取って SQL と文章を書く
 //!   --limit <n>             --dry-run で取る書類の数（既定 5）
 //!   R2 から消すファイルのキーは {raw-dir}/edinet-delete.txt に1行ずつ書く（ワークフローが消す）
+//!
+//! sync-reit のオプション（--from / --until / --rate / --max-minutes / --raw-dir は sync-jq と同じ）:
+//!   --dry-run <file>        D1 を読み書きせず、--from〜--until の書類を取り込む SQL をファイルに書く
+//!   {raw-dir}/reit/<docID>.zip があればそれを使う（reit-probe が置いたもの。新しくは置かない）
 //!
 //! reit-probe のオプション（--from / --until / --rate / --raw-dir は sync-jq と同じ）:
 //!   --from <YYYY-MM-DD>     書類一覧を読む開始日（既定: 200日前。REIT の決算は半年ごとなので全銘柄が入る）
@@ -89,7 +95,7 @@ struct Args {
 fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     let cmd = it.next().ok_or(
-        "command required: migrate | sync-master | sync-jq | sync-edinet | reit-probe | compute | should-run",
+        "command required: migrate | sync-master | sync-jq | sync-edinet | sync-reit | reit-probe | compute | should-run",
     )?;
     let mut a = Args {
         cmd,
@@ -167,6 +173,7 @@ async fn main() {
         "sync-master" => sync_master(args).await,
         "sync-jq" => sync_jq(args).await,
         "sync-edinet" => sync_edinet(args).await,
+        "sync-reit" => sync_reit(args).await,
         "reit-probe" => reit_probe(args).await,
         "reit-dump" => reit_dump(args),
         "compute" => compute(args).await,
@@ -209,8 +216,20 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../../migrations/0007_edinet.sql"),
     ),
     (
+        "0008_recommendations",
+        include_str!("../../../migrations/0008_recommendations.sql"),
+    ),
+    (
+        "0009_splits",
+        include_str!("../../../migrations/0009_splits.sql"),
+    ),
+    (
         "0010_dividend_forecast",
         include_str!("../../../migrations/0010_dividend_forecast.sql"),
+    ),
+    (
+        "0011_reit",
+        include_str!("../../../migrations/0011_reit.sql"),
     ),
 ];
 
@@ -819,6 +838,166 @@ async fn sync_edinet_dry_run(args: &Args, path: &str) -> Result<(), String> {
         plan.fetch.len(),
         args.raw_dir
     );
+    Ok(())
+}
+
+/// sync-reit がどの日付までの書類一覧を読んだか
+const REIT_CURSOR_KEY: &str = "reit_listed_until";
+/// 用途の対応表（コード → 用途）
+const REIT_SECTORS: &str = include_str!("../../../data/reit_sectors.csv");
+
+/// REIT の有報を古い順に取り込む。同じ銘柄のもっと新しい期がすでにあれば、要約・明細は上書きされない（SQL 側で判定）
+async fn sync_reit(args: Args) -> Result<(), String> {
+    let started = Instant::now();
+    let deadline = std::time::Duration::from_secs(args.max_minutes * 60);
+    let client = http::client();
+    let ed = EdinetClient::new(client.clone(), env("EDINET_API_KEY")?, args.rate);
+    let now = SystemClock.now_unix();
+    let today = Date::from_unix_jst(now);
+    let until = args.until.unwrap_or(today);
+    let cache = PathBuf::from(&args.raw_dir).join("reit");
+    let sectors = domain::reit::parse_sectors(REIT_SECTORS);
+    let dry = args.dry_run.clone();
+    let store = match &dry {
+        Some(_) => None,
+        None => Some(d1_store(client)?),
+    };
+    let start = match (&store, args.from) {
+        (Some(st), from) => {
+            let cursor = st
+                .get_state(REIT_CURSOR_KEY)
+                .await
+                .map_err(|e| e.0)?
+                .and_then(|s| Date::parse(&s));
+            match (cursor, from) {
+                (Some(c), _) => c.add_days(1),
+                (None, Some(f)) => f,
+                (None, None) => today.add_days(-EDINET_BACKFILL_DAYS),
+            }
+        }
+        (None, Some(f)) => f,
+        (None, None) => return Err("--dry-run needs --from".into()),
+    };
+    let days = usecase::fins::weekdays(start, until);
+    println!(
+        "sync-reit: listing {start}..{until} ({} weekdays)",
+        days.len()
+    );
+
+    // 1. 書類一覧（1日1回の呼び出し）。時間切れなら読めた日までで先に進む
+    let mut docs = vec![];
+    let mut listed_until = until;
+    for day in &days {
+        if started.elapsed() > deadline {
+            listed_until = day.add_days(-1);
+            println!("sync-reit: time limit while listing; listed until {listed_until}");
+            break;
+        }
+        docs.extend(
+            ed.list_reit_day(*day)
+                .await
+                .map_err(|e| format!("{day} list: {}", e.0))?,
+        );
+    }
+    docs.sort_by(|a, b| (a.submitted, &a.doc_id).cmp(&(b.submitted, &b.doc_id)));
+    println!("sync-reit: {} REIT annual reports", docs.len());
+
+    // 2. 書類ごとに読んで、要約・明細・推移を書く。時間切れなら、取り込めた書類の提出日の前日までを済みとする
+    let mut sql = String::new();
+    let mut saved = 0;
+    for (i, d) in docs.iter().enumerate() {
+        if started.elapsed() > deadline {
+            listed_until = d.submitted.add_days(-1);
+            println!(
+                "sync-reit: time limit; {} of {} reports left",
+                docs.len() - i,
+                docs.len()
+            );
+            break;
+        }
+        let zip = match std::fs::read(cache.join(format!("{}.zip", d.doc_id))) {
+            Ok(b) => b,
+            Err(_) => ed
+                .fetch_ixbrl_zip(&d.doc_id)
+                .await
+                .map_err(|e| format!("{}: {}", d.doc_id, e.0))?,
+        };
+        let record = match adapter_batch::edinet::read_reit_report(&zip) {
+            Ok(rep) => adapter_batch::edinet::reit_record(d.clone(), rep),
+            Err(e) => {
+                println!(
+                    "{} {} {}: 読めない ({})",
+                    d.submitted, d.edinet_code, d.filer_name, e.0
+                );
+                continue;
+            }
+        };
+        let Some(r) = record else {
+            println!(
+                "{} {} {}: 証券コードか期末日がない",
+                d.submitted, d.edinet_code, d.filer_name
+            );
+            continue;
+        };
+        let body = adapter_batch::edinet::reit_detail_json(&r);
+        let stmts = [
+            adapter_batch::sql::reit_profile_stmt(
+                &r,
+                sectors.get(&r.code).map(|s| s.as_str()),
+                now,
+            ),
+            adapter_batch::sql::reit_detail_stmt(&r, &body, now),
+            adapter_batch::sql::reit_history_stmt(&r, now),
+        ];
+        match &store {
+            Some(st) => {
+                for s in &stmts {
+                    st.exec(s)
+                        .await
+                        .map_err(|e| format!("{}: {}", r.code, e.0))?;
+                }
+            }
+            None => stmts.iter().for_each(|s| {
+                sql.push_str(&s.render());
+                sql.push('\n');
+            }),
+        }
+        saved += 1;
+        println!(
+            "{} {} {} 期末 {} 借入 {}件 {} / 物件 {}件 {}",
+            d.submitted,
+            r.code,
+            d.filer_name,
+            r.period_end,
+            r.report.debt.loans.len(),
+            r.checks.loans,
+            r.portfolio.property_count,
+            r.checks.properties
+        );
+    }
+
+    // 3. 用途の対応表を反映し、続きの日付を残す
+    let sector_stmts = adapter_batch::sql::reit_sector_stmts(&sectors);
+    match (&store, &dry) {
+        (Some(st), _) => {
+            for s in &sector_stmts {
+                st.exec(s).await.map_err(|e| e.0)?;
+            }
+            st.set_state(REIT_CURSOR_KEY, &listed_until.to_string(), now)
+                .await
+                .map_err(|e| e.0)?;
+        }
+        (None, Some(path)) => {
+            sector_stmts.iter().for_each(|s| {
+                sql.push_str(&s.render());
+                sql.push('\n');
+            });
+            std::fs::write(path, sql).map_err(|e| e.to_string())?;
+            println!("dry-run: SQL -> {path}");
+        }
+        (None, None) => unreachable!(),
+    }
+    println!("sync-reit: saved {saved} reports, listed until {listed_until}");
     Ok(())
 }
 

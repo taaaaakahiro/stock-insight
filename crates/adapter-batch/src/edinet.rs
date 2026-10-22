@@ -8,7 +8,9 @@
 
 use crate::{http, ixbrl, jquants::code_from_jquants};
 use domain::disclosure::{normalize_text, DocKind, Section};
-use domain::reit::{self, DebtSchedule, Property, PropertyTotal};
+use domain::reit::{
+    self, Checks, DebtSchedule, DebtSummary, PortfolioSummary, Property, PropertyTotal, RateMix,
+};
 use domain::Date;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -257,6 +259,76 @@ pub fn read_reit_report(zip_bytes: &[u8]) -> Result<ReitReport, PortError> {
         debt: reit::parse_debt(&accounts),
         properties,
         property_total,
+    })
+}
+
+/// 取り込む1通: 書類・読んだ中身・一覧用の要約
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReitRecord {
+    pub code: String,
+    pub doc: ReitDocRef,
+    pub period_end: Date,
+    pub report: ReitReport,
+    pub mix: RateMix,
+    pub debt: DebtSummary,
+    pub portfolio: PortfolioSummary,
+    pub checks: Checks,
+}
+
+/// 書類と読んだ中身から要約を作る。証券コードか期末日が分からない書類は None（取り込まない）
+pub fn reit_record(doc: ReitDocRef, report: ReitReport) -> Option<ReitRecord> {
+    let code = report.code.clone()?;
+    let period_end = doc.period_end?;
+    let mix = reit::rate_mix(&report.debt, report.balance.bonds);
+    let debt = reit::debt_summary(&report.debt, &mix, period_end);
+    let portfolio = reit::portfolio_summary(&report.properties);
+    let checks = reit::checks(
+        &report.debt,
+        report.balance.short_loans + report.balance.long_loans,
+        &report.properties,
+        report.property_total.as_ref(),
+    );
+    Some(ReitRecord {
+        code,
+        doc,
+        period_end,
+        report,
+        mix,
+        debt,
+        portfolio,
+        checks,
+    })
+}
+
+/// 詳細の画面に出す明細（reit_detail.body）
+pub fn reit_detail_json(r: &ReitRecord) -> Value {
+    let rp = &r.report;
+    serde_json::json!({
+        "doc_id": r.doc.doc_id,
+        "period_end": r.period_end.to_string(),
+        "loans": rp.debt.loans.iter().map(|l| serde_json::json!({
+            "kind": l.kind.map(|k| match k { reit::LoanKind::Short => "short", reit::LoanKind::Long => "long" }),
+            "lender": l.lender,
+            "balance": l.balance_yen,
+            "rate": l.rate_pct,
+            "due": l.due.map(|d| d.to_string()),
+            "rate_type": l.rate_type.map(|t| match t {
+                reit::RateType::Fixed => "fixed",
+                reit::RateType::SwapFixed => "swap_fixed",
+                reit::RateType::Floating => "floating",
+            }),
+        })).collect::<Vec<_>>(),
+        "ladder": rp.debt.ladder.iter().map(|(k, v)| serde_json::json!({ "item": k, "amounts": v })).collect::<Vec<_>>(),
+        "rate_notes": rp.debt.rate_notes,
+        "properties": rp.properties.iter().map(|p| serde_json::json!({
+            "id": p.id,
+            "name": p.name,
+            "leasable": p.leasable_m2,
+            "leased": p.leased_m2,
+            "occupancy": p.occupancy_pct,
+            "rent": p.annual_rent_yen,
+            "rent_note": if p.annual_rent_yen.is_none() && !p.rent_raw.is_empty() { Some(&p.rent_raw) } else { None },
+        })).collect::<Vec<_>>(),
     })
 }
 

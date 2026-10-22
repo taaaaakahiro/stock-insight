@@ -35,6 +35,29 @@ describe("filters", () => {
     expect(fromQuery(q)).toEqual(f);
   });
 
+  it("round-trips REIT sectors and REIT metrics, and drops them on other tabs", () => {
+    const f = {
+      ...DEFAULT_FILTERS,
+      kind: "reit" as const,
+      reitSectors: ["logistics", "hotel"],
+      ranges: { floating_ratio_max: "20", occupancy_min: "95" },
+      sort: "reprice_max_ratio" as const,
+      order: "asc" as const,
+    };
+    const q = toQuery(f);
+    expect(q.toString()).toBe(
+      "kind=reit&reit_sector=logistics%2Chotel&floating_ratio_max=0.2&occupancy_min=0.95&sort=reprice_max_ratio&order=asc",
+    );
+    expect(fromQuery(q)).toEqual(f);
+    expect(
+      fromQuery(new URLSearchParams("kind=reit&reit_sector=casino,office")).reitSectors,
+    ).toEqual(["office"]);
+    const stock = switchKind(f, "stock");
+    expect(stock.reitSectors).toEqual([]);
+    expect(stock.ranges).toEqual({});
+    expect(stock.sort).toBe(DEFAULT_FILTERS.sort);
+  });
+
   it("omits defaults and ignores bad values", () => {
     expect(toQuery(DEFAULT_FILTERS).toString()).toBe("kind=stock");
     const f = fromQuery(new URLSearchParams("sort=drop&order=up&page=-1&valuation=x&pbr_min=abc"));

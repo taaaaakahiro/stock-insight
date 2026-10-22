@@ -15,7 +15,13 @@ export type MetricKey =
   | "operating_margin"
   | "sales_growth"
   | "op_growth"
-  | "price";
+  | "price"
+  | "floating_ratio"
+  | "unknown_ratio"
+  | "reprice_ratio"
+  | "reprice_max_ratio"
+  | "avg_rate"
+  | "occupancy";
 
 /** 一覧のタブ。株式以外は財務の指標がないので、使える指標を絞る */
 export type Kind = "stock" | "reit" | "etf";
@@ -28,6 +34,7 @@ export const KINDS: { key: Kind; label: string }[] = [
 
 const ALL: Kind[] = ["stock", "reit", "etf"];
 const STOCK: Kind[] = ["stock"];
+const REIT: Kind[] = ["reit"];
 
 export const METRICS: { key: MetricKey; label: string; unit: Unit; kinds: Kind[] }[] = [
   { key: "dividend_ttm", label: "1株配当", unit: "yen", kinds: ALL },
@@ -42,7 +49,48 @@ export const METRICS: { key: MetricKey; label: string; unit: Unit; kinds: Kind[]
   { key: "sales_growth", label: "売上の伸び", unit: "pct", kinds: STOCK },
   { key: "op_growth", label: "営業利益の伸び", unit: "pct", kinds: STOCK },
   { key: "price", label: "株価", unit: "yen", kinds: ALL },
+  { key: "floating_ratio", label: "変動金利", unit: "pct", kinds: REIT },
+  { key: "unknown_ratio", label: "金利の記載なし", unit: "pct", kinds: REIT },
+  { key: "reprice_ratio", label: "1年内の金利見直し", unit: "pct", kinds: REIT },
+  { key: "reprice_max_ratio", label: "同（最大）", unit: "pct", kinds: REIT },
+  { key: "avg_rate", label: "平均利率", unit: "pct", kinds: REIT },
+  { key: "occupancy", label: "稼働率", unit: "pct", kinds: REIT },
 ];
+
+/** REIT の金利・稼働率の説明（有報の借入金明細・物件の表から読んだ値） */
+const REIT_TIPS: Partial<Record<MetricKey, string>> = {
+  floating_ratio:
+    "有利子負債（借入金＋投資法人債）のうち、有報に「変動金利」と書かれている借入の割合です。金利が上がるとすぐに支払利息が増えます。",
+  unknown_ratio:
+    "有利子負債のうち、有報に固定か変動かが書かれていない借入の割合です。高いほど、下の「金利見直し」の幅が広くなります（決算説明資料で確かめてください）。",
+  reprice_ratio:
+    "1年以内に金利が新しくなる借入の割合（少なく見た値）。変動金利の借入に、1年以内に返済期限が来る借入（借り換えで今の金利になる）と投資法人債を足したもの。記載なしの借入は含めません。",
+  reprice_max_ratio:
+    "上の割合に、固定か変動かの記載がない借入を全部変動とみなして足した値（多く見た値）。実際はこの間のどこかです。",
+  avg_rate: "借入の残高で重みを付けた平均利率です。",
+  occupancy: "物件の賃貸可能面積で重みを付けた稼働率（有報の物件の表から）です。",
+};
+
+/** 指標の説明（あるものだけ）。InfoTip に出す */
+export function metricTip(key: MetricKey, kind: Kind): string | undefined {
+  if (key === "yield_percentile") return yieldPercentileTip(kind);
+  return REIT_TIPS[key];
+}
+
+/** REIT の用途（data/reit_sectors.csv と同じキー） */
+export const REIT_SECTORS: { key: string; label: string }[] = [
+  { key: "office", label: "オフィス" },
+  { key: "logistics", label: "物流" },
+  { key: "residential", label: "住宅" },
+  { key: "hotel", label: "ホテル" },
+  { key: "retail", label: "商業" },
+  { key: "healthcare", label: "ヘルスケア" },
+  { key: "diversified", label: "総合・複合" },
+  { key: "infra", label: "インフラ" },
+];
+
+export const reitSectorLabel = (key: string | null | undefined) =>
+  REIT_SECTORS.find((s) => s.key === key)?.label ?? null;
 
 /** REIT・ETF は「配当」ではなく「分配金」、株価は「価格」と呼ぶ */
 export function metricLabel(key: MetricKey, kind: Kind): string {
@@ -175,6 +223,8 @@ export type Filters = {
   sectors: string[];
   markets: string[];
   sizes: string[];
+  /** REIT だけ: 用途（複数選択） */
+  reitSectors: string[];
   isValue: boolean;
   dividendEveryYear: boolean;
   noQuarterlyLoss: boolean;
@@ -195,6 +245,7 @@ export const DEFAULT_FILTERS: Filters = {
   sectors: [],
   markets: [],
   sizes: [],
+  reitSectors: [],
   isValue: false,
   dividendEveryYear: false,
   noQuarterlyLoss: false,
@@ -237,6 +288,7 @@ export function toQuery(f: Filters): URLSearchParams {
     if (f.markets.length) q.set("market", f.markets.join(","));
     if (f.sizes.length) q.set("size", f.sizes.join(","));
   }
+  if (f.kind === "reit" && f.reitSectors.length) q.set("reit_sector", f.reitSectors.join(","));
   for (const m of metricsFor(f.kind)) {
     for (const b of ["min", "max"] as const) {
       const v = f.ranges[`${m.key}_${b}`];
@@ -274,6 +326,12 @@ export function fromQuery(q: URLSearchParams): Filters {
     );
     for (const flag of FLAGS) f[flag.key] = q.get(FLAG_PARAM[flag.key]) === "1";
   }
+  if (f.kind === "reit") {
+    f.reitSectors = list(
+      "reit_sector",
+      REIT_SECTORS.map((s) => s.key),
+    );
+  }
   for (const m of metricsFor(f.kind)) {
     for (const b of ["min", "max"] as const) {
       const v = q.get(`${m.key}_${b}`);
@@ -310,6 +368,7 @@ export function switchKind(f: Filters, kind: Kind): Filters {
     sectors: stock ? f.sectors : [],
     markets: stock ? f.markets : [],
     sizes: stock ? f.sizes : [],
+    reitSectors: kind === "reit" ? f.reitSectors : [],
     isValue: stock && f.isValue,
     dividendEveryYear: stock && f.dividendEveryYear,
     noQuarterlyLoss: stock && f.noQuarterlyLoss,

@@ -159,6 +159,7 @@ mod tests {
             op_growth: None,
             progressive_dividend: None,
             no_dividend_cut: None,
+            reit: None,
         }
     }
 

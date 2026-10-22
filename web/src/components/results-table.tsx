@@ -19,8 +19,9 @@ import {
   type MetricKey,
   metricLabel,
   metricsFor,
+  metricTip,
+  reitSectorLabel,
   SIZES,
-  yieldPercentileTip,
 } from "@/lib/filters";
 import { count, growth, pct, times, yen } from "@/lib/format";
 import { navigate } from "@/lib/router";
@@ -60,6 +61,12 @@ const RENDER: Record<MetricKey, (r: StockRow) => React.ReactNode> = {
   operating_margin: (r) => pct(r.operating_margin, 1),
   sales_growth: (r) => growth(r.sales_growth),
   op_growth: (r) => growth(r.op_growth),
+  floating_ratio: (r) => pct(r.reit?.floating_ratio, 1),
+  unknown_ratio: (r) => pct(r.reit?.unknown_ratio, 1),
+  reprice_ratio: (r) => pct(r.reit?.reprice_ratio, 1),
+  reprice_max_ratio: (r) => pct(r.reit?.reprice_max_ratio, 1),
+  avg_rate: (r) => pct(r.reit?.avg_rate, 2),
+  occupancy: (r) => pct(r.reit?.occupancy, 1),
 };
 
 // 表の列の並び（株価を先頭に）
@@ -76,6 +83,12 @@ const ORDER: MetricKey[] = [
   "operating_margin",
   "sales_growth",
   "op_growth",
+  "floating_ratio",
+  "unknown_ratio",
+  "reprice_ratio",
+  "reprice_max_ratio",
+  "avg_rate",
+  "occupancy",
 ];
 
 function columnsFor(kind: Kind): Column[] {
@@ -96,7 +109,9 @@ function SizeBadge({ size }: { size: StockRow["size_class"] }) {
 
 /** 名称（なければコードだけ）と、コード・業種・規模 */
 export function NameCell({ r, link = true }: { r: StockRow; link?: boolean }) {
-  const sub = [r.code, r.kind === "stock" ? r.sector33 : null].filter(Boolean).join("・");
+  const sector =
+    r.kind === "stock" ? r.sector33 : r.kind === "reit" ? reitSectorLabel(r.reit?.sector) : null;
+  const sub = [r.code, sector].filter(Boolean).join("・");
   return (
     <div className="flex min-w-0 flex-col">
       {link ? (
@@ -119,7 +134,7 @@ export function NameCell({ r, link = true }: { r: StockRow; link?: boolean }) {
         </span>
       )}
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        {r.name ? sub : r.kind === "stock" ? r.sector33 : null}
+        {r.name ? sub : sector}
         <SizeBadge size={r.size_class} />
       </span>
     </div>
@@ -244,8 +259,11 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
               {columns.map((c) => (
                 <TableHead key={c.key} className="text-right" aria-sort={ariaSort(c.key)}>
                   <div className="inline-flex items-center gap-1">
-                    {c.key === "yield_percentile" && (
-                      <InfoTip label={metricLabel(c.key, kind)} text={yieldPercentileTip(kind)} />
+                    {metricTip(c.key, kind) && (
+                      <InfoTip
+                        label={metricLabel(c.key, kind)}
+                        text={metricTip(c.key, kind) ?? ""}
+                      />
                     )}
                     <SortButton
                       label={metricLabel(c.key, kind)}
@@ -302,9 +320,12 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
                 <div key={c.key} className="flex justify-between gap-2">
                   <dt className="text-muted-foreground">
                     {metricLabel(c.key, kind)}
-                    {c.key === "yield_percentile" && (
+                    {metricTip(c.key, kind) && (
                       <span className="ml-0.5 inline-block align-[-2px]">
-                        <InfoTip label={metricLabel(c.key, kind)} text={yieldPercentileTip(kind)} />
+                        <InfoTip
+                          label={metricLabel(c.key, kind)}
+                          text={metricTip(c.key, kind) ?? ""}
+                        />
                       </span>
                     )}
                   </dt>

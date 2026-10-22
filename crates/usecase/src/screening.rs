@@ -43,6 +43,73 @@ pub struct StockRow {
     /// 有報・半期報告書に累進配当・非減配の記述がある（EDINET。書類がなければ None）
     pub progressive_dividend: Option<bool>,
     pub no_dividend_cut: Option<bool>,
+    /// REIT の金利・稼働率（reit_profile。REIT 以外や未取り込みなら None）
+    pub reit: Option<ReitListFields>,
+}
+
+/// 一覧に出す REIT の要約。比率は小数
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ReitListFields {
+    /// office / logistics / residential / hotel / retail / healthcare / diversified / infra
+    pub sector: Option<String>,
+    pub period_end: Option<String>,
+    pub floating_ratio: Option<f64>,
+    pub unknown_ratio: Option<f64>,
+    pub reprice_ratio: Option<f64>,
+    pub reprice_max_ratio: Option<f64>,
+    pub avg_rate: Option<f64>,
+    pub occupancy: Option<f64>,
+}
+
+/// REIT の最新の有報の要約（reit_profile）。金額は円、面積は㎡、avg_rate・occupancy は %
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReitProfile {
+    pub doc_id: String,
+    pub submitted: String,
+    pub period_end: String,
+    pub sector: Option<String>,
+    pub short_loans: i64,
+    pub long_loans: i64,
+    pub bonds: i64,
+    pub rate_fixed: i64,
+    pub rate_swap_fixed: i64,
+    pub rate_swap_amount: i64,
+    pub rate_floating: i64,
+    pub rate_unknown: i64,
+    pub swap_notional: Option<i64>,
+    pub avg_rate: Option<f64>,
+    pub avg_years: Option<f64>,
+    pub reprice_1y: i64,
+    pub reprice_1y_max: i64,
+    pub property_count: i64,
+    pub leasable_m2: Option<f64>,
+    pub leased_m2: Option<f64>,
+    pub occupancy: Option<f64>,
+    /// 読み取りの確認（JSON の文字列）
+    pub checks: String,
+}
+
+/// REIT の決算ごとの要約（reit_history）
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReitHistoryRow {
+    pub period_end: String,
+    pub loans_total: i64,
+    pub bonds: i64,
+    pub rate_floating: i64,
+    pub rate_unknown: i64,
+    pub swap_notional: Option<i64>,
+    pub avg_rate: Option<f64>,
+    pub property_count: i64,
+    pub leasable_m2: Option<f64>,
+    pub occupancy: Option<f64>,
+}
+
+/// 1銘柄の REIT の要約・明細（JSON の文字列のまま）・推移
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReitDetail {
+    pub profile: ReitProfile,
+    pub body: Option<String>,
+    pub history: Vec<ReitHistoryRow>,
 }
 
 /// 1銘柄の EDINET の書類（有報・半期報告書の最新1通ずつ）と配当方針の手がかり
@@ -86,6 +153,8 @@ pub trait IndicatorQuery {
     async fn search(&self, filter: &ScreeningFilter) -> Result<(Vec<StockRow>, u64), PortError>;
     async fn latest_run(&self) -> Result<Option<DataStatus>, PortError>;
     async fn disclosures(&self, code: &str) -> Result<Vec<DisclosureRow>, PortError>;
+    /// まだ取り込んでいない銘柄は None
+    async fn reit_detail(&self, code: &str) -> Result<Option<ReitDetail>, PortError>;
 }
 
 pub async fn screen<Q: IndicatorQuery>(
@@ -114,4 +183,15 @@ pub async fn disclosures<Q: IndicatorQuery>(
 
 pub async fn data_status<Q: IndicatorQuery>(repo: &Q) -> Result<Option<DataStatus>, PortError> {
     repo.latest_run().await
+}
+
+/// 銘柄コードを確かめてから、その銘柄の REIT の要約・明細・推移を返す（コードが不正なら外側が None、未取り込みなら内側が None）
+pub async fn reit_detail<Q: IndicatorQuery>(
+    repo: &Q,
+    code: &str,
+) -> Result<Option<Option<ReitDetail>>, PortError> {
+    let Some(code) = domain::StockCode::parse(code) else {
+        return Ok(None);
+    };
+    repo.reit_detail(code.as_str()).await.map(Some)
 }

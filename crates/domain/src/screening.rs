@@ -1,6 +1,6 @@
 //! スクリーニング一覧（F2）の絞り込み条件。値の検証だけを行い、SQLは知らない。
 
-/// 範囲で絞り込める指標（列名は indicators_latest に対応）
+/// 範囲で絞り込める指標。株式などは indicators_latest の列、REIT の金利・稼働率は reit_profile から計算する値
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Metric {
     Price,
@@ -17,10 +17,22 @@ pub enum Metric {
     /// 売上高・営業利益の前年同期比
     SalesGrowth,
     OpGrowth,
+    /// REIT: 有利子負債のうち変動金利と明記された割合
+    FloatingRatio,
+    /// REIT: 有利子負債のうち固定か変動かの記載がない割合
+    UnknownRatio,
+    /// REIT: 1年以内に金利が見直される割合（記載なしを含めない下限）
+    RepriceRatio,
+    /// REIT: 同じく記載なしを全部変動とみなした上限
+    RepriceMaxRatio,
+    /// REIT: 借入の平均利率
+    AvgRate,
+    /// REIT: 面積加重の稼働率
+    Occupancy,
 }
 
 impl Metric {
-    pub const ALL: [Metric; 12] = [
+    pub const ALL: [Metric; 18] = [
         Metric::Price,
         Metric::Dividend,
         Metric::DividendYield,
@@ -33,9 +45,15 @@ impl Metric {
         Metric::OperatingMargin,
         Metric::SalesGrowth,
         Metric::OpGrowth,
+        Metric::FloatingRatio,
+        Metric::UnknownRatio,
+        Metric::RepriceRatio,
+        Metric::RepriceMaxRatio,
+        Metric::AvgRate,
+        Metric::Occupancy,
     ];
 
-    /// APIのクエリ名・D1の列名
+    /// APIのクエリ名（株式などの指標は D1 の列名と同じ）
     pub fn key(self) -> &'static str {
         match self {
             Metric::Price => "price",
@@ -50,7 +68,26 @@ impl Metric {
             Metric::OperatingMargin => "operating_margin",
             Metric::SalesGrowth => "sales_growth",
             Metric::OpGrowth => "op_growth",
+            Metric::FloatingRatio => "floating_ratio",
+            Metric::UnknownRatio => "unknown_ratio",
+            Metric::RepriceRatio => "reprice_ratio",
+            Metric::RepriceMaxRatio => "reprice_max_ratio",
+            Metric::AvgRate => "avg_rate",
+            Metric::Occupancy => "occupancy",
         }
+    }
+
+    /// REIT の reit_profile から計算する指標か
+    pub fn is_reit(self) -> bool {
+        matches!(
+            self,
+            Metric::FloatingRatio
+                | Metric::UnknownRatio
+                | Metric::RepriceRatio
+                | Metric::RepriceMaxRatio
+                | Metric::AvgRate
+                | Metric::Occupancy
+        )
     }
 
     pub fn from_key(s: &str) -> Option<Self> {
@@ -102,6 +139,8 @@ pub struct ScreeningFilter {
     pub markets: Vec<String>,
     /// 規模区分（large / mid / small / none）
     pub sizes: Vec<String>,
+    /// REIT の用途（office / logistics / …。crate::reit::SECTORS）
+    pub reit_sectors: Vec<String>,
     pub ranges: Vec<Range>,
     /// 割安などのバッジで絞る（Valuation::as_str の値）
     pub valuation: Option<crate::Valuation>,
@@ -126,6 +165,7 @@ impl Default for ScreeningFilter {
             sectors: vec![],
             markets: vec![],
             sizes: vec![],
+            reit_sectors: vec![],
             ranges: vec![],
             valuation: None,
             no_loss_years: false,
@@ -199,6 +239,10 @@ impl ScreeningFilter {
                     f.markets = parse_list(v, 3, Some(&["プライム", "スタンダード", "グロース"]))?
                 }
                 "size" => f.sizes = parse_list(v, 4, Some(&["large", "mid", "small", "none"]))?,
+                "reit_sector" => {
+                    f.reit_sectors =
+                        parse_list(v, crate::reit::SECTORS.len(), Some(&crate::reit::SECTORS))?
+                }
                 "kind" => {
                     f.kind = crate::stock_master::AssetKind::from_key(v)
                         .ok_or_else(|| FilterError(format!("bad kind: {v}")))?

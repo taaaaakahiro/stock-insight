@@ -153,6 +153,19 @@ jobs:
           done
           echo "done"
 
+  # REIT の有報から借入金（固定・変動）と物件の稼働率を読み、D1 の reit_profile / reit_detail / reit_history に保存する。
+  # EDINET の書類一覧を sync-edinet とは別に読む（並列に動くので、呼び出しの間隔は控えめに）。初回は過去400日分
+  reit:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - run: ./batch-cli sync-reit --rate 30 --max-minutes 100 --raw-dir raw
+
   # EDINET の有報・半期報告書（銘柄・種類ごとに最新の1通）。J-Quants とは並列に動く。
   # 初回は過去400日分の一覧から（数千通。時間切れなら次回は続きから）。今日の一覧は翌日にもう一度読む
   edinet:
