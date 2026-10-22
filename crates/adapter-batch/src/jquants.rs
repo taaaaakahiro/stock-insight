@@ -10,7 +10,7 @@ use domain::{AnnualFinancial, Date, PriceBar, StockCode};
 use serde_json::Value;
 use std::cell::Cell;
 use std::time::{Duration, Instant};
-use usecase::fins::{AnnualReport, PeriodReport};
+use usecase::fins::{AnnualReport, ForecastReport, PeriodReport};
 use usecase::PortError;
 
 const BASE: &str = "https://api.jquants.com/v2";
@@ -121,6 +121,11 @@ pub fn period_reports(rows: &[Value]) -> Vec<PeriodReport> {
     rows.iter().filter_map(period_report).collect()
 }
 
+/// 財務情報サマリーの行から会社予想の年間配当を取り出す
+pub fn forecast_reports(rows: &[Value]) -> Vec<ForecastReport> {
+    rows.iter().filter_map(forecast_report).collect()
+}
+
 fn percent_encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
@@ -164,8 +169,18 @@ fn num(v: &Value) -> Option<f64> {
         .filter(|x: &f64| x.is_finite())
 }
 
+/// 配当予想・業績予想の修正（分配予想・利益予想の修正を含む）。実績の数字はない
+fn is_forecast_revision(r: &Value) -> bool {
+    r["DocType"]
+        .as_str()
+        .is_some_and(|t| t.contains("ForecastRevision"))
+}
+
 /// 1Q/2Q/3Q/FY の行を累計値のまま取り出す（4Q・5Q などの変則決算は対象外）
 pub fn period_report(r: &Value) -> Option<PeriodReport> {
+    if is_forecast_revision(r) {
+        return None;
+    }
     let period_type = PeriodType::from_jquants(r["CurPerType"].as_str()?)?;
     let code = code_from_jquants(r["Code"].as_str()?)?;
     let period_end = Date::parse(r["CurPerEn"].as_str()?)?;
@@ -192,7 +207,7 @@ pub fn period_report(r: &Value) -> Option<PeriodReport> {
 
 /// 本決算（CurPerType = FY）の行だけを年次の財務にする。四半期の行は使わない
 pub fn annual_report(r: &Value) -> Option<AnnualReport> {
-    if r["CurPerType"].as_str()? != "FY" {
+    if r["CurPerType"].as_str()? != "FY" || is_forecast_revision(r) {
         return None;
     }
     let code = code_from_jquants(r["Code"].as_str()?)?;
@@ -216,6 +231,36 @@ pub fn annual_report(r: &Value) -> Option<AnnualReport> {
             dps: first(&["DivAnn", "DivUnit"]),
             operating_cf: num(&r["CFO"]),
         },
+    })
+}
+
+/// 開示1件の年間配当予想。本決算の行は翌事業年度の予想（Nx）、四半期・予想の修正の行は当事業年度の予想を使う。
+/// 予想の修正で配当予想が空の行（業績予想だけの修正）は、配当予想を変えていないので取らない
+pub fn forecast_report(r: &Value) -> Option<ForecastReport> {
+    let code = code_from_jquants(r["Code"].as_str()?)?;
+    let disclosed = Date::parse(r["DiscDate"].as_str()?)?;
+    let first = |keys: &[&str]| keys.iter().find_map(|k| num(&r[*k]));
+    let revision = is_forecast_revision(r);
+    let (dps, fiscal_year_end) = match r["CurPerType"].as_str()? {
+        "FY" if !revision => (
+            first(&["NxFDivAnn", "NxFDivUnit"]),
+            r["NxtFYEn"].as_str().and_then(Date::parse),
+        ),
+        "1Q" | "2Q" | "3Q" | "FY" => (
+            first(&["FDivAnn", "FDivUnit"]),
+            r["CurFYEn"].as_str().and_then(Date::parse),
+        ),
+        _ => return None,
+    };
+    if revision && dps.is_none() {
+        return None;
+    }
+    Some(ForecastReport {
+        code,
+        doc_id: r["DiscNo"].as_str().unwrap_or_default().to_string(),
+        disclosed,
+        fiscal_year_end,
+        dps,
     })
 }
 
@@ -282,6 +327,50 @@ mod tests {
         let reit = &reports[1];
         assert_eq!(reit.code.as_str(), "8951");
         assert_eq!(reit.financial.dps, Some(18_500.0));
+    }
+
+    #[test]
+    fn forecasts_come_from_next_year_on_fy_and_current_year_otherwise() {
+        let v: Value = serde_json::from_str(
+            r#"{"data":[
+              {"DiscDate":"2025-04-30","DiscNo":"1","Code":"86970","DocType":"FYFinancialStatements_Consolidated_IFRS",
+               "CurPerType":"FY","CurFYEn":"2025-03-31","NxtFYEn":"2026-03-31","DivAnn":"62.0","FDivAnn":"","NxFDivAnn":"66.0"},
+              {"DiscDate":"2025-07-30","DiscNo":"2","Code":"86970","DocType":"1QFinancialStatements_Consolidated_IFRS",
+               "CurPerType":"1Q","CurFYEn":"2026-03-31","FDivAnn":"68.0","NxFDivAnn":""},
+              {"DiscDate":"2025-08-01","DiscNo":"3","Code":"72030","DocType":"1QFinancialStatements_Consolidated_JP",
+               "CurPerType":"1Q","CurFYEn":"2026-03-31","FDivAnn":""},
+              {"DiscDate":"2025-09-01","DiscNo":"4","Code":"86970","DocType":"DividendForecastRevision",
+               "CurPerType":"FY","CurFYEn":"2026-03-31","FDivAnn":"70.0"},
+              {"DiscDate":"2025-09-02","DiscNo":"5","Code":"86970","DocType":"EarnForecastRevision",
+               "CurPerType":"FY","CurFYEn":"2026-03-31","FDivAnn":""},
+              {"DiscDate":"2025-05-15","DiscNo":"6","Code":"89510","DocType":"FYFinancialStatements_NonConsolidated_REIT",
+               "CurPerType":"FY","CurFYEn":"2025-03-31","DivUnit":"18500","NxFDivAnn":"","NxFDivUnit":"18700"}
+            ]}"#,
+        )
+        .unwrap();
+        let rows = v["data"].as_array().unwrap();
+        let f = forecast_reports(rows);
+        let got: Vec<(&str, Option<f64>)> = f.iter().map(|r| (r.doc_id.as_str(), r.dps)).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("1", Some(66.0)),
+                ("2", Some(68.0)),
+                ("3", None),
+                ("4", Some(70.0)),
+                ("6", Some(18_700.0)),
+            ],
+            "業績予想だけの修正（5）は取らない。予想が空の決算短信（3）は「予想なし」"
+        );
+        assert_eq!(f[0].fiscal_year_end.unwrap().to_string(), "2026-03-31");
+        assert_eq!(f[3].disclosed.to_string(), "2025-09-01");
+        assert!(
+            annual_reports(rows)
+                .iter()
+                .all(|a| a.doc_id != "4" && a.doc_id != "5"),
+            "予想の修正は本決算として扱わない"
+        );
+        assert!(period_reports(rows).iter().all(|p| p.doc_id != "4"));
     }
 
     #[test]

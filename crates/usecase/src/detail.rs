@@ -1,6 +1,6 @@
 //! 銘柄の詳細（F3）。1銘柄の5年分の推移を、保存済みのデータから組み立てる。
 
-use crate::daily::{build_inputs, StoredAnnual};
+use crate::daily::{build_inputs, StoredAnnual, StoredForecast};
 use crate::screening::StockRow;
 use crate::PortError;
 use domain::analysis::{quarter_growth, CumulativePeriod, QuarterGrowth};
@@ -29,6 +29,8 @@ pub trait StockDetailQuery {
     async fn price_history(&self, code: &StockCode) -> Result<Vec<PriceBar>, PortError>;
     async fn annuals(&self, code: &StockCode) -> Result<Vec<StoredAnnual>, PortError>;
     async fn quarterlies(&self, code: &StockCode) -> Result<Vec<CumulativePeriod>, PortError>;
+    /// 会社予想の配当（開示1件1行）
+    async fn forecasts(&self, code: &StockCode) -> Result<Vec<StoredForecast>, PortError>;
     /// 株式分割・併合（日付の古い順）
     async fn splits(&self, code: &StockCode) -> Result<Vec<Split>, PortError>;
 }
@@ -50,8 +52,10 @@ pub async fn stock_detail<Q: StockDetailQuery>(
     let annuals = repo.annuals(code).await?;
     let quarterlies = repo.quarterlies(code).await?;
     let splits = repo.splits(code).await?;
+    let forecasts = repo.forecasts(code).await?;
     let latest_disclosed = annuals.iter().filter_map(|a| a.disclosed).max();
-    let (market, fin, quarters, _) = build_inputs(bars, &annuals, &quarterlies, &splits);
+    let (market, fin, quarters, _) =
+        build_inputs(bars, &annuals, &forecasts, &quarterlies, &splits);
     let mut ys = yield_series(&market);
     ys.reverse();
     // 最も古い年度の伸び率も出せるよう、絞り込む前に前年と比べる
@@ -97,6 +101,8 @@ mod tests {
                 code: code.as_str().into(),
                 price: 1000.0,
                 price_date: "2026-10-21".into(),
+                dividend: Some(44.0),
+                dividend_basis: Some("actual".into()),
                 dividend_yield: Some(0.044),
                 yield_percentile: None,
                 pbr: None,
@@ -165,6 +171,9 @@ mod tests {
                 ordinary_income: None,
                 net_income: Some(30.0),
             }])
+        }
+        async fn forecasts(&self, _: &StockCode) -> Result<Vec<StoredForecast>, PortError> {
+            Ok(vec![])
         }
         async fn splits(&self, _: &StockCode) -> Result<Vec<Split>, PortError> {
             Ok(vec![])

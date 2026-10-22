@@ -6,7 +6,7 @@ use domain::screening::ScreeningFilter;
 use domain::split::Split;
 use domain::{AnnualFinancial, Date, PriceBar, StockCode};
 use serde::Deserialize;
-use usecase::daily::StoredAnnual;
+use usecase::daily::{StoredAnnual, StoredForecast};
 use usecase::detail::StockDetailQuery;
 use usecase::portfolio::PortfolioRepository;
 use usecase::screening::{DataStatus, DisclosureRow, IndicatorQuery, StockRow};
@@ -47,6 +47,8 @@ pub(crate) struct Row {
     code: String,
     price: f64,
     price_date: String,
+    dividend_ttm: f64,
+    dividend_basis: Option<String>,
     dividend_yield: Option<f64>,
     yield_percentile: Option<f64>,
     pbr: Option<f64>,
@@ -83,6 +85,10 @@ impl From<Row> for StockRow {
             code: r.code,
             price: r.price,
             price_date: r.price_date,
+            // 列を足す前の計算結果は basis が NULL なので、配当が 0 より大きければ出す
+            dividend: (r.dividend_basis.is_some() || r.dividend_ttm > 0.0)
+                .then_some(r.dividend_ttm),
+            dividend_basis: r.dividend_basis,
             dividend_yield: r.dividend_yield,
             yield_percentile: r.yield_percentile,
             pbr: r.pbr,
@@ -212,6 +218,13 @@ struct ClosesRow {
 }
 
 #[derive(Deserialize)]
+struct ForecastRow {
+    doc_id: String,
+    disclosed: String,
+    dps: Option<f64>,
+}
+
+#[derive(Deserialize)]
 struct SplitRow {
     date: String,
     factor: f64,
@@ -243,6 +256,29 @@ impl StockDetailQuery for D1Indicators {
         Ok(row
             .map(|r| domain::price_history::decode(&r.closes))
             .unwrap_or_default())
+    }
+
+    async fn forecasts(&self, code: &StockCode) -> Result<Vec<StoredForecast>, PortError> {
+        let rows: Vec<ForecastRow> = self
+            .db
+            .prepare(query::FORECASTS_BY_CODE)
+            .bind(&code_arg(code))
+            .map_err(err)?
+            .all()
+            .await
+            .map_err(err)?
+            .results()
+            .map_err(err)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                Some(StoredForecast {
+                    doc_id: r.doc_id,
+                    disclosed: Date::parse(&r.disclosed)?,
+                    dps: r.dps,
+                })
+            })
+            .collect())
     }
 
     async fn splits(&self, code: &StockCode) -> Result<Vec<Split>, PortError> {

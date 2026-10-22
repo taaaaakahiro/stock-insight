@@ -91,13 +91,15 @@ pub struct PriceBar {
     pub close: f64,
 }
 
-/// 年間配当。決算の開示で分かった値を、開示日から次の開示まで使う
+/// 年間配当。開示で分かった値（会社予想、なければ実績）を、開示日から次の開示まで使う
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Dividend {
-    /// この日から有効（決算の開示日）
+    /// この日から有効（開示日）
     pub effective: Date,
     /// 1株（REIT・ETF は1口）当たりの年間配当
     pub annual: f64,
+    /// 会社予想なら true、実績なら false
+    pub forecast: bool,
 }
 
 /// 株価（終値）と、開示された年間配当の履歴

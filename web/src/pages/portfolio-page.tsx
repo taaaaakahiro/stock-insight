@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { DocPreview } from "@/components/doc-preview";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
-import { NameCell } from "@/components/results-table";
+import { DividendAmount, NameCell } from "@/components/results-table";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -128,6 +128,7 @@ export function PortfolioPage() {
             <TableRow>
               <TableHead>銘柄</TableHead>
               <TableHead className="text-right">株価</TableHead>
+              <TableHead className="text-right">1株配当</TableHead>
               <TableHead className="text-right">配当利回り</TableHead>
               <TableHead className="text-right">配当性向</TableHead>
               <TableHead>売りサイン</TableHead>
@@ -144,6 +145,9 @@ export function PortfolioPage() {
                   </div>
                 </TableCell>
                 <TableCell className="text-right tabular-nums">{yen(h.price)}</TableCell>
+                <TableCell className="text-right tabular-nums">
+                  <DividendAmount r={h} />
+                </TableCell>
                 <TableCell className="text-right tabular-nums">{pct(h.dividend_yield)}</TableCell>
                 <TableCell className="text-right tabular-nums">
                   <Payout h={h} />
@@ -181,7 +185,12 @@ export function PortfolioPage() {
               </div>
               <div>
                 <dt className="text-xs text-muted-foreground">利回り</dt>
-                <dd className="tabular-nums">{pct(h.dividend_yield)}</dd>
+                <dd className="tabular-nums">
+                  {pct(h.dividend_yield)}
+                  <div className="text-xs text-muted-foreground">
+                    <DividendAmount r={h} />
+                  </div>
+                </dd>
               </div>
               <div>
                 <dt className="text-xs text-muted-foreground">配当性向</dt>

@@ -5,7 +5,7 @@
 use adapter_batch::{d1::SqlFileStore, jquants};
 use domain::{Date, PriceBar, StockCode};
 use std::collections::HashMap;
-use usecase::daily::{compute_all, StoredAnnual};
+use usecase::daily::{compute_all, StoredAnnual, StoredFinancials};
 use usecase::fins::FinancialStore;
 use usecase::{BatchRun, SnapshotStore};
 
@@ -60,9 +60,10 @@ async fn offline_pipeline_writes_sql() {
     let (snaps, skipped) = compute_all(
         &codes,
         histories,
-        &annuals,
-        &HashMap::new(),
-        &HashMap::new(),
+        &StoredFinancials {
+            annuals,
+            ..Default::default()
+        },
         "offline",
         1_792_500_000,
     );

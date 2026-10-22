@@ -5,7 +5,7 @@ use crate::model::*;
 pub struct Indicators {
     pub price: f64,
     pub price_date: Date,
-    /// 計算に使った年間配当（開示がなければ 0）
+    /// 利回りの計算に使った年間配当（会社予想、なければ実績。開示がなければ 0）
     pub dividend_ttm: f64,
     pub dividend_yield: Option<f64>,
     /// 配当利回りが取れる期間（最大10年）のどこにいるか（0.0〜1.0。高いほど割安）
@@ -31,6 +31,8 @@ pub struct Indicators {
     /// 売上高・営業利益の前年同期比（直近の期の累計。0.1 = 10% 増）。compute の後に analysis::yoy_growth で入れる
     pub sales_growth: Option<f64>,
     pub op_growth: Option<f64>,
+    /// dividend_ttm が会社予想なら true、実績なら false、配当の開示がなければ None
+    pub dividend_is_forecast: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,11 +71,15 @@ pub enum IndicatorError {
 }
 
 /// 指定日に有効な年間配当（その日までに開示された最新のもの）。まだ開示がなければ None
-pub fn annual_dividend_at(divs: &[Dividend], date: Date) -> Option<f64> {
+pub fn dividend_at(divs: &[Dividend], date: Date) -> Option<Dividend> {
     divs.iter()
         .filter(|d| d.effective <= date)
         .max_by_key(|d| d.effective)
-        .map(|d| d.annual)
+        .copied()
+}
+
+pub fn annual_dividend_at(divs: &[Dividend], date: Date) -> Option<f64> {
+    dividend_at(divs, date).map(|d| d.annual)
 }
 
 /// 週1点（5営業日ごと）の過去の配当利回りを、日付付きで新しい順に並べる（詳細ページのグラフ用）。
@@ -149,7 +155,8 @@ pub fn compute(
 ) -> Result<Indicators, IndicatorError> {
     let last = *market.bars.last().ok_or(IndicatorError::NoPrice)?;
     let price = last.close;
-    let annual = annual_dividend_at(&market.dividends, last.date);
+    let current = dividend_at(&market.dividends, last.date);
+    let annual = current.map(|d| d.annual);
     let ttm = annual.unwrap_or(0.0);
     let dividend_yield = annual.filter(|_| price > 0.0).map(|d| d / price);
     let yield_percentile = dividend_yield.and_then(|y| percentile_rank(&yield_history(market), y));
@@ -204,6 +211,7 @@ pub fn compute(
         data_years: years.len().min(ANALYSIS_YEARS) as u32,
         sales_growth: None,
         op_growth: None,
+        dividend_is_forecast: current.map(|d| d.forecast),
     })
 }
 
@@ -241,10 +249,12 @@ mod tests {
             Dividend {
                 effective: d("2025-05-10"),
                 annual: 40.0,
+                forecast: false,
             },
             Dividend {
                 effective: d("2026-05-12"),
                 annual: 44.0,
+                forecast: false,
             },
         ];
         assert_eq!(annual_dividend_at(&divs, d("2025-05-09")), None);
@@ -293,14 +303,17 @@ mod tests {
             Dividend {
                 effective: d("2024-05-10"),
                 annual: 32.0,
+                forecast: false,
             },
             Dividend {
                 effective: d("2025-05-10"),
                 annual: 40.0,
+                forecast: false,
             },
             Dividend {
                 effective: d("2026-05-12"),
                 annual: 44.0,
+                forecast: false,
             },
         ];
         let market = MarketData { bars, dividends };

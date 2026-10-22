@@ -2,7 +2,7 @@ import { ArrowLeft } from "lucide-react";
 import { useEffect, useState } from "react";
 import { DocPreview } from "@/components/doc-preview";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
-import { Flags } from "@/components/results-table";
+import { DividendAmount, Flags } from "@/components/results-table";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -75,8 +75,9 @@ function Detail({ d }: { d: StockDetail }) {
   const stock = kind === "stock";
   const divWord = stock ? "配当" : "分配金";
   const latestDisclosed = d.latest_disclosed;
-  const metrics: { label: string; value: string }[] = [
+  const metrics: { label: string; value: React.ReactNode }[] = [
     { label: metricLabel("price", kind), value: yen(s.price) },
+    { label: metricLabel("dividend_ttm", kind), value: <DividendAmount r={s} /> },
     { label: metricLabel("dividend_yield", kind), value: pct(s.dividend_yield) },
     { label: metricLabel("yield_percentile", kind), value: pct(s.yield_percentile, 0) },
     ...(stock

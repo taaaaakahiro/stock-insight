@@ -507,6 +507,8 @@ fn row_json(r: &StockRow) -> Value {
         "code": r.code,
         "price": r.price,
         "price_date": r.price_date,
+        "dividend": r.dividend,
+        "dividend_basis": r.dividend_basis,
         "dividend_yield": r.dividend_yield,
         "yield_percentile": r.yield_percentile,
         "pbr": r.pbr,

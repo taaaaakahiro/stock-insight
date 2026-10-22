@@ -55,7 +55,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use usecase::edinet::{DocRef, EdinetDoc};
-use usecase::fins::{AnnualReport, FinancialStore, PeriodReport};
+use usecase::fins::{AnnualReport, FinancialStore, ForecastReport, PeriodReport};
 use usecase::{BatchRun, Clock, SnapshotStore};
 
 struct SystemClock;
@@ -208,6 +208,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0007_edinet",
         include_str!("../../../migrations/0007_edinet.sql"),
     ),
+    (
+        "0010_dividend_forecast",
+        include_str!("../../../migrations/0010_dividend_forecast.sql"),
+    ),
 ];
 
 async fn sync_master(args: Args) -> Result<(), String> {
@@ -310,6 +314,7 @@ struct Pending {
     periods: Vec<PeriodReport>,
     /// 株式分割・併合（AdjFactor が 1 でない日）
     splits: Vec<(String, domain::split::Split)>,
+    forecasts: Vec<ForecastReport>,
 }
 
 async fn sync_jq(args: Args) -> Result<(), String> {
@@ -402,6 +407,7 @@ async fn sync_jq(args: Args) -> Result<(), String> {
             raw::write_day(&raw_dir, "fins", day, &rows).map_err(|e| e.0)?;
             let annuals = jquants::annual_reports(&rows);
             let periods = jquants::period_reports(&rows);
+            pending.forecasts.extend(jquants::forecast_reports(&rows));
             if !periods.is_empty() {
                 println!(
                     "{day}: {} financial rows ({} annual)",
@@ -452,6 +458,7 @@ async fn sync_jq_dry_run(args: &Args, path: &str) -> Result<(), String> {
     let mut histories: HashMap<String, Vec<PriceBar>> = HashMap::new();
     let mut annuals = vec![];
     let mut periods = vec![];
+    let mut forecasts = vec![];
     for day in usecase::fins::weekdays(from, until) {
         let bars = jq.bars_on(day).await.map_err(|e| e.0)?;
         raw::write_day(&raw_dir, "bars", day, &bars).map_err(|e| e.0)?;
@@ -474,6 +481,7 @@ async fn sync_jq_dry_run(args: &Args, path: &str) -> Result<(), String> {
         }
         annuals.extend(a);
         periods.extend(p);
+        forecasts.extend(jquants::forecast_reports(&fins));
     }
     let rows: Vec<(String, String, String)> = histories
         .iter()
@@ -491,6 +499,7 @@ async fn sync_jq_dry_run(args: &Args, path: &str) -> Result<(), String> {
     file.save_period_reports(&periods, 0)
         .await
         .map_err(|e| e.0)?;
+    file.save_forecasts(&forecasts, 0).await.map_err(|e| e.0)?;
     let mut sql = file.into_string();
     for s in adapter_batch::sql::price_history_stmts(&rows, 0) {
         sql.push_str(&s.render());
@@ -543,12 +552,17 @@ async fn persist(
         .save_period_reports(&pending.periods, now)
         .await
         .map_err(|e| e.0)?;
+    store
+        .save_forecasts(&pending.forecasts, now)
+        .await
+        .map_err(|e| e.0)?;
     println!(
-        "persist: {} price histories, {} splits, {} annual reports, {} quarterly rows",
+        "persist: {} price histories, {} splits, {} annual reports, {} quarterly rows, {} dividend forecasts",
         rows.len(),
         pending.splits.len(),
         pending.annuals.len(),
-        pending.periods.len()
+        pending.periods.len(),
+        pending.forecasts.len()
     );
     *pending = Pending::default();
     if let Some(d) = done_until {
@@ -1122,16 +1136,21 @@ async fn compute(args: Args) -> Result<(), String> {
         .filter_map(|c| StockCode::parse(c))
         .collect();
     let histories = store.load_price_histories().await.map_err(|e| e.0)?;
-    let annuals = store.load_annuals().await.map_err(|e| e.0)?;
-    let quarterlies = store.load_quarterlies().await.map_err(|e| e.0)?;
-    let splits = store.load_splits().await.map_err(|e| e.0)?;
+    let stored = usecase::daily::StoredFinancials {
+        annuals: store.load_annuals().await.map_err(|e| e.0)?,
+        forecasts: store.load_forecasts().await.map_err(|e| e.0)?,
+        quarterlies: store.load_quarterlies().await.map_err(|e| e.0)?,
+        splits: store.load_splits().await.map_err(|e| e.0)?,
+    };
     println!(
-        "compute: {} codes, {} price histories, {} with annual financials, {} with quarterly rows, {} with splits",
+        "compute: {} codes, {} price histories, {} with annual financials, {} with quarterly rows, {} with splits, \
+         {} with dividend forecasts",
         codes.len(),
         histories.len(),
-        annuals.len(),
-        quarterlies.len(),
-        splits.len()
+        stored.annuals.len(),
+        stored.quarterlies.len(),
+        stored.splits.len(),
+        stored.forecasts.len()
     );
     let mut run = BatchRun {
         run_id: run_id.clone(),
@@ -1143,15 +1162,8 @@ async fn compute(args: Args) -> Result<(), String> {
         status: "running",
     };
     store.save_run(&run).await.map_err(|e| e.0)?;
-    let (snaps, skipped) = usecase::daily::compute_all(
-        &codes,
-        histories,
-        &annuals,
-        &quarterlies,
-        &splits,
-        &run_id,
-        started,
-    );
+    let (snaps, skipped) =
+        usecase::daily::compute_all(&codes, histories, &stored, &run_id, started);
     store.save_snapshots(&snaps).await.map_err(|e| e.0)?;
     run.succeeded = snaps.len();
     run.failed = skipped;
