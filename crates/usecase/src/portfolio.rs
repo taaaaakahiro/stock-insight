@@ -9,22 +9,33 @@ pub trait PortfolioRepository {
     /// 登録した銘柄コード（登録の古い順）
     async fn codes(&self, user_id: &str) -> Result<Vec<String>, PortError>;
     /// 登録した銘柄の最新指標（指標がまだない銘柄は含まない）
-    async fn rows(&self, user_id: &str) -> Result<Vec<StockRow>, PortError>;
+    async fn rows(&self, user_id: &str) -> Result<Vec<HeldStock>, PortError>;
     /// すでにあれば何もしない
     async fn add(&self, user_id: &str, code: &str, now: i64) -> Result<(), PortError>;
     async fn remove(&self, user_id: &str, code: &str) -> Result<(), PortError>;
 }
 
+/// 登録した銘柄の最新指標と、売りサインの判定にだけ使う値
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldStock {
+    pub stock: StockRow,
+    /// 最新の本決算の EPS（数字のない行は飛ばしたもの）。赤字なのに配当を出しているかを見る
+    pub latest_eps: Option<f64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HoldingRow {
     pub stock: StockRow,
+    /// 売る判断に使う主のサイン（配当性向・PBR・赤字配当）
     pub signals: Vec<SellSignal>,
+    /// 参考のサイン
+    pub reference: Vec<SellSignal>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Portfolio {
     pub codes: Vec<String>,
-    /// サインの多い順（同数なら銘柄コード順）
+    /// 主のサインの多い順、同数なら参考のサインの多い順（それも同数なら銘柄コード順）
     pub rows: Vec<HoldingRow>,
 }
 
@@ -41,9 +52,13 @@ impl From<PortError> for PortfolioError {
     }
 }
 
-pub fn signals_for(r: &StockRow) -> Vec<SellSignal> {
+pub fn signals_for(r: &StockRow, latest_eps: Option<f64>) -> Vec<SellSignal> {
     sell_signals(&SignalInput {
+        kind: &r.kind,
         payout_ratio: r.payout_ratio,
+        pbr: r.pbr,
+        dividend: r.dividend,
+        latest_eps,
         valuation: &r.valuation,
         consecutive_increases: r.consecutive_increases,
         profit_uptrend: r.profit_uptrend,
@@ -58,15 +73,22 @@ pub async fn list<R: PortfolioRepository>(repo: &R, user_id: &str) -> Result<Por
         .rows(user_id)
         .await?
         .into_iter()
-        .map(|stock| HoldingRow {
-            signals: signals_for(&stock),
-            stock,
+        .map(|h| {
+            let (signals, reference) = signals_for(&h.stock, h.latest_eps)
+                .into_iter()
+                .partition(|s| s.is_primary());
+            HoldingRow {
+                stock: h.stock,
+                signals,
+                reference,
+            }
         })
         .collect();
     rows.sort_by(|a, b| {
         b.signals
             .len()
             .cmp(&a.signals.len())
+            .then_with(|| b.reference.len().cmp(&a.reference.len()))
             .then_with(|| a.stock.code.cmp(&b.stock.code))
     });
     Ok(Portfolio { codes, rows })
@@ -107,7 +129,7 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         items: RefCell<Vec<(String, String)>>,
-        rows: Vec<StockRow>,
+        rows: Vec<HeldStock>,
     }
 
     impl PortfolioRepository for Fake {
@@ -120,7 +142,7 @@ mod tests {
                 .map(|(_, c)| c.clone())
                 .collect())
         }
-        async fn rows(&self, _user_id: &str) -> Result<Vec<StockRow>, PortError> {
+        async fn rows(&self, _user_id: &str) -> Result<Vec<HeldStock>, PortError> {
             Ok(self.rows.clone())
         }
         async fn add(&self, user_id: &str, code: &str, _now: i64) -> Result<(), PortError> {
@@ -134,6 +156,13 @@ mod tests {
                 .borrow_mut()
                 .retain(|(u, c)| !(u == user_id && c == code));
             Ok(())
+        }
+    }
+
+    fn held(code: &str, payout: f64, valuation: &str) -> HeldStock {
+        HeldStock {
+            stock: row(code, payout, valuation),
+            latest_eps: Some(100.0),
         }
     }
 
@@ -200,18 +229,30 @@ mod tests {
     }
 
     #[test]
-    fn list_puts_signalled_rows_first() {
+    fn list_puts_primary_signals_first() {
+        let mut loss = held("1005", 0.0, "neutral");
+        loss.stock.payout_ratio = None;
+        loss.stock.pbr = Some(1.6);
+        loss.latest_eps = Some(-20.0);
         let repo = Fake {
             rows: vec![
-                row("1001", 0.3, "cheap"),
-                row("1002", 0.6, "expensive"),
-                row("1003", 0.6, "neutral"),
+                held("1001", 0.3, "cheap"),
+                held("1002", 0.6, "expensive"),
+                held("1003", 0.6, "neutral"),
+                held("1004", 0.3, "expensive"),
+                loss,
             ],
             ..Default::default()
         };
         let p = block_on(list(&repo, "u1")).unwrap();
         let order: Vec<&str> = p.rows.iter().map(|r| r.stock.code.as_str()).collect();
-        assert_eq!(order, vec!["1002", "1003", "1001"]);
-        assert_eq!(p.rows[0].signals.len(), 2);
+        assert_eq!(order, vec!["1005", "1002", "1003", "1004", "1001"]);
+        assert_eq!(
+            p.rows[0].signals,
+            vec![SellSignal::HighPbr, SellSignal::LossDividend]
+        );
+        assert_eq!(p.rows[1].signals, vec![SellSignal::HighPayout]);
+        assert_eq!(p.rows[1].reference, vec![SellSignal::Expensive]);
+        assert!(p.rows[3].signals.is_empty(), "割高だけなら参考");
     }
 }

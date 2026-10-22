@@ -431,6 +431,8 @@ async fn portfolio(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Respons
                 "rows": p.rows.iter().map(|h| {
                     let mut v = row_json(&h.stock);
                     v["signals"] = json!(h.signals.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+                    v["reference_signals"] =
+                        json!(h.reference.iter().map(|s| s.as_str()).collect::<Vec<_>>());
                     v
                 }).collect::<Vec<_>>(),
             }),

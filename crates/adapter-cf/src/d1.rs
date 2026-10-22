@@ -8,7 +8,7 @@ use domain::{AnnualFinancial, Date, PriceBar, StockCode};
 use serde::Deserialize;
 use usecase::daily::{StoredAnnual, StoredForecast};
 use usecase::detail::StockDetailQuery;
-use usecase::portfolio::PortfolioRepository;
+use usecase::portfolio::{HeldStock, PortfolioRepository};
 use usecase::screening::{
     DataStatus, DisclosureRow, IndicatorQuery, ReitDetail, ReitHistoryRow, ReitListFields,
     ReitProfile, StockRow,
@@ -96,6 +96,9 @@ pub(crate) struct Row {
     /// 条件に合う件数（一覧の SQL だけが返す）
     #[serde(default)]
     total: Option<i64>,
+    /// 最新の本決算の EPS（ポートフォリオの SQL だけが返す）
+    #[serde(default)]
+    latest_eps: Option<f64>,
 }
 
 impl From<Row> for StockRow {
@@ -598,7 +601,7 @@ impl PortfolioRepository for D1Portfolio {
         Ok(rows.into_iter().map(|r| r.code).collect())
     }
 
-    async fn rows(&self, user_id: &str) -> Result<Vec<StockRow>, PortError> {
+    async fn rows(&self, user_id: &str) -> Result<Vec<HeldStock>, PortError> {
         let rows: Vec<Row> = self
             .prepare(&query::portfolio_rows(), &[user_id.into()])?
             .all()
@@ -606,7 +609,13 @@ impl PortfolioRepository for D1Portfolio {
             .map_err(err)?
             .results()
             .map_err(err)?;
-        Ok(rows.into_iter().map(StockRow::from).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| HeldStock {
+                latest_eps: r.latest_eps,
+                stock: StockRow::from(r),
+            })
+            .collect())
     }
 
     async fn add(&self, user_id: &str, code: &str, now: i64) -> Result<(), PortError> {
