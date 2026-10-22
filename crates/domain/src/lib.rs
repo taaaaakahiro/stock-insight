@@ -11,6 +11,7 @@ pub mod portfolio;
 pub mod price_history;
 pub mod recommend;
 pub mod screening;
+pub mod split;
 pub mod stock_master;
 
 pub use indicators::*;

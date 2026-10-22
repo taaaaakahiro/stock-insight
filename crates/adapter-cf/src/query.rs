@@ -154,6 +154,9 @@ pub fn latest_by_code(code: &str) -> Query {
 
 pub const PRICE_HISTORY_BY_CODE: &str = "SELECT closes FROM price_history WHERE code = ?";
 
+/// 1銘柄の株式分割・併合（日付の古い順）
+pub const SPLITS_BY_CODE: &str = "SELECT date, factor FROM splits WHERE code = ? ORDER BY date";
+
 pub const ANNUALS_BY_CODE: &str =
     "SELECT period_end, doc_id, disclosed, net_sales, operating_income, \
      ordinary_income, net_income, equity, eps, bps, dps, operating_cf \

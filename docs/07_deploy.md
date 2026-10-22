@@ -10,7 +10,7 @@ stock.insight.maa-un.com に API Worker と画面を公開する手順。初回�
 |---|---|---|
 | wrangler のログイン先 | `wrangler whoami` | maa'un japan の Cloudflare アカウント |
 | main が最新で CI が通っている | `git pull` / GitHub の Actions | `ci` が成功 |
-| 本番 D1 の現在のテーブル | `wrangler d1 execute maaun-stock-insight --remote --command "SELECT name FROM sqlite_master WHERE type='table'"` | 初回は `batch_runs`、`indicators_latest`、`financials_annual`。今は `migrations/0001`〜`0008` のテーブルすべて（[05](05_detailed_design.md#テーブル定義)） |
+| 本番 D1 の現在のテーブル | `wrangler d1 execute maaun-stock-insight --remote --command "SELECT name FROM sqlite_master WHERE type='table'"` | 初回は `batch_runs`、`indicators_latest`、`financials_annual`。今は `migrations/0001`〜`0009` のテーブルすべて（[05](05_detailed_design.md#テーブル定義)） |
 | Worker の状態 | `wrangler deployments list --name maaun-stock-insight` | 初回は見つからない。2回目以降は今のバージョン ID を控える（切り戻し先） |
 
 ## 1. 宣言と影響範囲
@@ -172,14 +172,17 @@ gh workflow run daily-batch --repo taaaaakahiro/stock-insight -f force=true
 
 ## 株価の履歴を5年分に取り直す
 
-v0.3.0 までは終値の履歴（D1 `price_history`）を直近3年に切り詰めていたため、利回りの過去5年比が実際は3年分で計算されていた。保存期間を5年＋1か月に直した版を main にマージしたあと、一度だけ過去5年分の株価を J-Quants から取り直す。本番の D1 を書き換えるので、承認フローに沿って進める。
+v0.3.0 までは終値の履歴（D1 `price_history`）を直近3年に切り詰めていたため、利回りの過去5年比が実際は3年分で計算されていた。また、株式分割の記録（`splits`）は日足を読むときにしか残らないので、過去5年の分割は株価を読み直さないと集まらない。保存期間を5年＋1か月に直し、分割の記録を残す版（`0009_splits`）を main にマージしたあと、一度だけ過去5年分の株価を J-Quants から取り直す。本番の D1 を書き換えるので、承認フローに沿って進める。
 
-**やること**: 日次バッチを `refill_prices=true` で1回流し、全銘柄の `price_history` を過去5年分で書き直す。
+先に初回の5年分の取り込み（`sync_state.jq_synced_until`）が今日まで追いついていること、新しいコードの日次バッチが1回動いて `splits` テーブルができていることを確かめてから行う。
+
+**やること**: 日次バッチを `refill_prices=true` で1回流し、全銘柄の `price_history` を過去5年分で書き直し、過去5年の株式分割を `splits` に残す。
 
 | 対象 | 変更 | 件数・範囲 | 既存への影響 |
 |---|---|---|---|
 | D1 `price_history` | 全銘柄の `closes` を5年分に書き直す（同じ日付は J-Quants の同じ値で上書き） | 約4,300行（Workers Paid の D1 の枠では気にならない量）。1行あたり約20KB、全体で約90MB | 削除なし。履歴が長くなるだけ |
-| D1 `indicators_latest`・`batch_runs` | 続く `compute` で、利回りの過去5年比と valuation が5年分で計算し直される | 約4,200行・1行 | 一覧の「過去5年比」とポートフォリオの「割高」のサインが変わる銘柄がある |
+| D1 `splits` | 過去5年の株式分割・併合を追加 | 数百行（今残っている終値だけでも、分割と見られる段差が500か所ほどある） | なし（新しいテーブル） |
+| D1 `indicators_latest`・`batch_runs` | 続く `compute` で、分割で基準をそろえた5年分から計算し直される | 約4,300行・1行 | 分割した銘柄（約200）の利回り・PBR・PER などが正しい値に下がり、一覧の「過去5年比」とポートフォリオのサインも変わる |
 | D1 の財務・`sync_state`、R2 | 変えない | — | なし |
 
 1. この修正を入れた版を main にマージする（Worker のデプロイは不要。変わるのはバッチだけ）
@@ -206,7 +209,8 @@ gh workflow run daily-batch --repo taaaaakahiro/stock-insight -f refill_prices=t
 
 | 確認すること | 方法 | 期待する結果 |
 |---|---|---|
-| 取り直しの範囲 | Actions のログの `sync-jq: prices ... (refill from <5年前の日付>)` と最後の `persist: ... price histories` | 約4,200銘柄を保存 |
+| 取り直しの範囲 | Actions のログの `sync-jq: prices ... (refill from <5年前の日付>)` と最後の `persist: ... price histories, ... splits` | 約4,300銘柄と、数百件の分割を保存 |
+| 分割の扱い | 一覧で東京海上（8766）の配当利回りを見る | 分割前の配当で割った約39%ではなく、数%に下がっている |
 | 履歴の長さ | `wrangler d1 execute maaun-stock-insight --remote --command "SELECT code, substr(closes, 1, 8) AS first_day, last_date FROM price_history WHERE code = '7203'"` | `first_day` が約5年前 |
 | 指標 | `batch_runs` の最新行が `succeeded`、画面の「過去5年比」が出ている | — |
 

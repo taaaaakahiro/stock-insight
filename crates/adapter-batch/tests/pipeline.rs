@@ -62,6 +62,7 @@ async fn offline_pipeline_writes_sql() {
         histories,
         &annuals,
         &HashMap::new(),
+        &HashMap::new(),
         "offline",
         1_792_500_000,
     );

@@ -198,6 +198,7 @@ API Workerが提供するエンドポイント。すべて`Authorization: Bearer
 | financials_quarterly | 四半期（1Q〜3Q）の期首からの累計値 | 共通 | 済み |
 | price_history | 終値の履歴（1銘柄1行） | 共通 | 済み |
 | edinet_docs | 有報・半期報告書の配当方針の手がかり（銘柄・種類ごとに最新1通） | 共通 | 済み |
+| splits | 株式分割・併合（J-Quants の `AdjFactor` が 1 でない日） | 共通 | 済み |
 | sync_state | 取り込みの進み具合（どの日付まで取ったか） | 共通 | 済み |
 | batch_runs | バッチ（指標計算）の実行履歴 | 共通 | 済み |
 | users / login_events | アカウントとログイン記録 | ユーザー | 済み |

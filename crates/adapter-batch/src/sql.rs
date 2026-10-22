@@ -1,6 +1,7 @@
 //! D1（SQLite）に書き込むSQL文の組み立て。値は必ずプレースホルダで渡す。
 
 use domain::analysis::PeriodType;
+use domain::split::Split;
 use domain::stock_master::ListedStock;
 use usecase::edinet::{r2_key, DocKey, EdinetDoc};
 use usecase::fins::{AnnualReport, PeriodReport};
@@ -256,6 +257,28 @@ pub fn price_history_stmts(rows: &[(String, String, String)], now: i64) -> Vec<S
          updated_at = excluded.updated_at",
         rows,
         10,
+    )
+}
+
+/// 株式分割・併合の upsert（同じ日は上書き）
+pub fn splits_stmts(rows: &[(String, Split)], now: i64) -> Vec<Stmt> {
+    let rows = rows
+        .iter()
+        .map(|(code, s)| {
+            vec![
+                Val::Text(code.clone()),
+                Val::Text(s.date.to_string()),
+                Val::Real(s.factor),
+                Val::Int(now),
+            ]
+        })
+        .collect();
+    multi_row(
+        "INSERT INTO splits (code, date, factor, fetched_at)",
+        4,
+        "ON CONFLICT(code, date) DO UPDATE SET factor = excluded.factor, fetched_at = excluded.fetched_at",
+        rows,
+        25,
     )
 }
 

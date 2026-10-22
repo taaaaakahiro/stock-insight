@@ -6,7 +6,7 @@
 
 各指標の取得元の項目と計算式は [08 指標の取得元と計算式](08_indicator_sources.md#指標の計算式domainsrcindicatorsrs-analysisrs) にまとめた（そちらが正本）。指標はバッチで計算して保存し、画面では計算しない。比率は小数で保存し（0.035 = 3.5%）、画面で % にする。
 
-株価と配当はどちらも J-Quants の分割調整前の値を使うので、株式分割をまたいでも利回りはずれない。1株配当の前年比較（連続増配年数）は分割の遡及調整をしていない（[08 既知の不整合](08_indicator_sources.md#既知の不整合)）。
+株価と配当・EPS・BPS は J-Quants の分割調整前の値を保存し、計算のときに株式分割の記録（`splits`）で最新の株数の基準にそろえる（[08 株式分割の扱い](08_indicator_sources.md#株式分割の扱いdomainsrcsplitrsusecasesrcdailyrs-の-build_inputs)）。
 
 ### 利回りの過去5年比（valuation）
 
@@ -127,11 +127,12 @@ CloudflareのCron Trigger（`30 9 * * 1-5` = 平日18:30 JST）は呼び出し�
 3. `batch-cli sync-jq --rate 60 --max-minutes 300 --persist-every 1500 --raw-dir raw`: J-Quants を日付ごとに取り込む
    - 範囲は前回の続き（`sync_state.jq_synced_until` の翌日）から今日まで。初回は5年前から。財務は直近3日分を毎回取り直す
    - 呼び出しは1分あたり `--rate` 回まで（Light は60）。429・5xx・通信エラーは指数バックオフで最大3回再試行し、J-Quants の 429 はさらに1分待って2回まで試す
+   - 日足の `AdjFactor` が 1 でない日を株式分割・併合として `splits` に残す（取り直しの日も含む）
    - `--refill-prices` のときは、`--from`（既定は5年前）から前回の続きの前日までの株価も取り直して履歴に足す（同じ日付は上書き）。取り直した日の生データは R2 に上げ直さず、財務も取り直さない
    - 終値の履歴は直近5年＋1か月（`KEEP_DAYS`）を超えた分を捨てる
    - D1 への保存は `--persist-every` 日分ごと（既定では最後に1回）。保存のたびに全銘柄の `price_history` を書き直すので、回数は少なくする
    - 応答の全項目を `raw/bars/<日付>.json.gz`・`raw/fins/<日付>.json.gz` に書き出す
-4. `batch-cli compute --label daily`: D1 に保存済みの終値と財務から全銘柄の指標を計算して `indicators_latest` に upsert し、`batch_runs` に記録する（run_id は `daily-<開始のUNIX秒>`）。株価のない銘柄は数えるだけで飛ばす。半数以上の銘柄を保存できたら `succeeded`、そうでなければ `failed`
+4. `batch-cli compute --label daily`: D1 に保存済みの終値と財務から、株式分割で基準をそろえたうえで全銘柄の指標を計算して `indicators_latest` に upsert し、`batch_runs` に記録する（run_id は `daily-<開始のUNIX秒>`）。株価のない銘柄は数えるだけで飛ばす。半数以上の銘柄を保存できたら `succeeded`、そうでなければ `failed`
 5. R2 へのアップロード: `raw/bars`・`raw/fins` を `maaun-stock-insight-raw/jquants/` に置く（取り込みが途中で失敗しても、取れた分は置く）
 
 `edinet`（タイムアウト340分）:
@@ -151,7 +152,7 @@ J-Quants を1ジョブで順に取り込むのは、J-Quants が日付指定で�
 
 ### マイグレーション
 
-- `migrations/`に連番のSQL（`0001`〜`0008`）を置き、日次バッチの最初に`batch-cli migrate`（D1 HTTP API）で適用する。手で適用するときも同じコマンドか `wrangler d1 execute --remote --file`（[07](07_deploy.md)）
+- `migrations/`に連番のSQL（`0001`〜`0009`）を置き、日次バッチの最初に`batch-cli migrate`（D1 HTTP API）で適用する。手で適用するときも同じコマンドか `wrangler d1 execute --remote --file`（[07](07_deploy.md)）
 - `CREATE ... IF NOT EXISTS` と `ALTER TABLE ... ADD COLUMN` だけで後方互換を保つ。列の削除は2段階で行う
 
 ## テーブル定義
@@ -169,6 +170,7 @@ J-Quants を1ジョブで順に取り込むのは、J-Quants が日付指定で�
 | price_history | code (PK), closes（`YYYYMMDD,終値;…`）, last_date, updated_at | 0004 |
 | edinet_docs | code, doc_kind (PK: code+doc_kind。annual/semiannual), doc_id, submitted, period_end, r2_key, progressive_dividend, no_dividend_cut, dividend_raise, doe_target, payout_target, phrases（JSON の文字列配列）, fetched_at | 0007 |
 | sync_state | key (PK。`jq_synced_until`・`edinet_listed_until`), value, updated_at | 0004 |
+| splits | code, date（権利落ち日）(PK: code+date), factor（`AdjFactor`。1:2 の分割なら 0.5）, fetched_at | 0009 |
 | recommendations | date（株価の日付）, rank (PK: date+rank), code, reason, model, created_at | 0008 |
 | batch_runs | run_id (PK), started_at, finished_at, target, succeeded, failed, status（running/succeeded/failed） | 0001 |
 

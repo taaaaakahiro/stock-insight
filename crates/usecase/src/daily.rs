@@ -4,6 +4,7 @@ use crate::Snapshot;
 use domain::analysis::{
     standalone_quarters, yoy_growth, CumulativePeriod, PeriodType, QuarterResult,
 };
+use domain::split::{adjust_bars, factor_after, Split};
 use domain::{
     compute, AnnualFinancial, Date, Dividend, FinancialData, MarketData, PriceBar, StockCode,
 };
@@ -44,18 +45,36 @@ fn annual_as_period(a: &StoredAnnual) -> Option<CumulativePeriod> {
     })
 }
 
-/// 1銘柄分の入力を組み立てる: 株価と配当、年次財務（新しい期が先頭）、四半期単独の損益（古い順）
+/// 1銘柄分の入力を組み立てる: 株価と配当、年次財務（新しい期が先頭）、四半期単独の損益（古い順）。
+/// 株式分割があれば、終値と1株当たりの値（配当・EPS・BPS）を最新の株数の基準にそろえる
+/// （1株当たりの値は、開示した日より後の分割の分だけ直す）
 pub fn build_inputs(
-    bars: Vec<PriceBar>,
+    mut bars: Vec<PriceBar>,
     annuals: &[StoredAnnual],
     quarterlies: &[CumulativePeriod],
+    splits: &[Split],
 ) -> (
     MarketData,
     Option<FinancialData>,
     Vec<QuarterResult>,
     Option<usize>,
 ) {
-    let mut sorted: Vec<(usize, &StoredAnnual)> = annuals
+    adjust_bars(&mut bars, splits);
+    let adjusted: Vec<StoredAnnual> = annuals
+        .iter()
+        .map(|a| {
+            let f = effective_date(a).map_or(1.0, |e| factor_after(splits, e));
+            let mut a = a.clone();
+            if f != 1.0 {
+                let per_share = |v: Option<f64>| v.map(|x| x * f);
+                a.financial.eps = per_share(a.financial.eps);
+                a.financial.bps = per_share(a.financial.bps);
+                a.financial.dps = per_share(a.financial.dps);
+            }
+            a
+        })
+        .collect();
+    let mut sorted: Vec<(usize, &StoredAnnual)> = adjusted
         .iter()
         .enumerate()
         .filter(|(_, a)| a.financial.period_end.is_some())
@@ -93,6 +112,7 @@ pub fn compute_all(
     mut histories: HashMap<String, Vec<PriceBar>>,
     annuals: &HashMap<String, Vec<StoredAnnual>>,
     quarterlies: &HashMap<String, Vec<CumulativePeriod>>,
+    splits: &HashMap<String, Vec<Split>>,
     run_id: &str,
     now: i64,
 ) -> (Vec<Snapshot>, usize) {
@@ -100,6 +120,7 @@ pub fn compute_all(
     let mut skipped = 0;
     let no_annuals = vec![];
     let no_quarters = vec![];
+    let no_splits = vec![];
     for code in codes {
         let bars = histories.remove(code.as_str()).unwrap_or_default();
         let anns = annuals.get(code.as_str()).unwrap_or(&no_annuals);
@@ -107,6 +128,7 @@ pub fn compute_all(
             bars,
             anns,
             quarterlies.get(code.as_str()).unwrap_or(&no_quarters),
+            splits.get(code.as_str()).unwrap_or(&no_splits),
         );
         let latest = latest.map(|i| &anns[i]);
         match compute(&market, fin.as_ref(), &quarters) {
@@ -169,7 +191,7 @@ mod tests {
             annual("2025-03-31", Some("2025-05-10"), 40.0, 100.0),
             annual("2026-03-31", None, 44.0, 110.0),
         ];
-        let (m, fin, _, latest) = build_inputs(vec![], &annuals, &[]);
+        let (m, fin, _, latest) = build_inputs(vec![], &annuals, &[], &[]);
         assert_eq!(m.dividends.len(), 2);
         assert_eq!(
             m.dividends[0].effective,
@@ -189,7 +211,7 @@ mod tests {
             quarter("2026-03-31", "2025-09-30", PeriodType::Q2, 50.0),
             quarter("2026-03-31", "2025-12-31", PeriodType::Q3, 70.0),
         ];
-        let (_, _, quarters, _) = build_inputs(vec![], &annuals, &qs);
+        let (_, _, quarters, _) = build_inputs(vec![], &annuals, &qs, &[]);
         let nets: Vec<Option<f64>> = quarters.iter().map(|q| q.net_income).collect();
         assert_eq!(nets, vec![Some(20.0), Some(30.0), Some(20.0), Some(30.0)]);
     }
@@ -211,11 +233,70 @@ mod tests {
             vec![annual("2026-03-31", Some("2026-05-10"), 40.0, 100.0)],
         );
         let missing = StockCode::parse("9999").unwrap();
-        let (snaps, skipped) = compute_all(&[code, missing], hist, &ann, &HashMap::new(), "r1", 0);
+        let (snaps, skipped) = compute_all(
+            &[code, missing],
+            hist,
+            &ann,
+            &HashMap::new(),
+            &HashMap::new(),
+            "r1",
+            0,
+        );
         assert_eq!(skipped, 1, "株価の履歴がない銘柄は飛ばす");
         let i = &snaps[0].indicators;
         assert!((i.dividend_yield.unwrap() - 0.04).abs() < 1e-9);
         assert!((i.payout_ratio.unwrap() - 0.4).abs() < 1e-9);
         assert_eq!(snaps[0].fin_doc_id.as_deref(), Some("doc-2026-03-31"));
+    }
+
+    #[test]
+    fn split_after_disclosure_does_not_inflate_the_yield() {
+        // 2026-05-10 に1株配当40円・EPS100円を開示、2026-09-29 に1:2の分割。株価は 1000円 → 500円
+        let bars: Vec<PriceBar> = ["2026-09-25", "2026-09-28", "2026-09-29", "2026-09-30"]
+            .iter()
+            .zip([1000.0, 1000.0, 500.0, 500.0])
+            .map(|(s, close)| PriceBar { date: d(s), close })
+            .collect();
+        let code = StockCode::parse("8766").unwrap();
+        let hist = HashMap::from([("8766".to_string(), bars.clone())]);
+        let ann = HashMap::from([(
+            "8766".to_string(),
+            vec![annual("2026-03-31", Some("2026-05-10"), 40.0, 100.0)],
+        )]);
+        let splits = HashMap::from([(
+            "8766".to_string(),
+            vec![Split::new(d("2026-09-29"), 0.5).unwrap()],
+        )]);
+        let (snaps, _) = compute_all(
+            std::slice::from_ref(&code),
+            hist.clone(),
+            &ann,
+            &HashMap::new(),
+            &splits,
+            "r1",
+            0,
+        );
+        let i = &snaps[0].indicators;
+        assert_eq!(i.price, 500.0, "最新の終値はそのまま");
+        assert!(
+            (i.dividend_yield.unwrap() - 0.04).abs() < 1e-9,
+            "20円 ÷ 500円"
+        );
+        assert!((i.per.unwrap() - 10.0).abs() < 1e-9, "500円 ÷ EPS 50円");
+        assert!((i.payout_ratio.unwrap() - 0.4).abs() < 1e-9);
+
+        let (unadjusted, _) = compute_all(
+            &[code],
+            hist,
+            &ann,
+            &HashMap::new(),
+            &HashMap::new(),
+            "r1",
+            0,
+        );
+        assert!(
+            (unadjusted[0].indicators.dividend_yield.unwrap() - 0.08).abs() < 1e-9,
+            "分割を知らなければ 40円 ÷ 500円 で2倍に出る"
+        );
     }
 }

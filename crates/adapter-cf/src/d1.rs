@@ -3,6 +3,7 @@
 use crate::query::{self, Arg, Query};
 use domain::analysis::{CumulativePeriod, PeriodType};
 use domain::screening::ScreeningFilter;
+use domain::split::Split;
 use domain::{AnnualFinancial, Date, PriceBar, StockCode};
 use serde::Deserialize;
 use usecase::daily::StoredAnnual;
@@ -210,6 +211,12 @@ struct ClosesRow {
     closes: String,
 }
 
+#[derive(Deserialize)]
+struct SplitRow {
+    date: String,
+    factor: f64,
+}
+
 fn code_arg(code: &StockCode) -> [JsValue; 1] {
     [JsValue::from_str(code.as_str())]
 }
@@ -236,6 +243,23 @@ impl StockDetailQuery for D1Indicators {
         Ok(row
             .map(|r| domain::price_history::decode(&r.closes))
             .unwrap_or_default())
+    }
+
+    async fn splits(&self, code: &StockCode) -> Result<Vec<Split>, PortError> {
+        let rows: Vec<SplitRow> = self
+            .db
+            .prepare(query::SPLITS_BY_CODE)
+            .bind(&code_arg(code))
+            .map_err(err)?
+            .all()
+            .await
+            .map_err(err)?
+            .results()
+            .map_err(err)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| Split::new(Date::parse(&r.date)?, r.factor))
+            .collect())
     }
 
     async fn annuals(&self, code: &StockCode) -> Result<Vec<StoredAnnual>, PortError> {
