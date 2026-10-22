@@ -36,6 +36,7 @@ R2 には `wrangler r2 object put` で書くため、S3 互換 API のキー（R
 
 - `.dev.vars`と`.env*`は`.gitignore`に入れる。ローカルの `.dev.vars` の例（偽の Clerk 用の値）はリポジトリの README にある
 - 設定ファイル（`wrangler.jsonc`）にはシークレットの値を書かない
+- コミット前に gitleaks で差分を調べる（`.githooks/pre-commit`。`git config core.hooksPath .githooks` で有効にする）。CI の `secrets` ジョブも全履歴を調べ、見つかれば失敗する。見つかったキーは履歴から消すだけでなく、必ず無効化して発行し直す
 - 公開リポジトリではActionsのログも公開される。ログにはキー、メールアドレス、ポートフォリオなどのユーザーデータを出さず、件数と銘柄コードだけを出す
 - フォークからのプルリクエストではシークレットを使うジョブを動かさない（`ci` はシークレットを使わず、`pull_request_target`は使わない）
 - シークレットの混入を防ぐため、GitHubのSecret scanningとPush protectionを有効にする

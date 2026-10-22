@@ -1,0 +1,9 @@
+# gitleaks の設定。pre-commit フック（.githooks/pre-commit）と CI（.github/workflows/ci.yml）が読む
+# 既定のルール（AWS・GitHub・Clerk などのキーの形式）をそのまま使う
+[extend]
+useDefault = true
+
+# 誤検知はここに足す。値そのものは書かず、パスか正規表現で除外する
+# [[allowlists]]
+# description = "テスト用のダミー"
+# paths = ['''fixtures/.*\.json''']
