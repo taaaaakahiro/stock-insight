@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { DocPreview } from "@/components/doc-preview";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
 import { Badge } from "@/components/ui/badge";
 import { apiGet, type Recommendation, type Recommendations } from "@/lib/api";
@@ -78,6 +79,7 @@ function Item({ r }: { r: Recommendation }) {
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
             <PortfolioToggle code={r.code} name={r.name ?? r.code} />
             <NameLink r={r} />
+            <DocPreview r={r} />
             <span className="text-xs text-muted-foreground">{sub}</span>
             <Flags r={r} />
           </div>
