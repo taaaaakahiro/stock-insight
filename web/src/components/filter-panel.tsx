@@ -1,4 +1,5 @@
 import { ChevronDown, RotateCcw, Search } from "lucide-react";
+import { InfoTip } from "@/components/info-tip";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -19,9 +20,11 @@ import {
   metricLabel,
   metricsFor,
   SECTORS33,
+  SIZE_TIP,
   SIZES,
   UNIT_SUFFIX,
   type Valuation,
+  yieldPercentileTip,
 } from "@/lib/filters";
 
 type Props = {
@@ -108,12 +111,13 @@ export function FilterPanel({ value, onChange }: Props) {
             ))}
           </fieldset>
           <fieldset className="flex flex-col gap-2">
-            <legend className="mb-2 text-sm font-medium">
+            <legend className="mb-2 flex items-center gap-1 text-sm font-medium">
               規模
-              <span className="ml-1 font-normal text-muted-foreground">（TOPIX の区分）</span>
+              <span className="font-normal text-muted-foreground">（TOPIX の区分）</span>
+              <InfoTip label="規模" text={SIZE_TIP} />
             </legend>
             {SIZES.map((s) => (
-              <Label key={s.key} className="font-normal">
+              <Label key={s.key} className="font-normal" title={s.hint}>
                 <Checkbox
                   checked={value.sizes.includes(s.key)}
                   onCheckedChange={(c) => set({ sizes: toggle(value.sizes, s.key, c === true) })}
@@ -153,7 +157,10 @@ export function FilterPanel({ value, onChange }: Props) {
       )}
 
       <div className="flex flex-col gap-2">
-        <Label htmlFor="valuation">{stock ? "配当" : "分配金"}利回りの過去5年比</Label>
+        <div className="flex items-center gap-1">
+          <Label htmlFor="valuation">{stock ? "配当" : "分配金"}利回りの過去5年比</Label>
+          <InfoTip label="利回りの過去5年比" text={yieldPercentileTip(value.kind)} />
+        </div>
         <Select
           value={value.valuation || ALL}
           onValueChange={(v) => set({ valuation: (v === ALL ? "" : v) as Valuation })}
@@ -178,8 +185,11 @@ export function FilterPanel({ value, onChange }: Props) {
           const label = metricLabel(m.key, value.kind);
           return (
             <div key={m.key} className="grid grid-cols-[1fr_auto_1fr] items-center gap-x-2 gap-y-1">
-              <span className="col-span-3 text-xs text-muted-foreground">
+              <span className="col-span-3 flex items-center gap-1 text-xs text-muted-foreground">
                 {label}（{UNIT_SUFFIX[m.unit]}）
+                {m.key === "yield_percentile" && (
+                  <InfoTip label={label} text={yieldPercentileTip(value.kind)} />
+                )}
               </span>
               <Input
                 inputMode="decimal"
