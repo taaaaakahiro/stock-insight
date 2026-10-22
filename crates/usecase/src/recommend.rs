@@ -204,6 +204,7 @@ mod tests {
             finished_at: Some(finished_at),
             status: status.into(),
             latest_price_date: Some("2026-10-21".into()),
+            latest_fin_date: None,
         })
     }
 

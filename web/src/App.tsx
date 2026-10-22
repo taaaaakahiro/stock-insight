@@ -6,10 +6,12 @@ import { ApiError, apiGet, type Me, type Status } from "@/lib/api";
 import { useAuthState } from "@/lib/auth";
 import { jstDateTime, ymd } from "@/lib/format";
 import { PortfolioProvider, usePortfolio } from "@/lib/portfolio";
+import { stockCodeFromPath, usePath } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { PortfolioPage } from "@/pages/portfolio-page";
 import { RecommendPage } from "@/pages/recommend-page";
 import { ScreeningPage } from "@/pages/screening-page";
+import { StockDetailPage } from "@/pages/stock-detail-page";
 
 type View = "screening" | "portfolio" | "recommend";
 
@@ -85,6 +87,8 @@ function SignedIn() {
 function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
   const [view, setView] = useState<View>(viewFromHash);
   const { codes } = usePortfolio();
+  // `/stocks/<コード>` は銘柄の詳細。それ以外はタブ（スクリーニング / ポートフォリオ）
+  const detailCode = stockCodeFromPath(usePath());
 
   useEffect(() => {
     const onHash = () => setView(viewFromHash());
@@ -114,19 +118,25 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
         </div>
       </header>
       <main className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-6">
-        <Tabs value={view} onValueChange={(v) => go(v as View)}>
-          <TabsList aria-label="画面">
-            <TabsTrigger value="screening">スクリーニング</TabsTrigger>
-            <TabsTrigger value="portfolio">
-              ポートフォリオ
-              {codes.size > 0 && <span className="ml-1 tabular-nums">({codes.size})</span>}
-            </TabsTrigger>
-            <TabsTrigger value="recommend">AIレコメンド</TabsTrigger>
-          </TabsList>
-        </Tabs>
-        {view === "screening" && <ScreeningPage />}
-        {view === "portfolio" && <PortfolioPage />}
-        {view === "recommend" && <RecommendPage />}
+        {detailCode ? (
+          <StockDetailPage key={detailCode} code={detailCode} />
+        ) : (
+          <>
+            <Tabs value={view} onValueChange={(v) => go(v as View)}>
+              <TabsList aria-label="画面">
+                <TabsTrigger value="screening">スクリーニング</TabsTrigger>
+                <TabsTrigger value="portfolio">
+                  ポートフォリオ
+                  {codes.size > 0 && <span className="ml-1 tabular-nums">({codes.size})</span>}
+                </TabsTrigger>
+                <TabsTrigger value="recommend">AIレコメンド</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            {view === "screening" && <ScreeningPage />}
+            {view === "portfolio" && <PortfolioPage />}
+            {view === "recommend" && <RecommendPage />}
+          </>
+        )}
       </main>
       <Footer />
     </div>
@@ -156,7 +166,7 @@ function Freshness() {
       )}
     >
       {status
-        ? `株価: ${ymd(status.latest_price_date)}終値（${jstDateTime(status.finished_at ?? status.started_at)}取得）`
+        ? `株価: ${ymd(status.latest_price_date)}終値・財務: ${ymd(status.latest_fin_date)}開示分（${jstDateTime(status.finished_at ?? status.started_at)}取得）`
         : "データがまだありません"}
       {stale && status ? "・更新が止まっています" : ""}
     </p>
