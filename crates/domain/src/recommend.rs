@@ -139,6 +139,74 @@ impl std::fmt::Display for TooFewPicks {
     }
 }
 
+/// 理由文に出てくる指標の名前。値（数字）を伴わずに出てきたら、渡していない項目に触れている
+const METRIC_NAMES: [&str; 9] = [
+    "配当性向",
+    "配当利回り",
+    "利回り",
+    "PBR",
+    "PER",
+    "DOE",
+    "営業利益",
+    "売上高",
+    "連続増配",
+];
+
+/// 理由文から、値を伴わずに指標の名前だけが出てくる節（「配当性向はなし」など）を取り除く。
+/// AI には良い点（値つき）しか渡していないので、値のない指標の話は渡していない項目への言及になる。
+/// 文の終わりの節を取り除いたときは、残った文が「〜しており」で終わらないよう言い切りに直す
+pub fn tidy_reason(reason: &str) -> String {
+    let mentions_without_value = |clause: &str| {
+        METRIC_NAMES.iter().any(|m| clause.contains(m))
+            && !clause
+                .chars()
+                .any(|c| c.is_ascii_digit() || ('０'..='９').contains(&c))
+    };
+    let mut out = String::new();
+    let mut rest = reason;
+    while !rest.is_empty() {
+        let (sentence, terminated) = match rest.find('。') {
+            Some(i) => {
+                let s = &rest[..i];
+                rest = &rest[i + '。'.len_utf8()..];
+                (s, true)
+            }
+            None => {
+                let s = rest;
+                rest = "";
+                (s, false)
+            }
+        };
+        let clauses: Vec<&str> = sentence.split('、').collect();
+        let kept: Vec<&str> = clauses
+            .iter()
+            .copied()
+            .filter(|c| !mentions_without_value(c))
+            .collect();
+        if kept.iter().all(|c| c.trim().is_empty()) {
+            continue;
+        }
+        let mut s = kept.join("、");
+        if kept.last() != clauses.last() {
+            for (from, to) in [
+                ("しており", "している"),
+                ("ており", "ている"),
+                ("であり", "である"),
+            ] {
+                if let Some(head) = s.strip_suffix(from) {
+                    s = format!("{head}{to}");
+                    break;
+                }
+            }
+        }
+        out.push_str(&s);
+        if terminated {
+            out.push('。');
+        }
+    }
+    out
+}
+
 /// AI の答えを検証して順位を付ける。候補にない銘柄・重複・空や長すぎる理由・PICK_COUNT を超えた分は
 /// その1件だけ捨て、残りを AI の並び順のまま詰めて順位にする。残りが MIN_PICKS 未満なら保存しない
 pub fn validate_picks(raw: &[RawPick], candidates: &[Candidate]) -> Result<Validated, TooFewPicks> {
@@ -154,7 +222,7 @@ pub fn validate_picks(raw: &[RawPick], candidates: &[Candidate]) -> Result<Valid
             dropped.push(PickError::Duplicate(code.to_string()));
             continue;
         }
-        let reason: String = p.reason.split_whitespace().collect::<Vec<_>>().join(" ");
+        let reason = tidy_reason(&p.reason.split_whitespace().collect::<Vec<_>>().join(" "));
         if reason.is_empty() || reason.chars().count() > MAX_REASON_CHARS {
             dropped.push(PickError::BadReason(code.to_string()));
             continue;
@@ -273,6 +341,33 @@ mod tests {
         (0..10)
             .map(|i| cand(&format!("{}", 4000 + i), Some(0.03), true, true, true))
             .collect()
+    }
+
+    #[test]
+    fn tidy_reason_drops_metrics_mentioned_without_values() {
+        assert_eq!(
+            tidy_reason(
+                "配当利回りが過去5年で上位1%の高さで割安、PBR 0.77倍で純資産から見て割安、3年連続で増配しており、配当性向はなし。"
+            ),
+            "配当利回りが過去5年で上位1%の高さで割安、PBR 0.77倍で純資産から見て割安、3年連続で増配している。",
+            "2026-10-22 の本番で出た文。最後の節を取り、言い切りに直す"
+        );
+        assert_eq!(
+            tidy_reason("PBR 0.80倍で割安。配当性向は不明。前期に増配した。"),
+            "PBR 0.80倍で割安。前期に増配した。",
+            "文ごと取り除く"
+        );
+        let ok = "4年連続で増配しており、配当性向 22.4%で増配の余地がある。利益が増える傾向。";
+        assert_eq!(
+            tidy_reason(ok),
+            ok,
+            "値のある指標と、指標でない良い点は残す"
+        );
+        assert_eq!(
+            tidy_reason("配当性向はなし。"),
+            "",
+            "全部取れたら空（検証で捨てる）"
+        );
     }
 
     #[test]
