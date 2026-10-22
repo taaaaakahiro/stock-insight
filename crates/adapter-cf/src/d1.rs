@@ -67,6 +67,9 @@ struct Row {
     op_growth: Option<f64>,
     progressive_dividend: Option<i64>,
     no_dividend_cut: Option<i64>,
+    /// 条件に合う件数（一覧の SQL だけが返す）
+    #[serde(default)]
+    total: Option<i64>,
 }
 
 impl From<Row> for StockRow {
@@ -137,6 +140,41 @@ impl From<DisclosureDbRow> for DisclosureRow {
 }
 
 #[derive(Deserialize)]
+struct VersionRow {
+    run_id: String,
+    started_at: i64,
+    finished_at: Option<i64>,
+    edinet_at: Option<i64>,
+}
+
+/// これより長く「実行中」のままのバッチは止まったとみなし、キャッシュを再開する（秒）
+const STUCK_RUN_SECS: i64 = 3 * 3600;
+
+impl D1Indicators {
+    /// データの版（サーバー側キャッシュのキーに使う）。バッチが未実行・実行中なら None（キャッシュしない）
+    pub async fn data_version(&self, now: i64) -> Result<Option<String>, PortError> {
+        let row: Option<VersionRow> = self
+            .db
+            .prepare(query::DATA_VERSION)
+            .first(None)
+            .await
+            .map_err(err)?;
+        Ok(row.and_then(|r| {
+            let finished = match r.finished_at {
+                Some(t) => t.to_string(),
+                None if now - r.started_at > STUCK_RUN_SECS => "stuck".into(),
+                None => return None,
+            };
+            Some(format!(
+                "{}.{finished}.{}",
+                r.run_id,
+                r.edinet_at.unwrap_or(0)
+            ))
+        }))
+    }
+}
+
+#[derive(Deserialize)]
 struct RunRow {
     run_id: String,
     started_at: i64,
@@ -154,15 +192,20 @@ impl IndicatorQuery for D1Indicators {
             .map_err(err)?
             .results()
             .map_err(err)?;
-        let total: Option<f64> = self
-            .prepare(&query::count(filter))?
-            .first(Some("n"))
-            .await
-            .map_err(err)?;
-        Ok((
-            rows.into_iter().map(StockRow::from).collect(),
-            total.unwrap_or(0.0) as u64,
-        ))
+        let total = match rows.first() {
+            Some(r) => r.total.unwrap_or(0).max(0) as u64,
+            // 1ページ目が空なら0件。最後のページより先を開いたときだけ数え直す
+            None if filter.page <= 1 => 0,
+            None => {
+                let n: Option<f64> = self
+                    .prepare(&query::count(filter))?
+                    .first(Some("n"))
+                    .await
+                    .map_err(err)?;
+                n.unwrap_or(0.0) as u64
+            }
+        };
+        Ok((rows.into_iter().map(StockRow::from).collect(), total))
     }
 
     async fn latest_run(&self) -> Result<Option<DataStatus>, PortError> {

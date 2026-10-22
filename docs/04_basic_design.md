@@ -75,7 +75,8 @@ sequenceDiagram
   C-->>B: セッショントークン（JWT）
   B->>API: Authorization: Bearer <JWT>
   API->>API: JWKSで署名検証
-  API->>D1: users（1時間以内に確認済みならそれを使う）
+  API->>API: Worker のメモリ（1時間以内に確認済みならそれを使う）
+  API->>D1: users（メモリになければ。1時間以内に確認済みならそれを使う）
   API->>C: ユーザー情報（初回と1時間ごと）: Googleのつながり・public_metadata
   API->>D1: users を更新、login_events に記録
   API->>D1: user_idで絞ったクエリ
@@ -144,12 +145,14 @@ API Workerが提供するエンドポイント。すべて`Authorization: Bearer
 | メソッド | パス | 内容 | キャッシュ | 対応機能 |
 |---|---|---|---|---|
 | GET | /api/me | ログイン中のユーザー（id・メールアドレス・表示名・管理者かどうか） | no-store | F1 |
-| GET | /api/stocks | スクリーニング一覧。クエリは下の表 | private, max-age=300 | F2 |
-| GET | /api/stocks/:code/edinet | 有報・半期報告書（最新1通ずつ）から拾った配当方針の手がかりと該当の文 | private, max-age=300 | F3 |
-| GET | /api/status | 版（`version`）と直近のバッチ（run_id・開始・終了・状態・最新の株価日付） | private, max-age=300 | F8 |
+| GET | /api/stocks | スクリーニング一覧。クエリは下の表 | 共有（下の注） | F2 |
+| GET | /api/stocks/:code/edinet | 有報・半期報告書（最新1通ずつ）から拾った配当方針の手がかりと該当の文 | 共有（下の注） | F3 |
+| GET | /api/status | 版（`version`）と直近のバッチ（run_id・開始・終了・状態・最新の株価日付） | 共有（下の注） | F8 |
 | GET | /api/portfolio | 登録した銘柄のコード一覧と、各銘柄の一覧と同じ列＋売り時のサイン（`signals`） | no-store | F4 |
 | PUT | /api/portfolio/:code | 銘柄を登録（100銘柄まで。超えたら 409） | no-store | F4 |
 | DELETE | /api/portfolio/:code | 登録を外す | no-store | F4 |
+
+「共有」の3本は中身が誰でも同じなので、データの版をキーに Cache API に置き（24時間）、ブラウザには `private, max-age=300` と弱い ETag を返す（[05 キャッシュ](05_detailed_design.md#キャッシュ)）。D1 の読み取りの無料枠（500万行/日）を画面の操作で使い切らないため。
 
 `/api/stocks` のクエリ:
 

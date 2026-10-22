@@ -182,12 +182,12 @@ CloudflareのCron Trigger（`30 9 * * 1-5` = 平日18:30 JST）は呼び出し�
 
 | 対象 | 実装 | 状態 |
 |---|---|---|
-| 一覧・配当方針・状態の API | `Cache-Control: private, max-age=300` | 済み |
+| 一覧・配当方針・状態の API（`/api/stocks`・`/api/stocks/:code/edinet`・`/api/status`） | Cache API（TTL 24時間）。キーと ETag（弱い ETag、`If-None-Match` が一致すれば 304）は「アプリの版＋データの版」から作る。データの版は最新バッチの run_id・終了時刻と EDINET 取り込みの最終時刻（`sync_state` の `edinet_listed_until` の `updated_at`）で、Worker のメモリに60秒持つ。バッチの実行中は使わない（3時間以上「実行中」なら止まったとみなして使う）。ブラウザには `Cache-Control: private, max-age=300` | 済み |
 | ユーザー固有データ（`/api/me`・`/api/portfolio`）とエラー | `Cache-Control: no-store` | 済み |
 | 静的ファイル | `/assets/*`（ハッシュ付きJS・CSS）は`public, max-age=31536000, immutable`、それ以外は`no-cache`（`web/public/_headers`） | 済み |
 | JWKS | Workerのメモリに1時間。検証失敗時は即時取り直し | 済み |
-| 許可リストの判定 | D1 の `users` に1時間 | 済み |
-| 一覧・詳細 API のサーバー側 | Cache API。キャッシュキーに最新バッチIDを含め、TTL 24時間。ETag | 未実装 |
+| 許可リストの判定 | D1 の `users` に1時間。Worker のメモリにも同じ1時間持ち、その間は D1 を読まない | 済み |
+| 一覧の件数 | 一覧の SQL に `COUNT(*) OVER ()` を足し、同じスキャンで数える。最後のページより先を開いて0行のときだけ `COUNT(*)` を流す | 済み |
 
 ## エラー処理とログ
 

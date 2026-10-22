@@ -9,6 +9,9 @@
 //!   PUT /api/portfolio/:code        銘柄を登録
 //!   DELETE /api/portfolio/:code     登録を外す
 //!
+//! 一覧・配当方針・状態は、データの版（最新バッチと EDINET の取り込み）をキーに Cache API へ置く。
+//! D1 の無料枠（読み取り 500万行/日）を画面の操作で使い切らないため。
+//!
 //! Cron Trigger（平日18:30 JST）では、GitHub Actions の日次バッチ（daily-batch.yml）を起動する。
 
 use adapter_cf::clerk::{ClerkDirectory, ClerkVerifier};
@@ -17,16 +20,32 @@ use adapter_cf::users::D1Users;
 use domain::access::Access;
 use domain::screening::ScreeningFilter;
 use serde_json::{json, Value};
-use usecase::auth::{authenticate, AuthError, AuthUser, RequestMeta};
+use std::cell::RefCell;
+use std::future::Future;
+use std::rc::Rc;
+use usecase::auth::{authenticate, AuthError, AuthUser, CachedUsers, RequestMeta, UserMemo};
 use usecase::portfolio::PortfolioError;
 use usecase::screening::{data_status, disclosures, screen, StockRow};
 use usecase::Clock;
 use worker::{
-    event, Context, Env, Request, Response, Result, RouteContext, Router, ScheduleContext,
+    event, Cache, Context, Env, Request, Response, Result, RouteContext, Router, ScheduleContext,
     ScheduledEvent,
 };
 
 const DB_BINDING: &str = "DB";
+
+/// ブラウザに持たせる時間（一覧・配当方針・状態）
+const BROWSER_CACHE: &str = "private, max-age=300";
+/// Cache API に置く時間。版が変わればキーも変わるので、長くてよい
+const SHARED_TTL_SECS: u32 = 86_400;
+/// データの版を D1 に聞き直す間隔（秒）。バッチの完了はこの時間だけ遅れて反映される
+const VERSION_TTL_SECS: i64 = 60;
+
+thread_local! {
+    // isolate 内で使い回す: users の行と、データの版（確認時刻, 版）
+    static USERS: Rc<UserMemo> = Rc::default();
+    static DATA_VERSION: RefCell<Option<(i64, Option<String>)>> = const { RefCell::new(None) };
+}
 
 struct WorkerClock;
 impl Clock for WorkerClock {
@@ -127,13 +146,15 @@ async fn auth(req: &Request, env: &Env) -> std::result::Result<AuthUser, Result<
         user_agent: req.headers().get("User-Agent").ok().flatten(),
     };
     let db = |e: &Env| e.d1(DB_BINDING).map_err(|e| internal(&e.to_string()));
+    let users = D1Users::new(db(env)?);
+    let memo = USERS.with(Rc::clone);
     let result = authenticate(
         token,
         &meta,
         cfg.admin_email.as_deref(),
         &ClerkVerifier::new(&cfg.issuer, cfg.authorized_parties),
         &ClerkDirectory::new(&cfg.api_url, cfg.secret_key),
-        &D1Users::new(db(env)?),
+        &CachedUsers::new(&users, &memo, WorkerClock.now_unix()),
         &WorkerClock,
     )
     .await;
@@ -178,58 +199,148 @@ async fn stocks(req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
             Ok(f) => f,
             Err(e) => return json_error(400, "bad_request", &e.0),
         };
-    let repo = D1Indicators::new(ctx.env.d1(DB_BINDING)?);
-    match screen(&repo, &filter).await {
-        Ok(page) => json_ok(&json!({
-            "rows": page.rows.iter().map(row_json).collect::<Vec<_>>(),
-            "total": page.total,
-            "page": page.page,
-            "page_size": page.page_size,
-        })),
-        Err(e) => internal(&e.0),
-    }
-}
-
-async fn edinet(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
-    let repo = D1Indicators::new(ctx.env.d1(DB_BINDING)?);
-    let code = ctx.param("code").cloned().unwrap_or_default();
-    match disclosures(&repo, &code).await {
-        Ok(Some(docs)) => json_ok(&json!({
-            "code": code,
-            "docs": docs.iter().map(|d| json!({
-                "doc_kind": d.doc_kind,
-                "doc_id": d.doc_id,
-                "submitted": d.submitted,
-                "period_end": d.period_end,
-                "progressive_dividend": d.progressive_dividend,
-                "no_dividend_cut": d.no_dividend_cut,
-                "dividend_raise": d.dividend_raise,
-                "doe_target": d.doe_target,
-                "payout_target": d.payout_target,
-                "phrases": d.phrases,
-            })).collect::<Vec<_>>(),
-        })),
-        Ok(None) => json_error(400, "bad_request", "bad stock code"),
-        Err(e) => internal(&e.0),
-    }
-}
-
-async fn status(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
-    let repo = D1Indicators::new(ctx.env.d1(DB_BINDING)?);
-    match data_status(&repo).await {
-        Ok(s) => json_ok(&json!({
-            // リポジトリの Cargo.toml（workspace.package.version）。画面の表示と GitHub のタグに合わせる
-            "version": env!("CARGO_PKG_VERSION"),
-            "latest_run": s.map(|s| json!({
-                "run_id": s.run_id,
-                "started_at": s.started_at,
-                "finished_at": s.finished_at,
-                "status": s.status,
-                "latest_price_date": s.latest_price_date,
+    shared(&req, &ctx.env, |repo| async move {
+        match screen(&repo, &filter).await {
+            Ok(page) => json_ok(&json!({
+                "rows": page.rows.iter().map(row_json).collect::<Vec<_>>(),
+                "total": page.total,
+                "page": page.page,
+                "page_size": page.page_size,
             })),
-        })),
-        Err(e) => internal(&e.0),
+            Err(e) => internal(&e.0),
+        }
+    })
+    .await
+}
+
+async fn edinet(req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let code = ctx.param("code").cloned().unwrap_or_default();
+    shared(&req, &ctx.env, |repo| async move {
+        match disclosures(&repo, &code).await {
+            Ok(Some(docs)) => json_ok(&json!({
+                "code": code,
+                "docs": docs.iter().map(|d| json!({
+                    "doc_kind": d.doc_kind,
+                    "doc_id": d.doc_id,
+                    "submitted": d.submitted,
+                    "period_end": d.period_end,
+                    "progressive_dividend": d.progressive_dividend,
+                    "no_dividend_cut": d.no_dividend_cut,
+                    "dividend_raise": d.dividend_raise,
+                    "doe_target": d.doe_target,
+                    "payout_target": d.payout_target,
+                    "phrases": d.phrases,
+                })).collect::<Vec<_>>(),
+            })),
+            Ok(None) => json_error(400, "bad_request", "bad stock code"),
+            Err(e) => internal(&e.0),
+        }
+    })
+    .await
+}
+
+async fn status(req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    shared(&req, &ctx.env, |repo| async move {
+        match data_status(&repo).await {
+            Ok(s) => json_ok(&json!({
+                // リポジトリの Cargo.toml（workspace.package.version）。画面の表示と GitHub のタグに合わせる
+                "version": env!("CARGO_PKG_VERSION"),
+                "latest_run": s.map(|s| json!({
+                    "run_id": s.run_id,
+                    "started_at": s.started_at,
+                    "finished_at": s.finished_at,
+                    "status": s.status,
+                    "latest_price_date": s.latest_price_date,
+                })),
+            })),
+            Err(e) => internal(&e.0),
+        }
+    })
+    .await
+}
+
+/// 全員に同じ中身を返す GET を、データの版ごとに Cache API へ置く。
+/// 版が変わればキーも ETag も変わるので、バッチの後に古い中身は返さない。
+/// 版がわからない（バッチの実行中・D1 のエラー）ときはキャッシュを使わずに D1 を読む
+async fn shared<F, Fut>(req: &Request, env: &Env, build: F) -> Result<Response>
+where
+    F: FnOnce(D1Indicators) -> Fut,
+    Fut: Future<Output = Result<Response>>,
+{
+    let repo = D1Indicators::new(env.d1(DB_BINDING)?);
+    let Some(version) = data_version(&repo).await else {
+        return build(repo).await;
+    };
+    // 画面の形が変わる版の更新でも切り替わるよう、アプリの版も混ぜる
+    let tag = format!(
+        "W/\"{:016x}\"",
+        fnv1a(&format!("{}|{version}", env!("CARGO_PKG_VERSION")))
+    );
+    let not_modified = req
+        .headers()
+        .get("If-None-Match")?
+        .is_some_and(|h| h.split(',').any(|t| t.trim() == tag));
+    if not_modified {
+        let mut res = Response::empty()?.with_status(304);
+        res.headers_mut().set("ETag", &tag)?;
+        res.headers_mut().set("Cache-Control", BROWSER_CACHE)?;
+        return Ok(res);
     }
+    // キーはパスとクエリと版だけ（Authorization は含めない。中身は誰が見ても同じ）
+    let mut key = req.url()?;
+    key.query_pairs_mut()
+        .append_pair("_v", &tag[3..tag.len() - 1]);
+    let cache = Cache::default();
+    match cache.get(key.as_str(), false).await {
+        Ok(Some(mut hit)) => return json_bytes(hit.bytes().await?, BROWSER_CACHE, Some(&tag)),
+        Ok(None) => {}
+        Err(e) => worker::console_error!("cache get: {e}"),
+    }
+    let mut res = build(repo).await?;
+    if res.status_code() != 200 {
+        return Ok(res);
+    }
+    let body = res.bytes().await?;
+    let stored = json_bytes(
+        body.clone(),
+        &format!("public, max-age={SHARED_TTL_SECS}"),
+        None,
+    )?;
+    if let Err(e) = cache.put(key.as_str(), stored).await {
+        worker::console_error!("cache put: {e}");
+    }
+    json_bytes(body, BROWSER_CACHE, Some(&tag))
+}
+
+/// データの版。isolate のメモリに VERSION_TTL_SECS だけ持つ
+async fn data_version(repo: &D1Indicators) -> Option<String> {
+    let now = WorkerClock.now_unix();
+    let cached = DATA_VERSION.with(|c| {
+        c.borrow()
+            .as_ref()
+            .filter(|(at, _)| now - at < VERSION_TTL_SECS)
+            .map(|(_, v)| v.clone())
+    });
+    if let Some(v) = cached {
+        return v;
+    }
+    match repo.data_version(now).await {
+        Ok(v) => {
+            DATA_VERSION.with(|c| *c.borrow_mut() = Some((now, v.clone())));
+            v
+        }
+        Err(e) => {
+            worker::console_error!("data version: {e}");
+            None
+        }
+    }
+}
+
+/// ETag 用の短いハッシュ（FNV-1a 64bit）
+fn fnv1a(s: &str) -> u64 {
+    s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 async fn portfolio(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
@@ -319,7 +430,19 @@ fn json_response(body: &Value, status: u16, cache: &str) -> Result<Response> {
 }
 
 fn json_ok(body: &Value) -> Result<Response> {
-    json_response(body, 200, "private, max-age=300")
+    json_response(body, 200, BROWSER_CACHE)
+}
+
+/// 組み立て済みの JSON を返す（キャッシュから出すとき・置くとき）
+fn json_bytes(body: Vec<u8>, cache: &str, etag: Option<&str>) -> Result<Response> {
+    let mut res = Response::from_bytes(body)?;
+    let h = res.headers_mut();
+    h.set("Content-Type", "application/json")?;
+    h.set("Cache-Control", cache)?;
+    if let Some(t) = etag {
+        h.set("ETag", t)?;
+    }
+    Ok(res)
 }
 
 fn json_error(status: u16, code: &str, message: &str) -> Result<Response> {
