@@ -95,17 +95,15 @@ impl EdinetClient {
         self.get(&format!("{BASE}/documents/{doc_id}?type=1")).await
     }
 
-    /// 書類の文章（項目ごと、整形済み）。数値の項目は J-Quants で足りるので読まない
-    pub async fn fetch_sections(&self, doc_id: &str) -> Result<Vec<(Section, String)>, PortError> {
-        let zip = self
-            .get(&format!("{BASE}/documents/{doc_id}?type=5"))
-            .await?;
-        let rows = read_csv_from_zip(&zip)?;
-        Ok(sections(&rows))
+    /// 書類の CSV（type=5 の zip）。中身は sections_from_zip で読む
+    pub async fn fetch_csv_zip(&self, doc_id: &str) -> Result<Vec<u8>, PortError> {
+        self.get(&format!("{BASE}/documents/{doc_id}?type=5")).await
     }
 }
 
 /// 書類一覧APIの応答から、有報・半期報告書（CSV があり、取下げでなく、証券コードがあるもの）。
+/// 会社が信託受益証券などの特定有価証券の有報（府令 030、XBRL は jpsps）を出すと証券コードに会社のものが入るので、
+/// 会社本体の書類（企業内容等の開示府令、010）だけに絞る。
 /// 一覧には、その日に縦覧の状態などが変わった過去の書類も載るので、その日に提出されたものだけを残す
 /// （古い書類の提出日で続きの日付が大きく戻らないように）
 pub fn parse_document_list(body: &[u8], day: Date) -> Result<Vec<DocRef>, PortError> {
@@ -119,6 +117,7 @@ pub fn parse_document_list(body: &[u8], day: Date) -> Result<Vec<DocRef>, PortEr
     let results = v["results"].as_array().unwrap_or(&empty);
     Ok(results
         .iter()
+        .filter(|r| r["ordinanceCode"].as_str() == Some("010"))
         .filter(|r| r["csvFlag"].as_str() == Some("1"))
         .filter(|r| r["withdrawalStatus"].as_str().is_none_or(|s| s == "0"))
         .filter_map(|r| {
@@ -339,6 +338,11 @@ pub struct XbrlRow {
     pub value: String,
 }
 
+/// 書類の文章（項目ごと、整形済み）。数値の項目は J-Quants で足りるので読まない
+pub fn sections_from_zip(bytes: &[u8]) -> Result<Vec<(Section, String)>, PortError> {
+    Ok(sections(&read_csv_from_zip(bytes)?))
+}
+
 /// zip の中から本体の CSV（XBRL_TO_CSV/jpcrp*.csv）を探して読む。監査報告書（jpaud）は読まない
 pub fn read_csv_from_zip(bytes: &[u8]) -> Result<Vec<XbrlRow>, PortError> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))
@@ -459,7 +463,7 @@ mod tests {
         let body = include_bytes!("../../../fixtures/edinet_documents_sample.json");
         let list = parse_document_list(body, Date::new(2026, 11, 10)).unwrap();
         let ids: Vec<(&str, DocKind)> = list.iter().map(|d| (d.doc_id.as_str(), d.kind)).collect();
-        // その日に提出された有報と半期報告書だけ。CSV なし・取下げ・証券コードなし・訂正・前に提出された書類は除く
+        // その日に提出された有報と半期報告書だけ。CSV なし・取下げ・証券コードなし・訂正・前に提出された書類・特定有価証券の書類は除く
         assert_eq!(
             ids,
             [
@@ -491,6 +495,63 @@ mod tests {
             "secCode が空でも拾う。自己投資口の報告書・前の日の書類は除く"
         );
         assert_eq!(list[0].period_end, Some(Date::new(2026, 5, 31)));
+    }
+
+    fn zip_of(files: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write;
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(vec![]));
+        for (name, body) in files {
+            w.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            w.write_all(body).unwrap();
+        }
+        w.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn zip_without_jpcrp_csv_is_unreadable() {
+        let head = [
+            "要素ID",
+            "項目名",
+            "コンテキストID",
+            "相対年度",
+            "連結・個別",
+            "期間・時点",
+            "ユニットID",
+            "単位",
+            "値",
+        ];
+        let row = [
+            "jpcrp_cor:DividendPolicyTextBlock",
+            "配当政策",
+            "FilingDateInstant",
+            "提出日時点",
+            "その他",
+            "時点",
+            "",
+            "",
+            "安定的な配当を行う",
+        ];
+        let line = |cols: &[&str]| {
+            cols.iter()
+                .map(|c| format!("\"{c}\""))
+                .collect::<Vec<_>>()
+                .join("\t")
+        };
+        let csv = utf16(&format!("{}\n{}\n", line(&head), line(&row)));
+        let trust = zip_of(&[(
+            "XBRL_TO_CSV/jpsps090000-asr-001_G15497-000_2026-05-31_01_2026-08-28.csv",
+            &csv,
+        )]);
+        assert!(
+            sections_from_zip(&trust).is_err(),
+            "特定有価証券（jpsps）の CSV しかない書類は読めない"
+        );
+        let company = zip_of(&[(
+            "XBRL_TO_CSV/jpcrp030000-asr-001_E99999-000_2026-03-31_01_2026-06-20.csv",
+            &csv,
+        )]);
+        assert!(sections_from_zip(&company).is_ok());
     }
 
     #[test]

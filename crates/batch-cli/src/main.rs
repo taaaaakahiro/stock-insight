@@ -683,9 +683,11 @@ async fn sync_edinet(args: Args) -> Result<(), String> {
         .collect();
     append_lines(&raw_dir.join(EDINET_DELETE_FILE), &keys)?;
 
-    // 4. 書類を取る。止まったら、まだ取っていない最初の書類の前日から次回やり直す
+    // 4. 書類を取る。通信などで止まったら、まだ取っていない最初の書類の前日から次回やり直す。
+    // 中身が読めない書類は、やり直しても読めないので飛ばして続ける
     let mut pending = vec![];
     let mut fetched = 0;
+    let mut skipped = 0;
     let mut error = None;
     for doc in &plan.fetch {
         if started.elapsed() > deadline {
@@ -697,7 +699,11 @@ async fn sync_edinet(args: Args) -> Result<(), String> {
         }
         match fetch_doc(&ed, &raw_dir, doc).await {
             Ok(e) => pending.push(e),
-            Err(e) => {
+            Err(FetchError::Unreadable(e)) => {
+                println!("sync-edinet: skip {} {}: {e}", doc.code, doc.doc_id);
+                skipped += 1;
+            }
+            Err(FetchError::Stop(e)) => {
                 error = Some(format!("{} {}: {e}", doc.code, doc.doc_id));
                 break;
             }
@@ -721,10 +727,28 @@ async fn sync_edinet(args: Args) -> Result<(), String> {
         .await
         .map_err(|e| e.0)?;
     println!(
-        "sync-edinet: {fetched} fetched, listed until {next}, {}s",
+        "sync-edinet: {} fetched, {skipped} skipped, listed until {next}, {}s",
+        fetched - skipped,
         started.elapsed().as_secs()
     );
     error.map_or(Ok(()), Err)
+}
+
+/// 1通を取れなかった理由
+#[derive(Debug)]
+enum FetchError {
+    /// 書類の中身が読めない（本体の CSV がないなど）。やり直しても同じなので飛ばす
+    Unreadable(String),
+    /// 通信・書き出しの失敗など。次回やり直す
+    Stop(String),
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FetchError::Unreadable(e) | FetchError::Stop(e) => f.write_str(e),
+        }
+    }
 }
 
 /// 1通を取り、文章を R2 用のファイルに書き、配当方針の手がかりを返す
@@ -732,8 +756,13 @@ async fn fetch_doc(
     ed: &EdinetClient,
     raw_dir: &std::path::Path,
     doc: &DocRef,
-) -> Result<EdinetDoc, String> {
-    let sections = ed.fetch_sections(&doc.doc_id).await.map_err(|e| e.0)?;
+) -> Result<EdinetDoc, FetchError> {
+    let zip = ed
+        .fetch_csv_zip(&doc.doc_id)
+        .await
+        .map_err(|e| FetchError::Stop(e.0))?;
+    let sections =
+        adapter_batch::edinet::sections_from_zip(&zip).map_err(|e| FetchError::Unreadable(e.0))?;
     let refs: Vec<(domain::disclosure::Section, &str)> =
         sections.iter().map(|(s, t)| (*s, t.as_str())).collect();
     let signals = domain::disclosure::detect(&refs);
@@ -759,7 +788,7 @@ async fn fetch_doc(
         &usecase::edinet::r2_key(&doc.code, doc.kind),
         &body,
     )
-    .map_err(|e| e.0)?;
+    .map_err(|e| FetchError::Stop(e.0))?;
     let flags = [
         (signals.progressive, "累進配当"),
         (signals.no_cut, "非減配"),
@@ -825,7 +854,11 @@ async fn sync_edinet_dry_run(args: &Args, path: &str) -> Result<(), String> {
     let plan = usecase::edinet::plan(listed, &HashMap::new(), &all);
     let mut docs = vec![];
     for doc in plan.fetch.iter().take(args.limit) {
-        docs.push(fetch_doc(&ed, &raw_dir, doc).await?);
+        docs.push(
+            fetch_doc(&ed, &raw_dir, doc)
+                .await
+                .map_err(|e| format!("{} {}: {e}", doc.code, doc.doc_id))?,
+        );
     }
     let sql: String = adapter_batch::sql::edinet_docs_stmts(&docs, 0)
         .iter()
