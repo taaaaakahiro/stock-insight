@@ -36,7 +36,7 @@
 - [x] メール: 管理者だけの機能。宛先はシークレットで登録し、Cloudflareの検証済み宛先への無料送信を使う
 - [x] 対象銘柄: 全上場銘柄
 - [x] 決算短信の速報: 対象外
-- [x] 株価・財務の取得元: J-Quants Light（月1,650円）。Yahoo FinanceとEDINETは使わない。規約により当面は管理者1人で使う
+- [x] 株価・財務の取得元: J-Quants Light（月1,650円）。Yahoo Financeは使わない。EDINETは配当方針の文章（有報・半期報告書の最新1通ずつ）だけに使う。規約により当面は管理者1人で使う
 
 - [x] インフラ: リソースはwranglerコマンドで作成し、当面はCloudflare側で管理する（あとでmaaun-terraformにimportするかもしれない）。デプロイとシークレットもコマンド（wrangler・gh）で行う
 

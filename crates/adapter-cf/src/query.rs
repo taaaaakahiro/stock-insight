@@ -21,7 +21,9 @@ pub const LIST_COLUMNS: &str =
     "i.code, i.price, i.price_date, i.dividend_yield, i.yield_percentile, i.pbr, i.per, \
      i.payout_ratio, i.doe, i.consecutive_increases, i.operating_margin, i.no_loss_years, i.profit_uptrend, \
      i.valuation, i.fetched_at, s.name, COALESCE(s.kind, 'stock') AS kind, s.market, s.sector33, s.size_class, \
-     i.dividend_every_year, i.no_quarterly_loss, i.is_value, i.data_years";
+     i.dividend_every_year, i.no_quarterly_loss, i.is_value, i.data_years, i.sales_growth, i.op_growth, \
+     (SELECT MAX(e.progressive_dividend) FROM edinet_docs e WHERE e.code = i.code) AS progressive_dividend, \
+     (SELECT MAX(e.no_dividend_cut) FROM edinet_docs e WHERE e.code = i.code) AS no_dividend_cut";
 
 /// マスタにまだない銘柄も消えないよう LEFT JOIN（種類は株式として扱う）
 const FROM: &str = "FROM indicators_latest i LEFT JOIN stocks s ON s.code = i.code";
@@ -79,6 +81,13 @@ fn where_clause(f: &ScreeningFilter) -> (String, Vec<Arg>) {
     if f.no_quarterly_loss {
         conds.push("i.no_quarterly_loss = 1".to_string());
     }
+    if f.dividend_policy {
+        conds.push(
+            "EXISTS (SELECT 1 FROM edinet_docs e WHERE e.code = i.code \
+             AND (e.progressive_dividend = 1 OR e.no_dividend_cut = 1))"
+                .to_string(),
+        );
+    }
     (format!(" WHERE {}", conds.join(" AND ")), args)
 }
 
@@ -123,6 +132,12 @@ pub fn portfolio_rows() -> String {
     )
 }
 
+/// 1銘柄の EDINET の書類と配当方針の手がかり（? は銘柄コード）
+pub const EDINET_DOCS: &str =
+    "SELECT doc_kind, doc_id, submitted, period_end, progressive_dividend, \
+     no_dividend_cut, dividend_raise, doe_target, payout_target, phrases \
+     FROM edinet_docs WHERE code = ? ORDER BY doc_kind";
+
 pub const PORTFOLIO_CODES: &str =
     "SELECT code FROM portfolio_items WHERE user_id = ? ORDER BY added_at, code";
 pub const PORTFOLIO_ADD: &str =
@@ -157,7 +172,7 @@ pub const RECOMMENDATION_EXISTS: &str = "SELECT COUNT(*) AS n FROM recommendatio
 pub const RECOMMENDATION_INSERT: &str = "INSERT INTO recommendations \
      (date, rank, code, reason, model, created_at) VALUES (?, ?, ?, ?, ?, ?)";
 
-/// 一覧・状態の中身が変わったかの目印（サーバー側キャッシュのキー）。
+/// 一覧・配当方針・状態の中身が変わったかの目印（サーバー側キャッシュのキー）。
 /// 最新のバッチ（rowid は追加順）と、EDINET の取り込みを最後に終えた時刻。1〜2行しか読まない
 pub const DATA_VERSION: &str = "SELECT r.run_id, r.started_at, r.finished_at, \
      (SELECT updated_at FROM sync_state WHERE key = 'edinet_listed_until') AS edinet_at \
@@ -252,6 +267,21 @@ mod tests {
         assert!(
             portfolio_rows().starts_with(&format!("SELECT {LIST_COLUMNS} FROM portfolio_items"))
         );
+    }
+
+    #[test]
+    fn dividend_policy_filter_uses_edinet_docs() {
+        let f = ScreeningFilter::from_pairs([("dividend_policy", "1"), ("sort", "sales_growth")])
+            .unwrap();
+        let q = list(&f);
+        assert!(q.sql.contains(
+            "EXISTS (SELECT 1 FROM edinet_docs e WHERE e.code = i.code \
+             AND (e.progressive_dividend = 1 OR e.no_dividend_cut = 1))"
+        ));
+        assert!(q
+            .sql
+            .contains("ORDER BY i.sales_growth IS NULL, i.sales_growth DESC"));
+        assert_eq!(q.args.len(), 3, "kind と LIMIT・OFFSET だけ");
     }
 
     #[test]

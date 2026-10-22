@@ -34,6 +34,29 @@ pub struct StockRow {
     pub no_quarterly_loss: Option<bool>,
     pub is_value: Option<bool>,
     pub data_years: Option<i64>,
+    /// 売上高・営業利益の前年同期比（J-Quants の決算短信から）
+    pub sales_growth: Option<f64>,
+    pub op_growth: Option<f64>,
+    /// 有報・半期報告書に累進配当・非減配の記述がある（EDINET。書類がなければ None）
+    pub progressive_dividend: Option<bool>,
+    pub no_dividend_cut: Option<bool>,
+}
+
+/// 1銘柄の EDINET の書類（有報・半期報告書の最新1通ずつ）と配当方針の手がかり
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisclosureRow {
+    /// annual / semiannual
+    pub doc_kind: String,
+    pub doc_id: String,
+    pub submitted: String,
+    pub period_end: Option<String>,
+    pub progressive_dividend: bool,
+    pub no_dividend_cut: bool,
+    pub dividend_raise: bool,
+    pub doe_target: bool,
+    pub payout_target: Option<f64>,
+    /// 手がかりの言葉を含む文
+    pub phrases: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,6 +80,7 @@ pub struct DataStatus {
 pub trait IndicatorQuery {
     async fn search(&self, filter: &ScreeningFilter) -> Result<(Vec<StockRow>, u64), PortError>;
     async fn latest_run(&self) -> Result<Option<DataStatus>, PortError>;
+    async fn disclosures(&self, code: &str) -> Result<Vec<DisclosureRow>, PortError>;
 }
 
 pub async fn screen<Q: IndicatorQuery>(
@@ -70,6 +94,17 @@ pub async fn screen<Q: IndicatorQuery>(
         page: filter.page,
         page_size: PAGE_SIZE,
     })
+}
+
+/// 銘柄コードを確かめてから、その銘柄の EDINET の書類を返す（コードが不正なら None）
+pub async fn disclosures<Q: IndicatorQuery>(
+    repo: &Q,
+    code: &str,
+) -> Result<Option<Vec<DisclosureRow>>, PortError> {
+    let Some(code) = domain::StockCode::parse(code) else {
+        return Ok(None);
+    };
+    repo.disclosures(code.as_str()).await.map(Some)
 }
 
 pub async fn data_status<Q: IndicatorQuery>(repo: &Q) -> Result<Option<DataStatus>, PortError> {

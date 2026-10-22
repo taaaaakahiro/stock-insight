@@ -7,6 +7,7 @@ use domain::{Indicators, StockCode};
 
 pub mod auth;
 pub mod daily;
+pub mod edinet;
 pub mod fins;
 pub mod master;
 pub mod portfolio;

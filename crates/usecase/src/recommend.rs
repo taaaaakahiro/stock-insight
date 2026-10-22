@@ -233,6 +233,10 @@ mod tests {
             no_quarterly_loss: None,
             is_value: Some(value),
             data_years: Some(5),
+            sales_growth: None,
+            op_growth: None,
+            progressive_dividend: None,
+            no_dividend_cut: None,
         }
     }
 

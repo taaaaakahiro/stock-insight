@@ -1,6 +1,7 @@
 name: daily-batch
 
 # 日次バッチ: 銘柄マスタ（JPX）を更新し、J-Quants から株価（終値）と財務（本決算）を取り込んで、指標を D1 に保存する。
+# あわせて EDINET から有報・半期報告書（銘柄ごとに最新の1通）の配当政策などの文章を取り、配当方針の手がかりを D1 に、文章を R2 に置く。
 # 初回だけ過去5年分をまとめて取り込み、2回目以降は前回の続き（毎日なら当日分）だけを取る。
 # 起動は Cloudflare の Cron Trigger（平日 18:30 JST）からの workflow_dispatch。schedule は予備で、
 # 同じ日に2回動いても should-run が2回目を止める（休場日も止める）。
@@ -36,6 +37,7 @@ env:
   D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
   CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
   JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+  EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
 
 jobs:
   # 一度だけビルドして、後のジョブはバイナリを使い回す
@@ -73,11 +75,20 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ""
           D1_DATABASE_ID: ""
           CLOUDFLARE_API_TOKEN: ""
+      # EDINET は API キーがあるときだけ確認する
+      - run: |
+          [ -z "$EDINET_API_KEY" ] && { echo "EDINET_API_KEY is not set; skip"; exit 0; }
+          ./batch-cli sync-edinet --dry-run probe-edinet.sql --limit 5 \
+            --from "$(date -u -d '8 days ago' +%F)" --until "$(date -u -d '1 day ago' +%F)"
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ""
+          D1_DATABASE_ID: ""
+          CLOUDFLARE_API_TOKEN: ""
       - uses: actions/upload-artifact@v4
         with:
           name: probe-sql
           path: |
-            probe.sql
+            probe*.sql
             raw/
           retention-days: 3
 
@@ -111,16 +122,31 @@ jobs:
       # 保存は基本1回（最後）。毎回保存すると株価の履歴（全銘柄分）を書き直して D1 の1日の書き込み上限（10万行）に当たる
       - run: ./batch-cli sync-jq --rate 60 --max-minutes "${{ github.event.inputs.max_minutes || '300' }}" --persist-every "${{ github.event.inputs.persist_every || '1500' }}" --raw-dir raw
       - run: ./batch-cli compute --label daily
-      # J-Quants の応答（全項目）を日付ごとの gzip JSON で R2 に残す。後からの分析用。
-      # 指標の計算より後に置き、ここが失敗しても一覧の更新は止めない（CLOUDFLARE_API_TOKEN に R2 の編集権限が要る）
+      # EDINET の有報・半期報告書（銘柄・種類ごとに最新の1通）。初回は過去400日分の一覧から（約1時間強。時間切れなら次回は続きから）。
+      # 指標の計算より後に置き、ここが失敗しても一覧の更新は止めない
+      - name: sync EDINET
+        continue-on-error: true
+        run: ./batch-cli sync-edinet --rate 60 --max-minutes 60 --raw-dir raw
+      # J-Quants の応答（全項目）を日付ごとの gzip JSON で、EDINET の文章を銘柄・種類ごとの gzip JSON で R2 に置く。
+      # EDINET は同じキーに上書きするので古い書類は残らない。新しい有報で古くなった半期報告書と上場廃止の銘柄は消す。
+      # ここが失敗しても一覧の更新は止めない（CLOUDFLARE_API_TOKEN に R2 の編集権限が要る）
       - name: upload raw data to R2
         run: |
-          shopt -s nullglob
-          files=(raw/bars/*.json.gz raw/fins/*.json.gz)
-          echo "${#files[@]} files to upload"
-          [ "${#files[@]}" -eq 0 ] && exit 0
+          shopt -s nullglob globstar
+          jq_files=(raw/bars/*.json.gz raw/fins/*.json.gz)
+          ed_files=(raw/edinet/**/*.json.gz)
+          deletes=()
+          [ -f raw/edinet-delete.txt ] && mapfile -t deletes < raw/edinet-delete.txt
+          echo "${#jq_files[@]} J-Quants files, ${#ed_files[@]} EDINET files to upload, ${#deletes[@]} to delete"
+          [ $(( ${#jq_files[@]} + ${#ed_files[@]} + ${#deletes[@]} )) -eq 0 ] && exit 0
           npm install -g --silent wrangler@4.151.3
-          for f in "${files[@]}"; do
+          for f in "${jq_files[@]}"; do
             wrangler r2 object put "maaun-stock-insight-raw/jquants/${f#raw/}" --file "$f" --remote >/dev/null
           done
-          echo "uploaded ${#files[@]} files"
+          for f in "${ed_files[@]}"; do
+            wrangler r2 object put "maaun-stock-insight-raw/${f#raw/}" --file "$f" --remote >/dev/null
+          done
+          for k in "${deletes[@]}"; do
+            wrangler r2 object delete "maaun-stock-insight-raw/$k" --remote >/dev/null || echo "not found: $k"
+          done
+          echo "done"
