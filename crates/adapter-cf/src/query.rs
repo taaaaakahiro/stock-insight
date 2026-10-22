@@ -148,6 +148,30 @@ pub const LATEST_RUN: &str = "SELECT r.run_id, r.started_at, r.finished_at, r.st
      (SELECT MAX(price_date) FROM indicators_latest) AS latest_price_date \
      FROM batch_runs r ORDER BY r.started_at DESC LIMIT 1";
 
+/// AIレコメンドの候補（株式で、バリュー株か「5年連続配当かつ通期黒字」）。最終の絞り込みは domain で行う
+pub fn recommend_candidates() -> String {
+    format!(
+        "SELECT {LIST_COLUMNS} {FROM} WHERE COALESCE(s.kind, 'stock') = 'stock' \
+         AND i.dividend_yield > 0 \
+         AND (i.is_value = 1 OR (i.dividend_every_year = 1 AND i.no_loss_years = 1)) \
+         ORDER BY i.code"
+    )
+}
+
+/// 最新日のレコメンド（順位順）に、銘柄名と最新の指標をつける
+pub fn recommendation_rows() -> String {
+    format!(
+        "SELECT r.date, r.rank, r.reason, r.model, r.created_at, {LIST_COLUMNS} \
+         FROM recommendations r JOIN indicators_latest i ON i.code = r.code \
+         LEFT JOIN stocks s ON s.code = r.code \
+         WHERE r.date = (SELECT MAX(date) FROM recommendations) ORDER BY r.rank"
+    )
+}
+
+pub const RECOMMENDATION_EXISTS: &str = "SELECT COUNT(*) AS n FROM recommendations WHERE date = ?";
+pub const RECOMMENDATION_INSERT: &str = "INSERT INTO recommendations \
+     (date, rank, code, reason, model, created_at) VALUES (?, ?, ?, ?, ?, ?)";
+
 /// 一覧・配当方針・状態の中身が変わったかの目印（サーバー側キャッシュのキー）。
 /// 最新のバッチ（rowid は追加順）と、EDINET の取り込みを最後に終えた時刻。1〜2行しか読まない
 pub const DATA_VERSION: &str = "SELECT r.run_id, r.started_at, r.finished_at, \
@@ -264,5 +288,14 @@ mod tests {
     fn kind_selects_the_tab() {
         let f = ScreeningFilter::from_pairs([("kind", "etf")]).unwrap();
         assert_eq!(list(&f).args[0], Arg::Text("etf".into()));
+    }
+
+    #[test]
+    fn recommendation_queries_use_the_list_columns() {
+        assert!(recommend_candidates()
+            .contains(&format!("SELECT {LIST_COLUMNS} FROM indicators_latest")));
+        assert!(recommend_candidates().contains("COALESCE(s.kind, 'stock') = 'stock'"));
+        assert!(recommendation_rows().contains(LIST_COLUMNS));
+        assert!(recommendation_rows().ends_with("ORDER BY r.rank"));
     }
 }

@@ -133,7 +133,7 @@ API Workerが提供するエンドポイント。すべて`Authorization: Bearer
 | GET / PUT | /api/alert-settings | 警告のしきい値 | ユーザー | F4 |
 | GET / POST / PUT / DELETE | /api/sell-rules | 売り時条件 | ユーザー | F5 |
 | GET | /api/notifications | 通知履歴 | ユーザー | F6 |
-| GET | /api/recommendations | 当日のAIレコメンド | ユーザー | F7 |
+| GET | /api/recommendations | 最新日のAIレコメンド（順位・理由と、一覧と同じ指標）。まだなければ `day: null` | ユーザー | F7 |
 | GET | /api/status | データ鮮度（最新バッチの状態・取得日時） | ユーザー | F8 |
 | GET | /api/export/holdings.csv | 保有株と条件のCSV書き出し | ユーザー | 移行性 |
 | GET | /api/admin/login-events | ログイン記録 | 管理者 | F1 |
@@ -151,7 +151,7 @@ API Workerが提供するエンドポイント。すべて`Authorization: Bearer
 | indicators_latest | 一覧用の最新指標（1銘柄1行、取得日時つき） | 共通 |
 | financials_annual | 年次の財務と配当 | 共通 |
 | dividend_policies | AIが抽出した配当方針と出典 | 共通 |
-| recommendations | 日ごとのAIレコメンド | 共通 |
+| recommendations | 日ごとのAIレコメンド（date, rank, code, reason, model, created_at。1日10行、PK は date+rank） | 共通 |
 | batch_runs | バッチの実行履歴 | 共通 |
 | users / login_events | アカウントとログイン記録 | ユーザー |
 | holdings | 保有株 | ユーザー |

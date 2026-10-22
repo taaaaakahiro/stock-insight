@@ -123,7 +123,7 @@ CloudflareのCron Trigger（平日18:30 JST）は呼び出しを送るだけな�
 | indicators_latest | code (PK), price, price_date, pbr, per, dividend_yield, yield_percentile, payout_ratio, doe, consecutive_increase_years, operating_margin, equity_ratio, market_cap, no_deficit_5y, op_income_uptrend, no_dividend_cut, fetched_at, source, batch_run_id, is_stale |
 | financials_annual | code, fiscal_year (PK: code+fiscal_year), revenue, operating_income, net_income, operating_cf, net_assets, eps, bps, dps, total_dividends, filed_at, source, fetched_at |
 | dividend_policies | code, fiscal_year, progressive (bool), doe_target, summary, source_doc_id, extracted_at |
-| recommendations | date, rank, code, reason, created_at |
+| recommendations | date (株価の日付), rank (PK: date+rank), code, reason, model, created_at |
 | batch_runs | id (PK), started_at, finished_at, target_count, success_count, failure_count, status, trigger（cron/schedule/manual） |
 
 ### ユーザーデータ（すべて`user_id`を持つ）
