@@ -6,8 +6,9 @@
 //! API キーは URL に載せず、ヘッダーで渡す。EDINET は Azure API Management の既定のヘッダー名
 //! （Ocp-Apim-Subscription-Key）だけを受け付ける。クエリと同じ名前の Subscription-Key ヘッダーは 401 になる。
 
-use crate::{http, jquants::code_from_jquants};
+use crate::{http, ixbrl, jquants::code_from_jquants};
 use domain::disclosure::{normalize_text, DocKind, Section};
+use domain::reit::{self, DebtSchedule, Property, PropertyTotal};
 use domain::Date;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -79,6 +80,19 @@ impl EdinetClient {
         parse_document_list(&body, date)
     }
 
+    /// 1日分の書類一覧のうち REIT（投資法人）の有報
+    pub async fn list_reit_day(&self, date: Date) -> Result<Vec<ReitDocRef>, PortError> {
+        let body = self
+            .get(&format!("{BASE}/documents.json?date={date}&type=2"))
+            .await?;
+        parse_reit_list(&body, date)
+    }
+
+    /// 書類の iXBRL（type=1 の zip）。表を読むときに使う
+    pub async fn fetch_ixbrl_zip(&self, doc_id: &str) -> Result<Vec<u8>, PortError> {
+        self.get(&format!("{BASE}/documents/{doc_id}?type=1")).await
+    }
+
     /// 書類の文章（項目ごと、整形済み）。数値の項目は J-Quants で足りるので読まない
     pub async fn fetch_sections(&self, doc_id: &str) -> Result<Vec<(Section, String)>, PortError> {
         let zip = self
@@ -118,6 +132,132 @@ pub fn parse_document_list(body: &[u8], day: Date) -> Result<Vec<DocRef>, PortEr
         })
         .filter(|d| d.submitted == day)
         .collect())
+}
+
+/// REIT（投資法人）の有価証券報告書。書類一覧では secCode が空なので、証券コードは書類の表紙から読む
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReitDocRef {
+    pub doc_id: String,
+    pub edinet_code: String,
+    pub filer_name: String,
+    pub submitted: Date,
+    pub period_end: Option<Date>,
+}
+
+/// 書類一覧から、その日に提出された投資法人の有報（特定有価証券の府令 030・書類種別 120）
+pub fn parse_reit_list(body: &[u8], day: Date) -> Result<Vec<ReitDocRef>, PortError> {
+    let v: Value = serde_json::from_slice(body).map_err(|e| PortError(format!("json: {e}")))?;
+    if let Some(code) = v["metadata"]["status"].as_str() {
+        if code != "200" {
+            return Err(PortError(format!("edinet status {code}")));
+        }
+    }
+    let empty = vec![];
+    Ok(v["results"]
+        .as_array()
+        .unwrap_or(&empty)
+        .iter()
+        .filter(|r| {
+            r["docTypeCode"].as_str() == Some("120") && r["ordinanceCode"].as_str() == Some("030")
+        })
+        .filter(|r| r["xbrlFlag"].as_str() == Some("1"))
+        .filter(|r| r["withdrawalStatus"].as_str().is_none_or(|s| s == "0"))
+        .filter(|r| {
+            r["filerName"]
+                .as_str()
+                .is_some_and(|n| n.contains("投資法人"))
+        })
+        .filter_map(|r| {
+            Some(ReitDocRef {
+                doc_id: r["docID"].as_str()?.to_string(),
+                edinet_code: r["edinetCode"].as_str()?.to_string(),
+                filer_name: r["filerName"].as_str()?.to_string(),
+                submitted: Date::parse(r["submitDateTime"].as_str()?)?,
+                period_end: r["periodEnd"].as_str().and_then(Date::parse),
+            })
+        })
+        .filter(|d| d.submitted == day)
+        .collect())
+}
+
+/// 当期末の貸借対照表の有利子負債（円）
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ReitBalance {
+    pub short_loans: i64,
+    /// 1年内返済予定を含む
+    pub long_loans: i64,
+    /// 1年内償還予定を含む
+    pub bonds: i64,
+}
+
+/// REIT の有報から読んだ借入金と物件
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReitReport {
+    /// 4桁の証券コード（表紙の SecurityCodeDEI）
+    pub code: Option<String>,
+    pub balance: ReitBalance,
+    pub debt: DebtSchedule,
+    pub properties: Vec<Property>,
+    pub property_total: Option<PropertyTotal>,
+}
+
+/// 本文のファイル名の先頭2桁で分けたブロック（01 = ファンドの状況、02 = 経理の状況）
+pub fn reit_blocks(zip_bytes: &[u8]) -> Result<(Vec<reit::Block>, Vec<reit::Block>), PortError> {
+    let mut fund = vec![];
+    let mut accounts = vec![];
+    for (name, html) in ixbrl::public_docs(zip_bytes)? {
+        if name.starts_with("01") {
+            fund.extend(ixbrl::blocks(&html));
+        } else if name.starts_with("02") {
+            accounts.extend(ixbrl::blocks(&html));
+        }
+    }
+    Ok((fund, accounts))
+}
+
+/// type=1 の zip から読む。本文のファイル名の先頭2桁で、01 = ファンドの状況（物件）、02 = 経理の状況（借入金）
+pub fn read_reit_report(zip_bytes: &[u8]) -> Result<ReitReport, PortError> {
+    let docs = ixbrl::public_docs(zip_bytes)?;
+    let mut code = None;
+    let mut fund = vec![];
+    let mut accounts = vec![];
+    let mut facts = std::collections::HashMap::new();
+    for (name, html) in &docs {
+        if name.contains("_header_") {
+            code = ixbrl::non_numeric(html, "SecurityCodeDEI")
+                .and_then(|c| code_from_jquants(&c))
+                .map(|c| c.as_str().to_string());
+            continue;
+        }
+        facts.extend(ixbrl::facts(html));
+        if name.starts_with("01") {
+            fund.extend(ixbrl::blocks(html));
+        } else if name.starts_with("02") {
+            accounts.extend(ixbrl::blocks(html));
+        }
+    }
+    let bs = |n: &str| ixbrl::current_instant(&facts, n);
+    let (properties, property_total) = reit::parse_properties(&fund);
+    Ok(ReitReport {
+        code,
+        balance: ReitBalance {
+            short_loans: bs("ShortTermLoansPayable"),
+            // 1年内返済予定は銘柄独自の要素名のことがある（LongTermLoansRepayableWithinOneYearCL など）
+            long_loans: bs("LongTermLoansPayable")
+                + ixbrl::current_instant_like(
+                    &facts,
+                    &[
+                        "CurrentPortionOfLongTermLoansPayable",
+                        "LongTermLoansRepayableWithinOneYear",
+                    ],
+                ),
+            bonds: bs("InvestmentCorporationBondINV")
+                + bs("CurrentPortionOfInvestmentCorporationBondsINV"),
+        },
+        debt: reit::parse_debt(&accounts),
+        properties,
+        property_total,
+    })
 }
 
 /// CSVの1行（必要な列だけ）
@@ -262,6 +402,23 @@ mod tests {
             "2027-03-31",
             "事業年度の末日"
         );
+    }
+
+    #[test]
+    fn reit_list_uses_filer_and_ordinance() {
+        let body = r#"{"metadata":{"status":"200"},"results":[
+          {"docID":"S1","edinetCode":"E27230","filerName":"日本プロロジスリート投資法人","docTypeCode":"120","ordinanceCode":"030","xbrlFlag":"1","withdrawalStatus":"0","secCode":null,"submitDateTime":"2026-08-28 15:00","periodEnd":"2026-05-31"},
+          {"docID":"S2","edinetCode":"E00001","filerName":"何とか株式会社","docTypeCode":"120","ordinanceCode":"010","xbrlFlag":"1","secCode":"99990","submitDateTime":"2026-08-28 15:00"},
+          {"docID":"S3","edinetCode":"E27230","filerName":"日本プロロジスリート投資法人","docTypeCode":"220","ordinanceCode":"030","xbrlFlag":"1","submitDateTime":"2026-08-28 15:00"},
+          {"docID":"S4","edinetCode":"E13206","filerName":"日本ビルファンド投資法人","docTypeCode":"120","ordinanceCode":"030","xbrlFlag":"1","submitDateTime":"2026-03-30 15:00"}
+        ]}"#;
+        let list = parse_reit_list(body.as_bytes(), Date::new(2026, 8, 28)).unwrap();
+        assert_eq!(
+            list.iter().map(|d| d.doc_id.as_str()).collect::<Vec<_>>(),
+            ["S1"],
+            "secCode が空でも拾う。自己投資口の報告書・前の日の書類は除く"
+        );
+        assert_eq!(list[0].period_end, Some(Date::new(2026, 5, 31)));
     }
 
     #[test]

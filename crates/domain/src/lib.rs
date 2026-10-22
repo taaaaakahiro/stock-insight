@@ -10,6 +10,7 @@ pub mod model;
 pub mod portfolio;
 pub mod price_history;
 pub mod recommend;
+pub mod reit;
 pub mod screening;
 pub mod split;
 pub mod stock_master;
