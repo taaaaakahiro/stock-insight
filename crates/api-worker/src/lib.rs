@@ -596,6 +596,7 @@ fn row_json(r: &StockRow) -> Value {
         "data_years": r.data_years,
         "sales_growth": r.sales_growth,
         "op_growth": r.op_growth,
+        "dividend_cut": r.dividend_cut,
         "progressive_dividend": r.progressive_dividend,
         "no_dividend_cut": r.no_dividend_cut,
         "reit": r.reit.as_ref().map(|x| json!({

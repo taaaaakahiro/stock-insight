@@ -35,7 +35,7 @@
 | `high_pbr` | 主 | PBR > 1.5倍（`PBR_WARN`。ちょうど1.5倍は出さない） | pbr |
 | `loss_dividend` | 主 | 最新の本決算の EPS ≤ 0 で、1株配当（予想か実績）> 0。赤字だと配当性向は出ないので、画面の配当性向は「赤字」と出す | financials_annual の最新の本決算の eps（数字のない行は飛ばす）、dividend_ttm |
 | `expensive` | 参考 | valuation が `expensive` | valuation |
-| `no_increase` | 参考 | 連続増配年数が 0 | consecutive_increases |
+| `dividend_cut` | 参考 | 直近の1株配当の実績が前期より少ない、または会社予想が直近の実績より少ない（無配予想を含む。据え置きは出さない） | dividend_cut |
 | `profit_downtrend` | 参考 | 営業利益の増加傾向が偽 | profit_uptrend |
 | `loss` | 参考 | 通期で赤字なし、または四半期で赤字なしが偽 | no_loss_years, no_quarterly_loss |
 
@@ -169,7 +169,7 @@ J-Quants を1ジョブで順に取り込むのは、J-Quants が日付指定で�
 | テーブル | 列 | 作成 |
 |---|---|---|
 | stocks | code (PK), name, kind（stock/reit/etf）, market, sector33, size_class（large/mid/small/none）, as_of, updated_at | 0003 |
-| indicators_latest | code (PK), run_id, fetched_at, price, price_date, dividend_ttm, dividend_yield, yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin, no_loss_years, profit_uptrend, valuation, fin_doc_id, fin_submitted, dividend_every_year, no_quarterly_loss, is_value, data_years, sales_growth, op_growth | 0001（0005・0007 で列を追加） |
+| indicators_latest | code (PK), run_id, fetched_at, price, price_date, dividend_ttm, dividend_yield, yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin, no_loss_years, profit_uptrend, valuation, fin_doc_id, fin_submitted, dividend_every_year, no_quarterly_loss, is_value, data_years, sales_growth, op_growth, dividend_basis, dividend_cut | 0001（0005・0007・0010・0012 で列を追加） |
 | financials_annual | code, period_end (PK: code+period_end), doc_id, net_sales, operating_income, ordinary_income, net_income, equity, eps, bps, dps, operating_cf, fetched_at, disclosed | 0001（0004 で disclosed を追加） |
 | financials_quarterly | code, fiscal_year_end, period_type (PK: code+fiscal_year_end+period_type), period_end, doc_id, disclosed, net_sales, operating_income, ordinary_income, net_income, fetched_at | 0005 |
 | price_history | code (PK), closes（`YYYYMMDD,終値;…`）, last_date, updated_at | 0004 |

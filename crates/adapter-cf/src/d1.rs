@@ -75,6 +75,7 @@ pub(crate) struct Row {
     data_years: Option<i64>,
     sales_growth: Option<f64>,
     op_growth: Option<f64>,
+    dividend_cut: Option<i64>,
     progressive_dividend: Option<i64>,
     no_dividend_cut: Option<i64>,
     #[serde(default)]
@@ -134,6 +135,7 @@ impl From<Row> for StockRow {
             data_years: r.data_years,
             sales_growth: r.sales_growth,
             op_growth: r.op_growth,
+            dividend_cut: r.dividend_cut.map(|v| v != 0),
             progressive_dividend: r.progressive_dividend.map(|v| v != 0),
             no_dividend_cut: r.no_dividend_cut.map(|v| v != 0),
             // reit_profile の行があるときだけ（期末日は必ず入る）

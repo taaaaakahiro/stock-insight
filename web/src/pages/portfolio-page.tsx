@@ -31,7 +31,10 @@ const SIGNALS: Record<SellSignal, { label: string; hint: string }> = {
     hint: "最新の本決算が赤字（EPS が0以下）なのに配当を出している",
   },
   expensive: { label: "割高", hint: "配当利回りが過去5年の下位20%（株価が上がっている）" },
-  no_increase: { label: "増配停止", hint: "前期から増配していない（据え置き・減配）" },
+  dividend_cut: {
+    label: "減配",
+    hint: "直近の配当が前期より減った、または会社予想が直近の配当を下回る（据え置きは含めない）",
+  },
   profit_downtrend: { label: "減益傾向", hint: "直近の営業利益の流れが下向き" },
   loss: { label: "赤字あり", hint: "直近5期または20四半期に赤字がある" },
 };

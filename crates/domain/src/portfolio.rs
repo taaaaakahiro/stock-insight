@@ -19,8 +19,8 @@ pub enum SellSignal {
     LossDividend,
     /// 利回りが過去5年の下位20%（株価が上がって割高）
     Expensive,
-    /// 前期から増配していない（据え置き・減配）
-    NoIncrease,
+    /// 減配した、または会社予想が減配（据え置きは含めない）
+    DividendCut,
     /// 営業利益の傾きが下向き
     ProfitDowntrend,
     /// 直近5期または20四半期に赤字がある
@@ -34,7 +34,7 @@ impl SellSignal {
             SellSignal::HighPbr => "high_pbr",
             SellSignal::LossDividend => "loss_dividend",
             SellSignal::Expensive => "expensive",
-            SellSignal::NoIncrease => "no_increase",
+            SellSignal::DividendCut => "dividend_cut",
             SellSignal::ProfitDowntrend => "profit_downtrend",
             SellSignal::Loss => "loss",
         }
@@ -61,7 +61,7 @@ pub struct SignalInput<'a> {
     /// 最新の本決算の EPS（数字のない行は飛ばしたもの）
     pub latest_eps: Option<f64>,
     pub valuation: &'a str,
-    pub consecutive_increases: Option<i64>,
+    pub dividend_cut: Option<bool>,
     pub profit_uptrend: Option<bool>,
     pub no_loss_years: Option<bool>,
     pub no_quarterly_loss: Option<bool>,
@@ -85,8 +85,8 @@ pub fn sell_signals(i: &SignalInput) -> Vec<SellSignal> {
     if i.valuation == crate::Valuation::Expensive.as_str() {
         out.push(SellSignal::Expensive);
     }
-    if i.consecutive_increases == Some(0) {
-        out.push(SellSignal::NoIncrease);
+    if i.dividend_cut == Some(true) {
+        out.push(SellSignal::DividendCut);
     }
     if i.profit_uptrend == Some(false) {
         out.push(SellSignal::ProfitDowntrend);
@@ -110,7 +110,7 @@ mod tests {
             dividend: Some(30.0),
             latest_eps: Some(85.0),
             valuation: "cheap",
-            consecutive_increases: Some(3),
+            dividend_cut: Some(false),
             profit_uptrend: Some(true),
             no_loss_years: Some(true),
             no_quarterly_loss: Some(true),
@@ -127,7 +127,7 @@ mod tests {
             dividend: Some(30.0),
             latest_eps: Some(58.0),
             valuation: "expensive",
-            consecutive_increases: Some(0),
+            dividend_cut: Some(true),
             profit_uptrend: Some(false),
             no_loss_years: Some(true),
             no_quarterly_loss: Some(false),
@@ -139,7 +139,7 @@ mod tests {
                 SellSignal::HighPayout,
                 SellSignal::HighPbr,
                 SellSignal::Expensive,
-                SellSignal::NoIncrease,
+                SellSignal::DividendCut,
                 SellSignal::ProfitDowntrend,
                 SellSignal::Loss,
             ]
