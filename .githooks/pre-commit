@@ -1,0 +1,8 @@
+#!/bin/sh
+# コミットする差分にキー・トークンが入っていないかを gitleaks で調べ、見つかればコミットを止める
+# 有効にする: git config core.hooksPath .githooks
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks がありません。brew install gitleaks で入れてください" >&2
+  exit 1
+fi
+exec gitleaks git --pre-commit --staged --redact --no-banner -v

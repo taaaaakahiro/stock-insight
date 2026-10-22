@@ -48,6 +48,17 @@ cd web && VITE_MOCK_CLERK_URL=http://localhost:9871 pnpm dev   # http://localhos
 
 ログインボタンで `user_member` としてログインします。`?mock_user=user_outsider` を付けて開くと、許可リストにないユーザーとして試せます。`VITE_MOCK_CLERK_URL` は開発サーバーでだけ有効で、本番のビルドには入りません。本番のビルドには `VITE_CLERK_PUBLISHABLE_KEY`（Clerk の公開キー）が必要です。
 
+## コミット前のシークレット検査
+
+キー・トークンを誤ってコミットしないよう、[gitleaks](https://github.com/gitleaks/gitleaks) をコミット前に動かします。clone したら一度だけ有効にしてください（CI の `secrets` ジョブでも全履歴を調べます）。
+
+```sh
+brew install gitleaks
+git config core.hooksPath .githooks
+```
+
+誤検知は `.gitleaks.toml` の allowlist に足します。
+
 ## ドキュメント
 
 仕様書は [docs/](docs/README.md) にあります（要件定義・非機能要件・システム構成図・基本設計・詳細設計・シークレット運用・デプロイ手順・指標の取得元）。
