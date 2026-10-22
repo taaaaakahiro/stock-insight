@@ -4,7 +4,7 @@
 
 ## 方針
 
-バッチをCloudflareだけで作ることもできるが、無料プランでは1回の実行がCPU 10msまでで、全銘柄の取り込みや有報の解析が収まらない。そこで「取得と整形はGitHub Actions上のRust CLI、配信・判定・AI・通知はCloudflare」に分ける構成にした。
+バッチをCloudflareだけで作ることもできるが、作り始めた無料プランでは1回の実行がCPU 10msまでで、全銘柄の取り込みや有報の解析が収まらなかった。そこで「取得と整形はGitHub Actions上のRust CLI、配信・判定・AI・通知はCloudflare」に分ける構成にした。2026-10-22 に Workers Paid（月$5）にしたが、バッチは GitHub Actions のまま（公開リポジトリで費用がかからず、6時間まで動かせる）。
 
 ## 全体構成
 
@@ -20,10 +20,10 @@ flowchart LR
   end
 
   subgraph GH[GitHub Actions]
-    BATCH[daily-batch（平日18:30 JST）<br/>Rust CLI batch-cli<br/>取り込み・指標計算]
+    BATCH[daily-batch（平日18:30 JST）<br/>Rust CLI batch-cli<br/>J-Quants と EDINET を並列のジョブで]
   end
 
-  subgraph CF[Cloudflare（無料枠）]
+  subgraph CF[Cloudflare（Workers Paid）]
     CRON[Cron Trigger<br/>平日18:30 JST]
     API[API Worker（Rust）<br/>認証・一覧・ポートフォリオ<br/>画面も同じWorkerから配信]
     D1[(D1（SQLite）<br/>指標・財務・終値の履歴<br/>ユーザーごとのデータ)]
@@ -72,9 +72,9 @@ flowchart LR
 
 | 案 | 構成 | 費用 | 判断 |
 |---|---|---|---|
-| A ハイブリッド（採用） | Cloudflare の Cron Trigger が GitHub Actions の `workflow_dispatch` を呼び、Rust CLI を実行。D1はHTTP API、R2は`wrangler r2 object put`で書き込む。将来は最後にWorkerの内部エンドポイントを叩いて判定Workflowを起動 | 0円。公開リポジトリはGitHub標準のランナーが無料 | CPU制限がなく、バッチも同じRustのドメインを使える |
+| A ハイブリッド（採用） | Cloudflare の Cron Trigger が GitHub Actions の `workflow_dispatch` を呼び、Rust CLI を実行。J-Quants と EDINET は別のジョブで並列。D1はHTTP API、R2は`wrangler r2 object put`で書き込む。将来は最後にWorkerの内部エンドポイントを叩いて判定Workflowを起動 | 0円。公開リポジトリはGitHub標準のランナーが無料 | CPU制限がなく、バッチも同じRustのドメインを使える |
 | B Cloudflareだけ | Cron Trigger → Workflows。1銘柄1ステップ、約4インスタンスに分割 | 0円 | 株価取得は可能。有報の解析が1ステップ10msに収まるかは不明 |
-| C Workers有料プラン | Bと同じ。CPU上限が大幅に増え、メールも任意の宛先に送れる | 月$5 | 無料でなくてよいなら一番すっきりする |
+| C Workers有料プラン | Bと同じ。CPU上限が大幅に増え、メールも任意の宛先に送れる | 月$5 | 2026-10-22 にプランは Paid にした。バッチを移すかは未定（今は A のまま） |
 
 ## 日次の処理タイムライン
 
@@ -82,7 +82,7 @@ flowchart LR
 |---|---|---|
 | 18:30 | Cron Triggerが`workflow_dispatch`を呼び、日次バッチを起動 | Cloudflare → GitHub Actions |
 | 18:45 | 予備の`schedule`。起動済みなら`should-run`が止める | GitHub Actions |
-| 18:30〜19:30 | `migrate` → `sync-master` → `sync-jq` → `compute` → `sync-edinet` → R2へのアップロード（1ジョブで順に実行） | GitHub Actions |
+| 18:30〜19:30 | `prepare`（`migrate` → `sync-master`）のあと、`jquants`（`sync-jq` → `compute` → R2）と `edinet`（`sync-edinet` → R2）を並列に実行 | GitHub Actions |
 | 19:30〜20:30 | 判定Workflow: 警告・売り時の判定、画面通知、管理者メール | Cloudflare Workflows（未実装） |
 | 21:00 | AIレコメンド: その日のバッチが成功していて、まだ結果がなければ作る | Cloudflare Workers（Cron Trigger） |
 

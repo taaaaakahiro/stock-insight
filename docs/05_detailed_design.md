@@ -115,28 +115,38 @@ CloudflareのCron Trigger（`30 9 * * 1-5` = 平日18:30 JST）は呼び出し�
 
 ### 日次バッチのステップ
 
-ワークフロー `daily-batch.yml` は `build`（batch-cli を1回だけビルド）→ `guard`（`should-run`）→ `daily` の順で、`daily` ジョブの中で次を順に実行する（タイムアウト340分）。
+ワークフロー `daily-batch.yml` は `build`（batch-cli を1回だけビルド）→ `guard`（`should-run`）→ `prepare` → `jquants` と `edinet` を並列、の順に動く。`jquants` と `edinet` は書くテーブルが別（`sync_state` もキーが別）なので、同時に動いてもぶつからない。片方が失敗しても、もう片方は止まらない。
+
+`prepare`（タイムアウト20分）:
 
 1. `batch-cli migrate`: `migrations/` の SQL を順に適用する。`ALTER TABLE ... ADD COLUMN` の「列がすでにある」は読み飛ばす
-2. `batch-cli sync-master`: JPX の上場銘柄一覧（xlsx）から `stocks` を upsert
+2. `batch-cli sync-master`: JPX の上場銘柄一覧（xlsx）から `stocks` を upsert（`compute` と `sync-edinet` が使う）
+
+`jquants`（タイムアウト340分）:
+
 3. `batch-cli sync-jq --rate 60 --max-minutes 300 --persist-every 1500 --raw-dir raw`: J-Quants を日付ごとに取り込む
    - 範囲は前回の続き（`sync_state.jq_synced_until` の翌日）から今日まで。初回は5年前から。財務は直近3日分を毎回取り直す
    - 呼び出しは1分あたり `--rate` 回まで（Light は60）。429・5xx・通信エラーは指数バックオフで最大3回再試行し、J-Quants の 429 はさらに1分待って2回まで試す
    - `--refill-prices` のときは、`--from`（既定は5年前）から前回の続きの前日までの株価も取り直して履歴に足す（同じ日付は上書き）。取り直した日の生データは R2 に上げ直さず、財務も取り直さない
    - 終値の履歴は直近5年＋1か月（`KEEP_DAYS`）を超えた分を捨てる
-   - D1 への保存は `--persist-every` 日分ごと（既定では最後に1回）。保存のたびに全銘柄の `price_history` を書き直すため、小さくすると D1 の1日の書き込み上限（10万行）に当たる
+   - D1 への保存は `--persist-every` 日分ごと（既定では最後に1回）。保存のたびに全銘柄の `price_history` を書き直すので、回数は少なくする
    - 応答の全項目を `raw/bars/<日付>.json.gz`・`raw/fins/<日付>.json.gz` に書き出す
 4. `batch-cli compute --label daily`: D1 に保存済みの終値と財務から全銘柄の指標を計算して `indicators_latest` に upsert し、`batch_runs` に記録する（run_id は `daily-<開始のUNIX秒>`）。株価のない銘柄は数えるだけで飛ばす。半数以上の銘柄を保存できたら `succeeded`、そうでなければ `failed`
-5. `batch-cli sync-edinet --rate 60 --max-minutes 60 --raw-dir raw`（`continue-on-error`）: EDINET の書類一覧（前回の続き。初回は過去400日分）から有報・半期報告書を選び、まだ持っていない書類の CSV を取って `edinet_docs` を更新、文章を `raw/edinet/<コード>/<種類>.json.gz` に書き出す。古くなった分の R2 のキーは `raw/edinet-delete.txt` に書く（詳細は [08](08_indicator_sources.md#取得元の-api)）
-6. R2 へのアップロード: `wrangler r2 object put` で `raw/` のファイルを `maaun-stock-insight-raw` に置き、`edinet-delete.txt` のキーを消す
+5. R2 へのアップロード: `raw/bars`・`raw/fins` を `maaun-stock-insight-raw/jquants/` に置く（取り込みが途中で失敗しても、取れた分は置く）
 
-1ジョブで順に動かすのは、J-Quants が日付指定で全銘柄をまとめて返すため銘柄ごとの並列取得が要らず、呼び出しの上限（60件/分）が律速になるから。
+`edinet`（タイムアウト340分）:
+
+6. `batch-cli sync-edinet --rate 60 --max-minutes 300 --raw-dir raw`: EDINET の書類一覧（前回の続き。初回は過去400日分）から有報・半期報告書を選び、まだ持っていない書類の CSV を取って `edinet_docs` を更新、文章を `raw/edinet/<コード>/<種類>.json.gz` に書き出す。古くなった分の R2 のキーは `raw/edinet-delete.txt` に書く（詳細は [08](08_indicator_sources.md#取得元の-api)）
+   - 続きの位置（`sync_state.edinet_listed_until`）は、読み終えた日・まだ取っていない最初の書類の提出日の前日・今日の前日のうち最も早い日にする。今日の一覧はバッチの後にも書類が増えうるので、翌日もう一度読む（取得済みの書類は飛ばす）
+7. R2 へのアップロード: `raw/edinet/` のファイルを置き、`edinet-delete.txt` のキーを消す（途中で失敗しても、取れた分は置く）
+
+J-Quants を1ジョブで順に取り込むのは、J-Quants が日付指定で全銘柄をまとめて返すため銘柄ごとの並列取得が要らず、呼び出しの上限（60件/分）が律速になるから。EDINET は J-Quants と上限が別なので、別のジョブにして並列に動かす。
 
 ### 取得失敗とデータ品質
 
 - 時間切れ（`--max-minutes`）や途中の失敗で止まっても、`sync_state` に保存した日付の続きから次回再開する
 - 1銘柄の計算失敗でバッチ全体を止めず、その銘柄の `indicators_latest` は前回の値のまま残る
-- EDINET の失敗は一覧の更新を止めない
+- EDINET の失敗は J-Quants の取り込みと一覧の更新を止めない（別のジョブ）。失敗は Actions の実行結果に出る
 - 未実装: 当日中の自動再実行、管理者へのメール、前日比±50%超の株価・配当性向300%超・欠損率5%超の「要確認」の検知、画面の「古いデータ」表示
 
 ### マイグレーション

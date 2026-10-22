@@ -27,15 +27,20 @@ sequenceDiagram
 
   CR->>GH: workflow_dispatch（平日18:30）
   GH->>D1: should-run: 休場日・当日成功済みなら止める
+  Note over GH: prepare ジョブ
   GH->>D1: migrate（migrations/ を適用）
   GH->>EX: sync-master: JPX の上場銘柄一覧
   GH->>D1: stocks を更新
-  GH->>EX: sync-jq: 前回の続きから日付ごとに株価・財務（60件/分）
-  GH->>D1: 終値の履歴・財務を保存（基本は最後に1回）
-  GH->>D1: compute: 全銘柄の指標を計算して indicators_latest と batch_runs に保存
-  GH->>EX: sync-edinet: 書類一覧と、新しい有報・半期報告書の CSV
-  GH->>D1: edinet_docs を更新（失敗しても続ける）
-  GH->>R2: J-Quants の応答と EDINET の文章を置き、古い分を消す
+  par jquants ジョブ
+    GH->>EX: sync-jq: 前回の続きから日付ごとに株価・財務（60件/分）
+    GH->>D1: 終値の履歴・財務を保存（基本は最後に1回）
+    GH->>D1: compute: 全銘柄の指標を計算して indicators_latest と batch_runs に保存
+    GH->>R2: J-Quants の応答を置く
+  and edinet ジョブ
+    GH->>EX: sync-edinet: 書類一覧（今日の分は翌日も読み直す）と、新しい有報・半期報告書の CSV
+    GH->>D1: edinet_docs を更新
+    GH->>R2: EDINET の文章を置き、古い分を消す
+  end
 ```
 
 ### 日次バッチ後の判定と通知（予定）
