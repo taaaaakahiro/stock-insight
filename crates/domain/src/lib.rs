@@ -8,6 +8,7 @@ pub mod indicators;
 pub mod model;
 pub mod portfolio;
 pub mod price_history;
+pub mod recommend;
 pub mod screening;
 pub mod stock_master;
 

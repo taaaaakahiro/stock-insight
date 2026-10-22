@@ -38,7 +38,7 @@ fn err(e: worker::Error) -> PortError {
 
 /// indicators_latest の行。SQLite の真偽値は 0/1 の整数
 #[derive(Deserialize)]
-struct Row {
+pub(crate) struct Row {
     code: String,
     price: f64,
     price_date: String,

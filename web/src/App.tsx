@@ -8,13 +8,22 @@ import { jstDateTime, ymd } from "@/lib/format";
 import { PortfolioProvider, usePortfolio } from "@/lib/portfolio";
 import { cn } from "@/lib/utils";
 import { PortfolioPage } from "@/pages/portfolio-page";
+import { RecommendPage } from "@/pages/recommend-page";
 import { ScreeningPage } from "@/pages/screening-page";
 
-type View = "screening" | "portfolio";
+type View = "screening" | "portfolio" | "recommend";
 
 // 画面の切り替えは URL の # に残す（? はスクリーニングの条件が使う）
-const viewFromHash = (): View =>
-  window.location.hash === "#portfolio" ? "portfolio" : "screening";
+const viewFromHash = (): View => {
+  switch (window.location.hash) {
+    case "#portfolio":
+      return "portfolio";
+    case "#recommend":
+      return "recommend";
+    default:
+      return "screening";
+  }
+};
 
 type Session =
   | { state: "checking" }
@@ -85,7 +94,7 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
 
   const go = (v: View) => {
     setView(v);
-    const url = `${window.location.pathname}${window.location.search}${v === "portfolio" ? "#portfolio" : ""}`;
+    const url = `${window.location.pathname}${window.location.search}${v === "screening" ? "" : `#${v}`}`;
     window.history.replaceState(null, "", url);
   };
 
@@ -112,9 +121,12 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
               ポートフォリオ
               {codes.size > 0 && <span className="ml-1 tabular-nums">({codes.size})</span>}
             </TabsTrigger>
+            <TabsTrigger value="recommend">AIレコメンド</TabsTrigger>
           </TabsList>
         </Tabs>
-        {view === "screening" ? <ScreeningPage /> : <PortfolioPage />}
+        {view === "screening" && <ScreeningPage />}
+        {view === "portfolio" && <PortfolioPage />}
+        {view === "recommend" && <RecommendPage />}
       </main>
       <Footer />
     </div>

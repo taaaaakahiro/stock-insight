@@ -10,6 +10,7 @@ pub mod daily;
 pub mod fins;
 pub mod master;
 pub mod portfolio;
+pub mod recommend;
 pub mod screening;
 
 #[derive(Debug, Clone, PartialEq)]
