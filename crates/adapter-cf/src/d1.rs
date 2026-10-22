@@ -295,6 +295,7 @@ struct ClosesRow {
 struct ForecastRow {
     doc_id: String,
     disclosed: String,
+    fiscal_year_end: Option<String>,
     dps: Option<f64>,
 }
 
@@ -349,6 +350,7 @@ impl StockDetailQuery for D1Indicators {
                 Some(StoredForecast {
                     doc_id: r.doc_id,
                     disclosed: Date::parse(&r.disclosed)?,
+                    fiscal_year_end: r.fiscal_year_end.as_deref().and_then(Date::parse),
                     dps: r.dps,
                 })
             })

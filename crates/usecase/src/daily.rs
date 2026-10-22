@@ -23,6 +23,8 @@ pub struct StoredAnnual {
 pub struct StoredForecast {
     pub doc_id: String,
     pub disclosed: Date,
+    /// 予想の対象の事業年度の終了日（分からなければ None）
+    pub fiscal_year_end: Option<Date>,
     pub dps: Option<f64>,
 }
 
@@ -30,6 +32,15 @@ pub struct StoredForecast {
 const ASSUMED_DISCLOSURE_LAG_DAYS: i64 = 45;
 /// 指標に使う年次財務の期数
 const MAX_YEARS: usize = 5;
+/// 期末の配当の権利落ち日は期末の数営業日前。期末の1週間前より後に権利落ちした分割は、その期の配当に入っていない
+const RECORD_DATE_MARGIN_DAYS: i64 = 7;
+
+/// 事業年度の配当が、どの日の株数の基準か。配当は期末の株主に払うので、期末の権利落ち日の株数
+/// （期末の翌日に効力が出る分割は、権利落ちが期末より前でも配当には入っていない）。
+/// 期の途中で分割すると中間配当は分割前・期末配当は分割後になるが、そこは分割後とみなす
+fn dividend_basis(fiscal_year_end: Date) -> Date {
+    fiscal_year_end.add_days(-RECORD_DATE_MARGIN_DAYS)
+}
 
 fn effective_date(a: &StoredAnnual) -> Option<Date> {
     a.disclosed.or_else(|| {
@@ -89,8 +100,9 @@ fn dividend_series(actuals: &[Dividend], forecasts: &[StoredForecast]) -> Vec<Di
 }
 
 /// 1銘柄分の入力を組み立てる: 株価と配当、年次財務（新しい期が先頭）、四半期単独の損益（古い順）。
-/// 株式分割があれば、終値と1株当たりの値（配当・EPS・BPS）を最新の株数の基準にそろえる
-/// （1株当たりの値は、開示した日より後の分割の分だけ直す）
+/// 株式分割があれば、終値と1株当たりの値（配当・EPS・BPS）を最新の株数の基準にそろえる。
+/// EPS・BPS は開示までの分割を織り込んで開示されるので、開示した日より後の分割の分だけ直す。
+/// 配当実績は期末の株数の基準なので、期末（の権利落ち日）より後の分割の分だけ直す
 pub fn build_inputs(
     mut bars: Vec<PriceBar>,
     annuals: &[StoredAnnual],
@@ -108,13 +120,14 @@ pub fn build_inputs(
         .iter()
         .map(|a| {
             let f = effective_date(a).map_or(1.0, |e| factor_after(splits, e));
+            let fd = a
+                .financial
+                .period_end
+                .map_or(f, |end| factor_after(splits, dividend_basis(end)));
             let mut a = a.clone();
-            if f != 1.0 {
-                let per_share = |v: Option<f64>| v.map(|x| x * f);
-                a.financial.eps = per_share(a.financial.eps);
-                a.financial.bps = per_share(a.financial.bps);
-                a.financial.dps = per_share(a.financial.dps);
-            }
+            a.financial.eps = a.financial.eps.map(|x| x * f);
+            a.financial.bps = a.financial.bps.map(|x| x * f);
+            a.financial.dps = a.financial.dps.map(|x| x * fd);
             a
         })
         .collect();
@@ -136,12 +149,17 @@ pub fn build_inputs(
             })
         })
         .collect();
-    // 予想も実績と同じく、開示した日より後の分割の分だけ直す
+    // 予想は開示した時点の株数の基準。ただし対象の期末より後の分割は入っていない
     let forecasts: Vec<StoredForecast> = forecasts
         .iter()
-        .map(|f| StoredForecast {
-            dps: f.dps.map(|x| x * factor_after(splits, f.disclosed)),
-            ..f.clone()
+        .map(|f| {
+            let basis = f
+                .fiscal_year_end
+                .map_or(f.disclosed, |end| f.disclosed.min(dividend_basis(end)));
+            StoredForecast {
+                dps: f.dps.map(|x| x * factor_after(splits, basis)),
+                ..f.clone()
+            }
         })
         .collect();
     let dividends = dividend_series(&actuals, &forecasts);
@@ -442,6 +460,7 @@ mod tests {
         StoredForecast {
             doc_id: format!("f-{disclosed}"),
             disclosed: d(disclosed),
+            fiscal_year_end: None,
             dps,
         }
     }
@@ -491,5 +510,57 @@ mod tests {
         let (m, _, _, _) = build_inputs(vec![], &[], &forecasts, &[], &splits);
         assert_eq!(m.dividends[0].annual, 30.0);
         assert!(m.dividends[0].forecast);
+    }
+
+    #[test]
+    fn dividend_of_the_year_before_a_split_is_adjusted() {
+        // SPK（7466）: 2026-03-30 に1:2の分割（効力は 4/1）。2026/03 期の配当73円は分割前の株に払い、
+        // 2026-05-08 の決算短信では EPS だけ分割後に直して開示している
+        let bars: Vec<PriceBar> = ["2026-03-27", "2026-03-30", "2026-10-21"]
+            .iter()
+            .zip([2616.0, 1269.0, 1405.0])
+            .map(|(s, close)| PriceBar { date: d(s), close })
+            .collect();
+        let annuals = [
+            annual("2025-03-31", Some("2025-05-09"), 60.0, 247.94),
+            annual("2026-03-31", Some("2026-05-08"), 73.0, 133.35),
+        ];
+        let forecasts = [
+            // 第3四半期: 2026/03 期の予想（分割前の株）
+            StoredForecast {
+                fiscal_year_end: Some(d("2026-03-31")),
+                ..forecast("2026-02-09", Some(73.0))
+            },
+            // 本決算: 2027/03 期の予想（分割後の株）
+            StoredForecast {
+                fiscal_year_end: Some(d("2027-03-31")),
+                ..forecast("2026-05-08", Some(40.0))
+            },
+        ];
+        let splits = [Split::new(d("2026-03-30"), 0.5).unwrap()];
+        let (m, fin, _, _) = build_inputs(bars.clone(), &annuals, &forecasts, &[], &splits);
+        let closes: Vec<f64> = m.bars.iter().map(|b| b.close).collect();
+        assert_eq!(closes, vec![1308.0, 1269.0, 1405.0]);
+        let at = |s| domain::dividend_at(&m.dividends, d(s)).map(|x| x.annual);
+        assert_eq!(at("2025-06-01"), Some(30.0));
+        assert_eq!(at("2026-03-01"), Some(36.5), "分割前に開示した今期の予想");
+        assert_eq!(
+            at("2026-06-01"),
+            Some(40.0),
+            "分割後に開示した来期の予想はそのまま"
+        );
+        let years = fin.unwrap().years;
+        assert_eq!(
+            (years[0].dps, years[0].eps),
+            (Some(36.5), Some(133.35)),
+            "配当は期末の株数の基準で直し、EPS は開示の時点で分割後"
+        );
+        assert_eq!((years[1].dps, years[1].eps), (Some(30.0), Some(123.97)));
+
+        // 予想が未定でも、実績の配当で利回り・配当性向が2倍にならない
+        let (m, fin, q, _) = build_inputs(bars, &annuals, &[], &[], &splits);
+        let i = compute(&m, fin.as_ref(), &q).unwrap();
+        assert!((i.dividend_yield.unwrap() - 36.5 / 1405.0).abs() < 1e-9);
+        assert!((i.payout_ratio.unwrap() - 36.5 / 133.35).abs() < 1e-9);
     }
 }

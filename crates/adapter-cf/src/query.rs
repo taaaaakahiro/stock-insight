@@ -200,7 +200,7 @@ pub const PRICE_HISTORY_BY_CODE: &str = "SELECT closes FROM price_history WHERE 
 pub const SPLITS_BY_CODE: &str = "SELECT date, factor FROM splits WHERE code = ? ORDER BY date";
 
 pub const FORECASTS_BY_CODE: &str =
-    "SELECT doc_id, disclosed, dps FROM dividend_forecasts WHERE code = ? ORDER BY disclosed";
+    "SELECT doc_id, disclosed, fiscal_year_end, dps FROM dividend_forecasts WHERE code = ? ORDER BY disclosed";
 
 pub const ANNUALS_BY_CODE: &str =
     "SELECT period_end, doc_id, disclosed, net_sales, operating_income, \

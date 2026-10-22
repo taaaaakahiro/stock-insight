@@ -367,7 +367,7 @@ impl D1Store {
         loop {
             let rows = self
                 .query(&Stmt {
-                    sql: "SELECT rowid AS rid, code, doc_id, disclosed, dps \
+                    sql: "SELECT rowid AS rid, code, doc_id, disclosed, fiscal_year_end, dps \
                           FROM dividend_forecasts WHERE rowid > ? ORDER BY rowid LIMIT 2000"
                         .into(),
                     params: vec![Val::Int(after)],
@@ -389,6 +389,7 @@ impl D1Store {
                     .push(StoredForecast {
                         doc_id: r["doc_id"].as_str().unwrap_or_default().to_string(),
                         disclosed,
+                        fiscal_year_end: r["fiscal_year_end"].as_str().and_then(Date::parse),
                         dps: r["dps"].as_f64(),
                     });
             }
