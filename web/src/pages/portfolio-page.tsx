@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { DocPreview } from "@/components/doc-preview";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
 import { NameCell } from "@/components/results-table";
 import { Badge } from "@/components/ui/badge";
@@ -139,6 +140,7 @@ export function PortfolioPage() {
                   <div className="flex items-center gap-1">
                     <PortfolioToggle code={h.code} name={h.name ?? h.code} />
                     <NameCell r={h} />
+                    {h.kind === "stock" && <DocPreview r={h} />}
                   </div>
                 </TableCell>
                 <TableCell className="text-right tabular-nums">{yen(h.price)}</TableCell>
@@ -167,6 +169,7 @@ export function PortfolioPage() {
             <div className="mb-2 flex min-w-0 items-center gap-1">
               <PortfolioToggle code={h.code} name={h.name ?? h.code} />
               <NameCell r={h} />
+              {h.kind === "stock" && <DocPreview r={h} />}
             </div>
             <div className="mb-3">
               <Signals h={h} />

@@ -1,7 +1,8 @@
 # Workers の静的アセットに付けるヘッダー（/api/* は Worker が返す）
 # CSP は area-insight（machinome）と同じ方針。Clerk（clerk.maa-un.com）と Turnstile だけを許可する
+# frame-src の EDINET は、有報・半期報告書の PDF を画面の中で見せるため（doc-preview.tsx）
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self' https://clerk.maa-un.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://img.clerk.com; font-src 'self'; connect-src 'self' https://clerk.maa-un.com; frame-src https://challenges.cloudflare.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://clerk.maa-un.com https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://img.clerk.com; font-src 'self'; connect-src 'self' https://clerk.maa-un.com; frame-src https://challenges.cloudflare.com https://disclosure2dl.edinet-fsa.go.jp; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
   Strict-Transport-Security: max-age=31536000; includeSubDomains
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
