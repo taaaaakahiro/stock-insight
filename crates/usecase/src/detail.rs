@@ -53,7 +53,11 @@ pub async fn stock_detail<Q: StockDetailQuery>(
     let quarterlies = repo.quarterlies(code).await?;
     let splits = repo.splits(code).await?;
     let forecasts = repo.forecasts(code).await?;
-    let latest_disclosed = annuals.iter().filter_map(|a| a.disclosed).max();
+    let latest_disclosed = annuals
+        .iter()
+        .filter(|a| !a.financial.has_no_figures())
+        .filter_map(|a| a.disclosed)
+        .max();
     let (market, fin, quarters, _) =
         build_inputs(bars, &annuals, &forecasts, &quarterlies, &splits);
     let mut ys = yield_series(&market);
@@ -156,7 +160,17 @@ mod tests {
                     ..Default::default()
                 },
             };
+            // 来期の配当予想の修正が、数字のない本決算の行として残っている
+            let revision = StoredAnnual {
+                doc_id: "rev".into(),
+                disclosed: Some(d("2025-08-25")),
+                financial: AnnualFinancial {
+                    period_end: Some(d("2026-03-31")),
+                    ..Default::default()
+                },
+            };
             Ok(vec![
+                revision,
                 mk("2025-03-31", "2025-05-10", 44.0),
                 mk("2024-03-31", "2024-05-10", 40.0),
             ])
@@ -186,8 +200,13 @@ mod tests {
         let det = block_on(stock_detail(&Fake { found: true }, &code))
             .unwrap()
             .unwrap();
-        assert_eq!(det.annual.len(), 2);
+        assert_eq!(det.annual.len(), 2, "数字のない行は出さない");
         assert_eq!(det.annual[0].dps, Some(44.0), "新しい期が先頭");
+        assert_eq!(
+            det.latest_disclosed,
+            Some(d("2025-05-10")),
+            "財務の鮮度は数字のある決算短信の開示日"
+        );
         // FY2024（Q4 は 3Q がないので不明）、2025年度の 1Q、FY2025（同じく不明）の3件、古い順
         assert_eq!(det.quarters.len(), 3);
         let q1 = det.quarters.iter().find(|q| q.result.quarter == 1).unwrap();
