@@ -1,5 +1,6 @@
 //! AIレコメンド（F7）: 日次バッチのあとにルールで候補を絞り、Workers AI に上位10銘柄と理由を出させて保存する。
-//! AI は説明と優先順位付けだけに使い、答えが壊れていれば保存しない。
+//! AI は説明と優先順位付けだけに使う。答えのうち壊れた分（候補にない・重複など）は捨て、
+//! 正しい分が MIN_PICKS に届かなければ保存しない。
 
 use crate::screening::{DataStatus, StockRow};
 use crate::PortError;
@@ -31,7 +32,7 @@ pub trait RecommendRepository {
     async fn candidates(&self) -> Result<Vec<StockRow>, PortError>;
     /// その日の結果がすでにあるか
     async fn exists(&self, date: &str) -> Result<bool, PortError>;
-    /// 1日分をまとめて保存する（PICK_COUNT 行）
+    /// 1日分をまとめて保存する（MIN_PICKS〜PICK_COUNT 行）
     async fn save(
         &self,
         date: &str,
@@ -75,6 +76,8 @@ pub enum Outcome {
     Saved {
         date: String,
         picks: usize,
+        /// AI の答えのうち捨てた分（ログに出す）
+        dropped: Vec<String>,
     },
 }
 
@@ -116,11 +119,12 @@ pub async fn generate<R: RecommendRepository, A: Recommender>(
         .filter_map(|c| rows.iter().find(|r| r.code == c.code).cloned())
         .collect();
     let raw = ai.rank(&shortlist).await?;
-    let picks = validate_picks(&raw, &candidates).map_err(|e| PortError(format!("ai: {e}")))?;
-    repo.save(&date, ai.model(), &picks, now).await?;
+    let v = validate_picks(&raw, &candidates).map_err(|e| PortError(format!("ai: {e}")))?;
+    repo.save(&date, ai.model(), &v.picks, now).await?;
     Ok(Outcome::Saved {
         date,
-        picks: picks.len(),
+        picks: v.picks.len(),
+        dropped: v.dropped.iter().map(|d| d.to_string()).collect(),
     })
 }
 
@@ -173,6 +177,18 @@ mod tests {
     /// 渡された候補をそのまま上から返す偽の AI
     struct EchoAi {
         broken: bool,
+    }
+
+    /// 決まった答えを返す偽の AI
+    struct FixedAi(Vec<RawPick>);
+
+    impl Recommender for FixedAi {
+        fn model(&self) -> &str {
+            "fake-model"
+        }
+        async fn rank(&self, _candidates: &[StockRow]) -> Result<Vec<RawPick>, PortError> {
+            Ok(self.0.clone())
+        }
     }
 
     impl Recommender for EchoAi {
@@ -267,7 +283,8 @@ mod tests {
             out,
             Outcome::Saved {
                 date: "2026-10-21".into(),
-                picks: 10
+                picks: 10,
+                dropped: vec![],
             }
         );
         let saved = repo.saved.borrow();
@@ -304,10 +321,37 @@ mod tests {
         assert!(block_on(generate(&repo, &EchoAi { broken: true }, NOW)).is_err());
         assert!(repo.saved.borrow().is_empty());
 
-        // 候補が10未満なら AI の答えも10件に足りず、保存しない
-        let few = fake(run("succeeded", NOW - 3600), 5);
+        // 候補が MIN_PICKS 未満なら AI の答えも足りず、保存しない
+        let few = fake(run("succeeded", NOW - 3600), 4);
         assert!(block_on(generate(&few, &EchoAi { broken: false }, NOW)).is_err());
         assert!(few.saved.borrow().is_empty());
+    }
+
+    #[test]
+    fn saves_the_valid_picks_when_some_are_broken() {
+        let repo = fake(run("succeeded", NOW - 3600), 30);
+        let pick = |code: &str| RawPick {
+            code: code.into(),
+            reason: format!("{code} は割安"),
+        };
+        let mut answer: Vec<RawPick> = (0..10).map(|i| pick(&format!("{}", 5000 + i))).collect();
+        answer[4] = pick("5000"); // 重複
+        answer[7] = pick("9999"); // 候補にない
+        let out = block_on(generate(&repo, &FixedAi(answer), NOW)).unwrap();
+        assert_eq!(
+            out,
+            Outcome::Saved {
+                date: "2026-10-21".into(),
+                picks: 8,
+                dropped: vec![
+                    "code 5000 appears twice".into(),
+                    "code 9999 is not a candidate".into()
+                ],
+            }
+        );
+        let saved = repo.saved.borrow();
+        assert_eq!(saved[0].2.len(), 8);
+        assert_eq!(saved[0].2[7].rank, 8);
     }
 
     #[test]
