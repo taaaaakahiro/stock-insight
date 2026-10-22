@@ -21,8 +21,10 @@ version = "0.3.2"
 dependencies = [
  "domain",
  "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "usecase",
+ "wasm-bindgen",
  "web-sys",
  "worker",
 ]
