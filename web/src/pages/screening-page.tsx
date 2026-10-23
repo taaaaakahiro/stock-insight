@@ -119,8 +119,8 @@ export function ScreeningPage() {
         </TabsList>
       </Tabs>
       <div className="grid gap-6 md:grid-cols-[18rem_1fr]">
-        {/* PC は横に常に出す。長いので欄の中だけスクロールさせる */}
-        <aside className="hidden md:sticky md:top-20 md:block md:max-h-[calc(100svh-6rem)] md:self-start md:overflow-y-auto md:pr-2">
+        {/* PC は横に常に出す。欄の中のスクロールが端でページに抜けないようにする */}
+        <aside className="hidden md:sticky md:top-20 md:block md:max-h-[calc(100svh-6rem)] md:self-start md:overflow-y-auto md:overscroll-contain md:pr-2 md:[scrollbar-gutter:stable]">
           <FilterPanel value={filters} onChange={setFilters} />
         </aside>
 

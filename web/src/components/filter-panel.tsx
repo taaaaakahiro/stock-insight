@@ -136,11 +136,11 @@ export function FilterPanel({ value, onChange }: Props) {
 
   return (
     <form
-      className="flex flex-col gap-5"
+      className="flex flex-col gap-3"
       onSubmit={(e) => e.preventDefault()}
       aria-label="絞り込み"
     >
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between pb-1">
         <h2 className="text-sm">絞り込み</h2>
         <Button
           type="button"
@@ -162,22 +162,28 @@ export function FilterPanel({ value, onChange }: Props) {
       </div>
 
       {stock && (
-        <ChipGroup legend="判定">
-          {FLAGS.map((f) => (
-            <Chip
-              key={f.key}
-              on={value[f.key]}
-              title={f.hint}
-              onToggle={(on) => set({ [f.key]: on })}
-            >
-              {f.label}
-            </Chip>
-          ))}
-        </ChipGroup>
+        <Section title="判定" count={FLAGS.filter((f) => value[f.key]).length} defaultOpen>
+          <div className="flex flex-wrap gap-1.5">
+            {FLAGS.map((f) => (
+              <Chip
+                key={f.key}
+                on={value[f.key]}
+                title={f.hint}
+                onToggle={(on) => set({ [f.key]: on })}
+              >
+                {f.label}
+              </Chip>
+            ))}
+          </div>
+        </Section>
       )}
 
       {stock && (
-        <>
+        <Section
+          title="市場・規模"
+          count={value.markets.length + value.sizes.length}
+          defaultOpen={value.markets.length + value.sizes.length > 0}
+        >
           <ChipGroup legend="市場">
             {MARKETS.map((m) => (
               <Chip
@@ -209,114 +215,128 @@ export function FilterPanel({ value, onChange }: Props) {
               </Chip>
             ))}
           </ChipGroup>
-        </>
+        </Section>
+      )}
+
+      {stock && (
+        <Section title="業種" count={value.sectors.length} defaultOpen={value.sectors.length > 0}>
+          <div className="grid grid-cols-2 gap-x-2 gap-y-2">
+            {SECTORS33.map((s) => (
+              <Label key={s} className="font-normal text-xs">
+                <Checkbox
+                  checked={value.sectors.includes(s)}
+                  onCheckedChange={(c) => set({ sectors: toggle(value.sectors, s, c === true) })}
+                />
+                {s}
+              </Label>
+            ))}
+          </div>
+        </Section>
       )}
 
       {value.kind === "reit" && (
-        <ChipGroup legend="用途">
-          {REIT_SECTORS.map((s) => (
-            <Chip
-              key={s.key}
-              on={value.reitSectors.includes(s.key)}
-              onToggle={(on) => set({ reitSectors: toggle(value.reitSectors, s.key, on) })}
-            >
-              {s.label}
-            </Chip>
-          ))}
-        </ChipGroup>
+        <Section
+          title="用途"
+          count={value.reitSectors.length}
+          defaultOpen={value.reitSectors.length > 0}
+        >
+          <div className="flex flex-wrap gap-1.5">
+            {REIT_SECTORS.map((s) => (
+              <Chip
+                key={s.key}
+                on={value.reitSectors.includes(s.key)}
+                onToggle={(on) => set({ reitSectors: toggle(value.reitSectors, s.key, on) })}
+              >
+                {s.label}
+              </Chip>
+            ))}
+          </div>
+        </Section>
       )}
 
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-1">
-          <Label htmlFor={valuationId}>{stock ? "配当" : "分配金"}利回りの過去5年比</Label>
-          <InfoTip label="利回りの過去5年比" text={yieldPercentileTip(value.kind)} />
-        </div>
-        <Select
-          value={value.valuation || ALL}
-          onValueChange={(v) => set({ valuation: (v === ALL ? "" : v) as Valuation })}
-        >
-          <SelectTrigger id={valuationId} className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ALL}>すべて</SelectItem>
-            <SelectItem value="cheap">高い（上位20%。株価は過去と比べて安い）</SelectItem>
-            <SelectItem value="neutral">ふつう</SelectItem>
-            <SelectItem value="expensive">低い（下位20%。株価は過去と比べて高い）</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-
-      <div className="flex flex-col gap-3">
-        {stock && (
-          <Section title="業種" count={value.sectors.length} defaultOpen={value.sectors.length > 0}>
-            <div className="grid grid-cols-2 gap-x-2 gap-y-2">
-              {SECTORS33.map((s) => (
-                <Label key={s} className="font-normal text-xs">
-                  <Checkbox
-                    checked={value.sectors.includes(s)}
-                    onCheckedChange={(c) => set({ sectors: toggle(value.sectors, s, c === true) })}
-                  />
-                  {s}
-                </Label>
-              ))}
-            </div>
-          </Section>
-        )}
-
-        {metricGroupsFor(value.kind).map((g) => {
-          const count = g.keys.filter(filled).length;
-          return (
-            <Section
-              key={g.label}
-              title={g.label}
-              count={count}
-              defaultOpen={g.open === true || count > 0}
-            >
-              {g.keys.map((key) => {
-                const minKey = `${key}_min` as const;
-                const maxKey = `${key}_max` as const;
-                const label = metricLabel(key, value.kind);
-                const unit = units.get(key);
-                const tip = metricTip(key, value.kind);
-                return (
-                  <div
-                    key={key}
-                    className="grid grid-cols-[1fr_auto_1fr] items-center gap-x-2 gap-y-1"
-                  >
-                    <span className="col-span-3 flex items-center gap-1 text-xs text-muted-foreground">
+      {metricGroupsFor(value.kind).map((g) => {
+        // 利回りの過去5年比（高い・ふつう・低い）は「割安さ」に入れる
+        const withValuation = g.key === "value";
+        const count = g.keys.filter(filled).length + (withValuation && value.valuation ? 1 : 0);
+        return (
+          <Section
+            key={g.key}
+            title={g.label}
+            count={count}
+            defaultOpen={g.open === true || count > 0}
+          >
+            {withValuation && (
+              <div className="flex flex-col gap-1.5">
+                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Label htmlFor={valuationId} className="font-normal">
+                    {stock ? "配当" : "分配金"}利回りの過去5年比
+                  </Label>
+                  <InfoTip label="利回りの過去5年比" text={yieldPercentileTip(value.kind)} />
+                </span>
+                <Select
+                  value={value.valuation || ALL}
+                  onValueChange={(v) => set({ valuation: (v === ALL ? "" : v) as Valuation })}
+                >
+                  <SelectTrigger id={valuationId} className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL}>すべて</SelectItem>
+                    <SelectItem value="cheap">高い（上位20%。株価は過去と比べて安い）</SelectItem>
+                    <SelectItem value="neutral">ふつう</SelectItem>
+                    <SelectItem value="expensive">
+                      低い（下位20%。株価は過去と比べて高い）
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            {g.keys.map((key) => {
+              const minKey = `${key}_min` as const;
+              const maxKey = `${key}_max` as const;
+              const label = metricLabel(key, value.kind);
+              const unit = units.get(key);
+              const tip = metricTip(key, value.kind);
+              // 名前と下限・上限を1行に並べ、縦の長さを半分にする
+              return (
+                <div
+                  key={key}
+                  className="grid grid-cols-[1fr_4.25rem_auto_4.25rem] items-center gap-x-1.5"
+                >
+                  <span className="flex min-w-0 items-center gap-1 text-xs leading-tight text-muted-foreground">
+                    <span>
                       {label}
-                      {unit && `（${UNIT_SUFFIX[unit]}）`}
-                      {tip && <InfoTip label={label} text={tip} />}
+                      {unit && <span className="whitespace-nowrap">（{UNIT_SUFFIX[unit]}）</span>}
                     </span>
-                    <Input
-                      inputMode="decimal"
-                      placeholder="下限"
-                      aria-label={`${label}の下限`}
-                      aria-invalid={isInvalidInput(value.ranges[minKey]) || undefined}
-                      value={value.ranges[minKey] ?? ""}
-                      onChange={(e) => setRange(minKey, e.target.value)}
-                      className="text-right tabular-nums"
-                    />
-                    <span className="text-muted-foreground" aria-hidden>
-                      〜
-                    </span>
-                    <Input
-                      inputMode="decimal"
-                      placeholder="上限"
-                      aria-label={`${label}の上限`}
-                      aria-invalid={isInvalidInput(value.ranges[maxKey]) || undefined}
-                      value={value.ranges[maxKey] ?? ""}
-                      onChange={(e) => setRange(maxKey, e.target.value)}
-                      className="text-right tabular-nums"
-                    />
-                  </div>
-                );
-              })}
-            </Section>
-          );
-        })}
-      </div>
+                    {tip && <InfoTip label={label} text={tip} />}
+                  </span>
+                  <Input
+                    inputMode="decimal"
+                    placeholder="下限"
+                    aria-label={`${label}の下限`}
+                    aria-invalid={isInvalidInput(value.ranges[minKey]) || undefined}
+                    value={value.ranges[minKey] ?? ""}
+                    onChange={(e) => setRange(minKey, e.target.value)}
+                    className="h-8 px-2 text-right tabular-nums"
+                  />
+                  <span className="text-xs text-muted-foreground" aria-hidden>
+                    〜
+                  </span>
+                  <Input
+                    inputMode="decimal"
+                    placeholder="上限"
+                    aria-label={`${label}の上限`}
+                    aria-invalid={isInvalidInput(value.ranges[maxKey]) || undefined}
+                    value={value.ranges[maxKey] ?? ""}
+                    onChange={(e) => setRange(maxKey, e.target.value)}
+                    className="h-8 px-2 text-right tabular-nums"
+                  />
+                </div>
+              );
+            })}
+          </Section>
+        );
+      })}
     </form>
   );
 }

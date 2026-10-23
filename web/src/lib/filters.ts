@@ -412,29 +412,29 @@ export function isInvalidInput(input: string | undefined): boolean {
   return input !== undefined && input.trim() !== "" && toApiNumber(input, "times") === undefined;
 }
 
-/** 範囲の入力欄のまとまり。全部を並べると長いので、まとまりごとに畳む（open は最初から開くもの） */
-export const METRIC_GROUPS: { label: string; keys: MetricKey[]; open?: boolean }[] = [
+/**
+ * 範囲の入力欄のまとまり。全部を並べると長いので、まとまりごとに畳む（open は最初から開くもの）。
+ * 絞り込みにあまり使わない指標（1株配当・株価・DOE下限・直近四半期の伸び・金利の記載なし・同（最大））と、
+ * 「高い・ふつう・低い」で選べる利回りの過去5年比は欄に出さない（URL で渡せば今までどおり効き、チップで外せる）
+ */
+export const METRIC_GROUPS: { key: string; label: string; keys: MetricKey[]; open?: boolean }[] = [
   {
+    key: "dividend",
     label: "配当",
-    keys: ["dividend_yield", "dividend_ttm", "payout_ratio", "consecutive_increases"],
+    keys: ["dividend_yield", "payout_ratio", "consecutive_increases"],
     open: true,
   },
-  { label: "割安さ", keys: ["pbr", "per", "yield_percentile", "price"], open: true },
-  { label: "配当方針（DOE）", keys: ["doe", "doe_floor", "doe_margin"] },
+  { key: "value", label: "割安さ", keys: ["pbr", "per"], open: true },
+  { key: "doe", label: "配当方針（DOE）", keys: ["doe", "doe_margin"] },
   {
+    key: "growth",
     label: "業績",
-    keys: ["operating_margin", "sales_growth", "op_growth", "op_growth_q", "op_growth_ttm"],
+    keys: ["operating_margin", "sales_growth", "op_growth", "op_growth_ttm"],
   },
   {
+    key: "reit",
     label: "借入・物件",
-    keys: [
-      "floating_ratio",
-      "unknown_ratio",
-      "reprice_ratio",
-      "reprice_max_ratio",
-      "avg_rate",
-      "occupancy",
-    ],
+    keys: ["floating_ratio", "reprice_ratio", "avg_rate", "occupancy"],
   },
 ];
 
@@ -442,7 +442,7 @@ export const METRIC_GROUPS: { label: string; keys: MetricKey[]; open?: boolean }
 export function metricGroupsFor(kind: Kind) {
   const keys = new Set(metricsFor(kind).map((m) => m.key));
   return METRIC_GROUPS.map((g) => ({ ...g, keys: g.keys.filter((k) => keys.has(k)) })).filter(
-    (g) => g.keys.length > 0,
+    (g) => g.keys.length > 0 || g.key === "value",
   );
 }
 

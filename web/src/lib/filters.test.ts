@@ -176,10 +176,13 @@ describe("activeConditions", () => {
   });
 
   it("groups only the metrics the tab has", () => {
-    const reit = metricGroupsFor("reit").map((g) => g.label);
-    expect(reit).toEqual(["配当", "割安さ", "借入・物件"]);
-    expect(metricGroupsFor("reit")[1]?.keys).toEqual(["yield_percentile", "price"]);
-    const all = METRIC_GROUPS.flatMap((g) => g.keys).sort();
-    expect(all).toEqual(METRICS.map((m) => m.key).sort());
+    expect(metricGroupsFor("reit").map((g) => g.label)).toEqual(["配当", "割安さ", "借入・物件"]);
+    // 割安さは REIT・ETF でも残す（利回りの過去5年比の選択を入れる）
+    expect(metricGroupsFor("etf").map((g) => [g.key, g.keys])).toEqual([
+      ["dividend", ["dividend_yield"]],
+      ["value", []],
+    ]);
+    const keys = new Set(METRICS.map((m) => m.key));
+    for (const g of METRIC_GROUPS) for (const k of g.keys) expect(keys.has(k)).toBe(true);
   });
 });
