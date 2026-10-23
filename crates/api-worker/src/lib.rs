@@ -630,6 +630,10 @@ fn row_json(r: &StockRow) -> Value {
     v["payout_floor"] = json!(r.payout_floor);
     v["payout_goal"] = json!(r.payout_goal);
     v["payout_forecast"] = json!(r.payout_forecast);
+    v["op_growth_q"] = json!(r.op_growth_q);
+    v["net_growth_q"] = json!(r.net_growth_q);
+    v["op_growth_ttm"] = json!(r.op_growth_ttm);
+    v["profit_one_off"] = json!(r.profit_one_off);
     // 方針と今の配当の乖離（方針どおりなら配当が何 % 増えるか）。方針がないか満たしていれば null
     v["policy_gap"] = json!(r.policy_gap().map(|g| json!({
         "basis": g.key(),

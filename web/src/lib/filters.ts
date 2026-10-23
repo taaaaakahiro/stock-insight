@@ -23,7 +23,9 @@ export type MetricKey =
   | "avg_rate"
   | "occupancy"
   | "doe_floor"
-  | "doe_margin";
+  | "doe_margin"
+  | "op_growth_q"
+  | "op_growth_ttm";
 
 /** 一覧のタブ。株式以外は財務の指標がないので、使える指標を絞る */
 export type Kind = "stock" | "reit" | "etf";
@@ -52,6 +54,8 @@ export const METRICS: { key: MetricKey; label: string; unit: Unit; kinds: Kind[]
   { key: "operating_margin", label: "営業利益率", unit: "pct", kinds: STOCK },
   { key: "sales_growth", label: "売上の伸び", unit: "pct", kinds: STOCK },
   { key: "op_growth", label: "営業利益の伸び", unit: "pct", kinds: STOCK },
+  { key: "op_growth_q", label: "直近四半期の営業利益の伸び", unit: "pct", kinds: STOCK },
+  { key: "op_growth_ttm", label: "直近4四半期の営業利益の伸び", unit: "pct", kinds: STOCK },
   { key: "price", label: "株価", unit: "yen", kinds: ALL },
   { key: "floating_ratio", label: "変動金利", unit: "pct", kinds: REIT },
   { key: "unknown_ratio", label: "金利の記載なし", unit: "pct", kinds: REIT },
@@ -84,10 +88,19 @@ const DOE_TIPS: Partial<Record<MetricKey, string>> = {
     "今の DOE − DOE下限（ポイント）。今の DOE は会社予想の配当があればそれで（利回り × PBR）、なければ実績で出します。マイナスは、下限の方針より配当が少ないことを示します。",
 };
 
+/** 業績の伸びの説明（累計・四半期単独・4四半期合計の違い） */
+const GROWTH_TIPS: Partial<Record<MetricKey, string>> = {
+  op_growth: "直近の決算の期首からの累計（1Q〜FY）と、1年前の同じ期の累計を比べた前年同期比です。",
+  op_growth_q:
+    "直近の四半期だけ（累計の差分）の営業利益を、前年の同じ四半期と比べた前年同期比です。累計よりも今の勢いが出ます。",
+  op_growth_ttm:
+    "直近4四半期の営業利益の合計を、その前の4四半期の合計と比べた伸びです。直近の四半期だけ増益で、こちらがマイナスなら一過性の疑いがあります。",
+};
+
 /** 指標の説明（あるものだけ）。InfoTip に出す */
 export function metricTip(key: MetricKey, kind: Kind): string | undefined {
   if (key === "yield_percentile") return yieldPercentileTip(kind);
-  return REIT_TIPS[key] ?? DOE_TIPS[key];
+  return REIT_TIPS[key] ?? DOE_TIPS[key] ?? GROWTH_TIPS[key];
 }
 
 /** REIT の用途（data/reit_sectors.csv と同じキー） */

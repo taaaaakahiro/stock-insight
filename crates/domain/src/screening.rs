@@ -33,10 +33,13 @@ pub enum Metric {
     DoeFloor,
     /// DOE（会社予想の配当があればそれで、なければ実績）− DOE の下限
     DoeMargin,
+    /// 直近の四半期単独の営業利益の前年同期比と、直近4四半期合計の営業利益の伸び
+    OpGrowthQ,
+    OpGrowthTtm,
 }
 
 impl Metric {
-    pub const ALL: [Metric; 20] = [
+    pub const ALL: [Metric; 22] = [
         Metric::Price,
         Metric::Dividend,
         Metric::DividendYield,
@@ -57,6 +60,8 @@ impl Metric {
         Metric::Occupancy,
         Metric::DoeFloor,
         Metric::DoeMargin,
+        Metric::OpGrowthQ,
+        Metric::OpGrowthTtm,
     ];
 
     /// APIのクエリ名（株式などの指標は D1 の列名と同じ）
@@ -82,6 +87,8 @@ impl Metric {
             Metric::Occupancy => "occupancy",
             Metric::DoeFloor => "doe_floor",
             Metric::DoeMargin => "doe_margin",
+            Metric::OpGrowthQ => "op_growth_q",
+            Metric::OpGrowthTtm => "op_growth_ttm",
         }
     }
 

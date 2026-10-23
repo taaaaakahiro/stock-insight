@@ -35,6 +35,12 @@ pub struct Indicators {
     pub dividend_is_forecast: Option<bool>,
     /// 減配した、または減配の予想を出した（比べる配当がなければ None）
     pub dividend_cut: Option<bool>,
+    /// 直近の四半期単独の営業利益・純利益の前年同期比、直近4四半期合計の営業利益の伸び、利益が一過性の疑い
+    /// （analysis::latest_quarter）
+    pub op_growth_q: Option<f64>,
+    pub net_growth_q: Option<f64>,
+    pub op_growth_ttm: Option<f64>,
+    pub profit_one_off: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,6 +222,7 @@ pub fn compute(
     let pbr = ratio(Some(price), bps);
     let per = ratio(Some(price), eps);
 
+    let latest_q = crate::analysis::latest_quarter(quarters);
     let valuation = match yield_percentile {
         Some(p) if p >= CHEAP_PERCENTILE => Valuation::Cheap,
         Some(p) if p <= EXPENSIVE_PERCENTILE => Valuation::Expensive,
@@ -254,6 +261,10 @@ pub fn compute(
             &dps_series,
             current.filter(|d| d.forecast).map(|d| d.annual),
         ),
+        op_growth_q: latest_q.op_growth,
+        net_growth_q: latest_q.net_growth,
+        op_growth_ttm: latest_q.op_growth_ttm,
+        profit_one_off: latest_q.one_off,
     })
 }
 

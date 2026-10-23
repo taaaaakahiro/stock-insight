@@ -173,7 +173,7 @@ J-Quants を1ジョブで順に取り込むのは、J-Quants が日付指定で�
 | テーブル | 列 | 作成 |
 |---|---|---|
 | stocks | code (PK), name, kind（stock/reit/etf）, market, sector33, size_class（large/mid/small/none）, as_of, updated_at | 0003 |
-| indicators_latest | code (PK), run_id, fetched_at, price, price_date, dividend_ttm, dividend_yield, yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin, no_loss_years, profit_uptrend, valuation, fin_doc_id, fin_submitted, dividend_every_year, no_quarterly_loss, is_value, data_years, sales_growth, op_growth, dividend_basis, dividend_cut | 0001（0005・0007・0010・0012 で列を追加） |
+| indicators_latest | code (PK), run_id, fetched_at, price, price_date, dividend_ttm, dividend_yield, yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin, no_loss_years, profit_uptrend, valuation, fin_doc_id, fin_submitted, dividend_every_year, no_quarterly_loss, is_value, data_years, sales_growth, op_growth, dividend_basis, dividend_cut, op_growth_q, net_growth_q, op_growth_ttm, profit_one_off（直近の四半期の業績の質） | 0001（0005・0007・0010・0012・0015 で列を追加） |
 | financials_annual | code, period_end (PK: code+period_end), doc_id, net_sales, operating_income, ordinary_income, net_income, equity, eps, bps, dps, operating_cf, fetched_at, disclosed | 0001（0004 で disclosed を追加） |
 | financials_quarterly | code, fiscal_year_end, period_type (PK: code+fiscal_year_end+period_type), period_end, doc_id, disclosed, net_sales, operating_income, ordinary_income, net_income, fetched_at | 0005 |
 | price_history | code (PK), closes（`YYYYMMDD,終値;…`）, last_date, updated_at | 0004 |

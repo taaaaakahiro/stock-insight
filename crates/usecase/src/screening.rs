@@ -56,6 +56,11 @@ pub struct StockRow {
     pub payout_goal: Option<f64>,
     /// 会社予想の配当で見た配当性向（予想の1株配当 ÷ 直近の本決算の EPS。予想がなければ None。実績は payout_ratio）
     pub payout_forecast: Option<f64>,
+    /// 直近の四半期単独の営業利益・純利益の前年同期比、直近4四半期合計の営業利益の伸び、利益が一過性の疑い
+    pub op_growth_q: Option<f64>,
+    pub net_growth_q: Option<f64>,
+    pub op_growth_ttm: Option<f64>,
+    pub profit_one_off: Option<bool>,
     /// REIT の金利・稼働率（reit_profile。REIT 以外や未取り込みなら None）
     pub reit: Option<ReitListFields>,
 }

@@ -255,6 +255,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0014_payout_policy",
         include_str!("../../../migrations/0014_payout_policy.sql"),
     ),
+    (
+        "0015_quarter_quality",
+        include_str!("../../../migrations/0015_quarter_quality.sql"),
+    ),
 ];
 
 async fn sync_master(args: Args) -> Result<(), String> {

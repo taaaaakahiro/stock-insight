@@ -52,6 +52,12 @@ export type StockRow = {
   payout_forecast: number | null;
   /** 会社の配当方針（DOE・配当性向の下限・目標）と今の配当の乖離。方針がないか満たしていれば null */
   policy_gap: PolicyGap | null;
+  /** 直近の四半期単独の営業利益・純利益の前年同期比と、直近4四半期合計の営業利益の伸び */
+  op_growth_q: number | null;
+  net_growth_q: number | null;
+  op_growth_ttm: number | null;
+  /** 利益が一過性の疑い（純利益の伸びが営業利益の伸びを大きく上回る、または直近の四半期だけ増益で4四半期の合計は減益） */
+  profit_one_off: boolean | null;
   /** REIT の金利・稼働率（有報から。REIT 以外や未取り込みなら null）。比率は小数 */
   reit?: ReitListFields | null;
 };

@@ -61,6 +61,8 @@ const RENDER: Record<MetricKey, (r: StockRow) => React.ReactNode> = {
   operating_margin: (r) => pct(r.operating_margin, 1),
   sales_growth: (r) => growth(r.sales_growth),
   op_growth: (r) => growth(r.op_growth),
+  op_growth_q: (r) => growth(r.op_growth_q),
+  op_growth_ttm: (r) => growth(r.op_growth_ttm),
   floating_ratio: (r) => pct(r.reit?.floating_ratio, 1),
   unknown_ratio: (r) => pct(r.reit?.unknown_ratio, 1),
   reprice_ratio: (r) => pct(r.reit?.reprice_ratio, 1),
@@ -201,6 +203,12 @@ const BADGES: { key: keyof StockRow; label: string; hint: string; className: str
     key: "dividend_cut",
     label: "減配",
     hint: "直近の配当が前期より減った、または会社予想が直近の配当を下回る（据え置きは含めない）",
+    className: "border-expensive/40 bg-expensive/10 text-expensive",
+  },
+  {
+    key: "profit_one_off",
+    label: "一過性?",
+    hint: "直近の四半期の利益が一過性の疑い: 純利益の伸びが営業利益の伸びを30pt以上上回る（特別利益）、または直近の四半期だけ増益で直近4四半期の合計は減益",
     className: "border-expensive/40 bg-expensive/10 text-expensive",
   },
   {
