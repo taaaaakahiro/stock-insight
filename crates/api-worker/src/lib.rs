@@ -9,7 +9,7 @@
 //!   PUT /api/portfolio/:code        銘柄を登録
 //!   DELETE /api/portfolio/:code     登録を外す
 //!   GET /api/recommendations        最新日の AIレコメンド（F7）。キャッシュしない（作り直しの直後に古い結果を見せない）
-//!   POST /api/recommendations/regenerate  AIレコメンドを作り直す（管理者。日本時間で1日1回まで）
+//!   POST /api/recommendations/regenerate  AIレコメンドを作り直す（管理者。回数の上限なし）
 //!   GET /api/themes                 注目テーマ（管理者が登録。全員が読める）
 //!   GET /api/themes/:id             1テーマと、当たった銘柄
 //!   POST /api/themes                テーマを登録して照合（管理者）
@@ -517,10 +517,6 @@ async fn recommend_cron(env: &Env) {
         Ok(usecase::recommend::Outcome::Skipped(why)) => {
             worker::console_log!("cron {RECOMMEND_CRON}: skipped ({why})")
         }
-        // Cron は回数の上限を見ないので来ない
-        Ok(usecase::recommend::Outcome::Limited) => {
-            worker::console_log!("cron {RECOMMEND_CRON}: limited")
-        }
         Err(e) => worker::console_error!("cron {RECOMMEND_CRON}: {e}"),
     }
 }
@@ -553,7 +549,7 @@ async fn recommendations(_req: Request, ctx: RouteContext<AuthUser>) -> Result<R
     }
 }
 
-/// 画面のボタン: 直近のバッチが成功していれば作り直す（管理者。1日1回まで）。AI の呼び出しがあるので十数秒かかる
+/// 画面のボタン: 直近のバッチが成功していれば作り直す（管理者。回数の上限なし）。AI の呼び出しがあるので十数秒かかる
 async fn recommendations_regenerate(
     _req: Request,
     ctx: RouteContext<AuthUser>,
@@ -582,14 +578,6 @@ async fn recommendations_regenerate(
                 "no-store",
             )
         }
-        Ok(usecase::recommend::Outcome::Limited) => json_error(
-            429,
-            "limited",
-            &format!(
-                "up to {} manual regeneration(s) per day",
-                usecase::recommend::MANUAL_PER_DAY
-            ),
-        ),
         Ok(usecase::recommend::Outcome::Skipped(why)) => json_error(409, "skipped", &why),
         Err(e) => internal(&e.0),
     }

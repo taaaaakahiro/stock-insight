@@ -314,9 +314,6 @@ pub const RECOMMENDATION_EXISTS: &str = "SELECT COUNT(*) AS n FROM recommendatio
 pub const RECOMMENDATION_INSERT: &str = "INSERT INTO recommendations \
      (date, rank, code, reason, model, created_at, grade, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 pub const RECOMMENDATION_DELETE_DATE: &str = "DELETE FROM recommendations WHERE date = ?";
-/// 画面のボタンで作り直した回数（? は UNIX 秒。それ以降の分）。1日分は同じ created_at なので日付の数で数える
-pub const RECOMMENDATION_MANUAL_SINCE: &str =
-    "SELECT COUNT(DISTINCT created_at) AS n FROM recommendations WHERE source = 'manual' AND created_at >= ?";
 
 /// 選んだ銘柄の配当方針の文（有報・半期報告書の DOE・配当性向の数字を拾った文）。? は銘柄コード × n
 pub fn policy_phrases(n: usize) -> String {

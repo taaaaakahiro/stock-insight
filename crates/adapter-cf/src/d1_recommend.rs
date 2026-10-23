@@ -179,18 +179,6 @@ impl RecommendRepository for D1Recommendations {
         Ok(())
     }
 
-    async fn manual_count_since(&self, since: i64) -> Result<i64, PortError> {
-        let n: Option<f64> = self
-            .db
-            .prepare(query::RECOMMENDATION_MANUAL_SINCE)
-            .bind(&[JsValue::from_f64(since as f64)])
-            .map_err(err)?
-            .first(Some("n"))
-            .await
-            .map_err(err)?;
-        Ok(n.unwrap_or(0.0) as i64)
-    }
-
     async fn latest(&self) -> Result<Option<Recommendations>, PortError> {
         let result = self
             .db

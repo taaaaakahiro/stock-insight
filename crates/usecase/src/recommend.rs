@@ -86,8 +86,6 @@ pub trait RecommendRepository {
         source: Source,
         replace: bool,
     ) -> Result<(), PortError>;
-    /// since（UNIX秒）以降に画面のボタンで作り直した回数
-    async fn manual_count_since(&self, since: i64) -> Result<i64, PortError>;
     /// 最新日の結果（銘柄名と最新の指標つき）
     async fn latest(&self) -> Result<Option<Recommendations>, PortError>;
 }
@@ -149,22 +147,12 @@ fn themes_of(themes: &[(String, String)], code: &str) -> Vec<String> {
 pub enum Outcome {
     /// 何もしなかった理由
     Skipped(String),
-    /// 作り直しは1日1回まで（画面のボタン）
-    Limited,
     Saved {
         date: String,
         picks: usize,
         /// AI の答えのうち捨てた分（ログに出す）
         dropped: Vec<String>,
     },
-}
-
-/// 画面のボタンで作り直せる回数（日本時間の1日あたり）
-pub const MANUAL_PER_DAY: i64 = 1;
-
-/// 日本時間でその日の 0:00 の UNIX 秒
-fn start_of_day_jst(now: i64) -> i64 {
-    now - (now + 9 * 3600).rem_euclid(86_400)
 }
 
 /// その日のバッチが成功していて、まだ結果がなければ生成して保存する（21:00 の Cron）
@@ -199,7 +187,7 @@ pub async fn generate<R: RecommendRepository, A: Recommender>(
 }
 
 /// 画面のボタン: 直近のバッチが成功していれば（今日でなくてもよい）、その株価の日付の結果を作り直す。
-/// 日本時間の1日に MANUAL_PER_DAY 回まで。その日の行があれば消して入れ替える
+/// その日の行があれば消して入れ替える。回数の上限は設けない（押せるのは管理者だけ）
 pub async fn regenerate<R: RecommendRepository, A: Recommender>(
     repo: &R,
     ai: &A,
@@ -217,9 +205,6 @@ pub async fn regenerate<R: RecommendRepository, A: Recommender>(
     let Some(date) = run.latest_price_date else {
         return Ok(Outcome::Skipped("no prices yet".into()));
     };
-    if repo.manual_count_since(start_of_day_jst(now)).await? >= MANUAL_PER_DAY {
-        return Ok(Outcome::Limited);
-    }
     build_and_save(repo, ai, &date, now, Source::Manual, true).await
 }
 
@@ -290,8 +275,6 @@ mod tests {
         saved: RefCell<Vec<(String, String, Vec<Pick>)>>,
         asked_phrases: RefCell<Vec<String>>,
         themes: Vec<(String, String)>,
-        /// 画面のボタンで作り直した時刻
-        manual_at: Vec<i64>,
         saved_how: RefCell<Vec<(Source, bool)>>,
     }
 
@@ -331,9 +314,6 @@ mod tests {
                 .push((date.into(), model.into(), picks.to_vec()));
             self.saved_how.borrow_mut().push((source, replace));
             Ok(())
-        }
-        async fn manual_count_since(&self, since: i64) -> Result<i64, PortError> {
-            Ok(self.manual_at.iter().filter(|t| **t >= since).count() as i64)
         }
         async fn latest(&self) -> Result<Option<Recommendations>, PortError> {
             Ok(None)
@@ -455,7 +435,6 @@ mod tests {
             saved: RefCell::new(vec![]),
             asked_phrases: RefCell::new(vec![]),
             themes: vec![],
-            manual_at: vec![],
             saved_how: RefCell::new(vec![]),
         }
     }
@@ -569,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn regenerate_replaces_the_day_once_per_day() {
+    fn regenerate_replaces_the_day() {
         // 前日に終わったバッチでも、成功していれば作り直せる。その日の行は入れ替える
         let mut repo = fake(run("succeeded", NOW - 86_400), 30);
         repo.existing.push("2026-10-21".into());
@@ -577,21 +556,12 @@ mod tests {
         assert!(matches!(out, Outcome::Saved { picks: 10, .. }), "{out:?}");
         assert_eq!(repo.saved_how.borrow()[0], (Source::Manual, true));
 
-        // 日本時間の今日（2026-10-21 21:00 JST の 0:00 は 15:00 UTC の前日）にもう作り直していれば断る
-        let mut limited = fake(run("succeeded", NOW - 3600), 30);
-        limited.manual_at = vec![NOW - 6 * 3600]; // 15:00 JST
-        assert_eq!(
-            block_on(regenerate(&limited, &echo(), NOW)).unwrap(),
-            Outcome::Limited
-        );
-        // 前日の分は数えない（0:00 JST = 2026-10-20 15:00 UTC より前）
-        let mut yesterday = fake(run("succeeded", NOW - 3600), 30);
-        yesterday.manual_at = vec![NOW - 22 * 3600];
+        // 何度でも作り直せる（押せるのは管理者だけ）
         assert!(matches!(
-            block_on(regenerate(&yesterday, &echo(), NOW)).unwrap(),
+            block_on(regenerate(&repo, &echo(), NOW + 60)).unwrap(),
             Outcome::Saved { .. }
         ));
-        assert_eq!(start_of_day_jst(NOW), NOW - 21 * 3600);
+        assert_eq!(repo.saved.borrow().len(), 2);
 
         // バッチが走っている・失敗していれば作れない
         assert!(matches!(
