@@ -133,13 +133,13 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
                   {codes.size > 0 && <span className="ml-1 tabular-nums">({codes.size})</span>}
                 </TabsTrigger>
                 <TabsTrigger value="recommend">AIレコメンド</TabsTrigger>
-                <TabsTrigger value="themes">注目テーマ</TabsTrigger>
+                {me.is_admin && <TabsTrigger value="themes">注目テーマ</TabsTrigger>}
               </TabsList>
             </Tabs>
             {view === "screening" && <ScreeningPage />}
             {view === "portfolio" && <PortfolioPage />}
             {view === "recommend" && <RecommendPage isAdmin={me.is_admin} />}
-            {view === "themes" && <ThemesPage isAdmin={me.is_admin} />}
+            {view === "themes" && me.is_admin && <ThemesPage isAdmin />}
           </>
         )}
       </main>
