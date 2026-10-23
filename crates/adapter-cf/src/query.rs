@@ -35,6 +35,19 @@ macro_rules! doe_goal_sql {
          ORDER BY e.submitted DESC LIMIT 1)"
     };
 }
+/// 配当性向の下限・目標も同じく、書かれた新しい書類の値
+macro_rules! payout_floor_sql {
+    () => {
+        "(SELECT e.payout_floor FROM edinet_docs e WHERE e.code = i.code AND e.payout_floor IS NOT NULL \
+         ORDER BY e.submitted DESC LIMIT 1)"
+    };
+}
+macro_rules! payout_goal_sql {
+    () => {
+        "(SELECT e.payout_goal FROM edinet_docs e WHERE e.code = i.code AND e.payout_goal IS NOT NULL \
+         ORDER BY e.submitted DESC LIMIT 1)"
+    };
+}
 /// 比べる DOE: 会社予想の配当があれば 利回り × PBR（予想の配当 ÷ BPS）、なければ実績の DOE
 const DOE_NOW: &str =
     "(CASE WHEN i.dividend_basis = 'forecast' THEN i.dividend_yield * i.pbr ELSE i.doe END)";
@@ -78,7 +91,11 @@ pub const LIST_COLUMNS: &str = concat!(
     doe_floor_sql!(),
     " AS doe_floor, ",
     doe_goal_sql!(),
-    " AS doe_goal"
+    " AS doe_goal, ",
+    payout_floor_sql!(),
+    " AS payout_floor, ",
+    payout_goal_sql!(),
+    " AS payout_goal"
 );
 
 /// マスタにまだない銘柄も消えないよう LEFT JOIN（種類は株式として扱う）。REIT の要約も LEFT JOIN
@@ -204,7 +221,8 @@ pub fn portfolio_rows() -> String {
 /// 1銘柄の EDINET の書類と配当方針の手がかり（? は銘柄コード）
 pub const EDINET_DOCS: &str =
     "SELECT doc_kind, doc_id, submitted, period_end, progressive_dividend, \
-     no_dividend_cut, dividend_raise, doe_target, payout_target, doe_floor, doe_goal, doe_phrase, phrases \
+     no_dividend_cut, dividend_raise, doe_target, payout_target, doe_floor, doe_goal, doe_phrase, \
+     payout_floor, payout_goal, payout_phrase, phrases \
      FROM edinet_docs WHERE code = ? ORDER BY doc_kind";
 
 pub const PORTFOLIO_CODES: &str =
@@ -385,9 +403,11 @@ mod tests {
     #[test]
     fn doe_columns_use_the_newest_document_and_forecast() {
         assert!(LIST_COLUMNS.ends_with(&format!(
-            "{} AS doe_floor, {} AS doe_goal",
+            "{} AS doe_floor, {} AS doe_goal, {} AS payout_floor, {} AS payout_goal",
             doe_floor_sql!(),
-            doe_goal_sql!()
+            doe_goal_sql!(),
+            payout_floor_sql!(),
+            payout_goal_sql!()
         )));
         assert!(doe_floor_sql!().contains("ORDER BY e.submitted DESC LIMIT 1"));
         let margin = metric_sql(Metric::DoeMargin);

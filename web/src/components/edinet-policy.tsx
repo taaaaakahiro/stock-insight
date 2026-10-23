@@ -16,7 +16,13 @@ function tags(d: EdinetDoc): string[] {
     d.no_dividend_cut && "非減配",
     d.dividend_raise && "増配の記述",
     d.doe_target && "DOE目標",
-    d.payout_target != null && `配当性向${pct(d.payout_target, 0)}以上`,
+    d.payout_floor != null && `配当性向 下限${pct(d.payout_floor, 0)}`,
+    d.payout_goal != null && `配当性向 目標${pct(d.payout_goal, 0)}`,
+    // 古い書類（下限・目標に分ける前に取り込んだもの）
+    d.payout_floor == null &&
+      d.payout_goal == null &&
+      d.payout_target != null &&
+      `配当性向${pct(d.payout_target, 0)}以上`,
   ].filter((t): t is string => Boolean(t));
 }
 

@@ -248,6 +248,9 @@ async fn edinet(req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
                     "doe_floor": d.doe_floor,
                     "doe_goal": d.doe_goal,
                     "doe_phrase": d.doe_phrase,
+                    "payout_floor": d.payout_floor,
+                    "payout_goal": d.payout_goal,
+                    "payout_phrase": d.payout_phrase,
                     "phrases": d.phrases,
                 })).collect::<Vec<_>>(),
             })),
@@ -620,10 +623,20 @@ fn row_json(r: &StockRow) -> Value {
             "occupancy": x.occupancy,
         })),
     });
-    // json! の再帰の上限に当たるので、DOE の方針は後から足す
+    // json! の再帰の上限に当たるので、配当方針は後から足す
     v["doe_floor"] = json!(r.doe_floor);
     v["doe_goal"] = json!(r.doe_goal);
     v["doe_forecast"] = json!(r.doe_forecast);
+    v["payout_floor"] = json!(r.payout_floor);
+    v["payout_goal"] = json!(r.payout_goal);
+    v["payout_forecast"] = json!(r.payout_forecast);
+    // 方針と今の配当の乖離（方針どおりなら配当が何 % 増えるか）。方針がないか満たしていれば null
+    v["policy_gap"] = json!(r.policy_gap().map(|g| json!({
+        "basis": g.key(),
+        "policy": g.policy,
+        "now": g.now,
+        "upside": g.upside,
+    })));
     v
 }
 

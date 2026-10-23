@@ -170,6 +170,15 @@ pub fn doe_from_yield(dividend_yield: Option<f64>, pbr: Option<f64>) -> Option<f
     }
 }
 
+/// 会社予想の配当で見た配当性向。配当利回り × PER（= 1株配当 ÷ 株価 × 株価 ÷ EPS）。
+/// PER は黒字（EPS > 0）のときだけ出ているので、赤字の年は None
+pub fn payout_from_yield(dividend_yield: Option<f64>, per: Option<f64>) -> Option<f64> {
+    match (dividend_yield, per) {
+        (Some(y), Some(p)) if y >= 0.0 && p > 0.0 => Some(y * p),
+        _ => None,
+    }
+}
+
 fn ratio(a: Option<f64>, b: Option<f64>) -> Option<f64> {
     match (a, b) {
         (Some(a), Some(b)) if b > 0.0 => Some(a / b),
@@ -264,6 +273,19 @@ mod tests {
             "BPS がない・債務超過"
         );
         assert_eq!(doe_from_yield(None, Some(1.0)), None);
+    }
+
+    #[test]
+    fn payout_from_yield_is_yield_times_per() {
+        // 配当 60円・株価 2,000円・EPS 200円 → 利回り 3%・PER 10倍・配当性向 30%
+        let payout = payout_from_yield(Some(0.03), Some(10.0)).unwrap();
+        assert!((payout - 0.3).abs() < 1e-12);
+        assert_eq!(
+            payout_from_yield(Some(0.03), None),
+            None,
+            "赤字なら PER がない"
+        );
+        assert_eq!(payout_from_yield(None, Some(10.0)), None);
     }
 
     fn d(s: &str) -> Date {
