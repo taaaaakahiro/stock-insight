@@ -159,7 +159,7 @@ const METRICS: { label: string; render: (r: Recommendation) => string }[] = [
 
 /**
  * 管理者だけのボタン。直近の日次バッチが成功していれば、その株価の日付のレコメンドを今の評価・順位で作り直す
- * （日本時間で1日1回まで。AI の呼び出しがあるので十数秒かかる）
+ * （AI の呼び出しがあるので十数秒かかる）
  */
 function RegenerateButton({ onDone }: { onDone: () => void }) {
   const { getToken } = useAuthState();
@@ -167,11 +167,7 @@ function RegenerateButton({ onDone }: { onDone: () => void }) {
   const [note, setNote] = useState<string | null>(null);
 
   const run = async () => {
-    if (
-      !window.confirm(
-        "AIレコメンドを作り直します（1日1回まで）。今の結果は置き換わります。よろしいですか？",
-      )
-    ) {
+    if (!window.confirm("AIレコメンドを作り直します。今の結果は置き換わります。よろしいですか？")) {
       return;
     }
     setBusy(true);
@@ -185,9 +181,7 @@ function RegenerateButton({ onDone }: { onDone: () => void }) {
       setNote(`${ymd(r.date)}終値で${r.picks}銘柄を作り直しました。`);
       onDone();
     } catch (e) {
-      if (e instanceof ApiError && e.status === 429) {
-        setNote("今日はもう作り直しています（1日1回まで）。明日またお試しください。");
-      } else if (e instanceof ApiError && e.status === 409) {
+      if (e instanceof ApiError && e.status === 409) {
         setNote(
           e.message.includes("running")
             ? "日次バッチが走っています。終わってからお試しください。"
@@ -208,7 +202,7 @@ function RegenerateButton({ onDone }: { onDone: () => void }) {
         size="sm"
         disabled={busy}
         onClick={() => void run()}
-        title="直近の日次バッチの株価で、今の評価と順位でレコメンドを作り直す（1日1回まで）"
+        title="直近の日次バッチの株価で、今の評価と順位でレコメンドを作り直す"
       >
         <RefreshCw aria-hidden className={busy ? "animate-spin" : ""} />
         {busy ? "作り直しています…" : "作り直す"}
