@@ -39,6 +39,8 @@ pub struct Candidate {
     /// 直近の四半期単独の営業利益の前年同期比と、利益が一過性の疑い
     pub op_growth_q: Option<f64>,
     pub profit_one_off: Option<bool>,
+    /// 管理者が登録した注目テーマに当たっている（有報の事業の内容にテーマの言葉がある）
+    pub themed: bool,
 }
 
 /// 3段階の評価。乖離が大きく業績の質も良ければ強く推奨、一律に「おすすめ」としない
@@ -136,13 +138,15 @@ impl Candidate {
     }
 }
 
-/// ルールで候補を絞り、順位をつける。評価の高い順、同じ評価なら下限割れ → 増配の余地の大きい順 → 条件を多く満たす順
-/// → 利回りの高い順 → 銘柄コード順
+/// ルールで候補を絞り、順位をつける。評価の高い順、同じ評価なら注目テーマに当たる銘柄 → 下限割れ →
+/// 増配の余地の大きい順 → 条件を多く満たす順 → 利回りの高い順 → 銘柄コード順。
+/// テーマは評価を変えない（流行りだけで強く推奨にはしない）が、同じ評価の中では先に出す
 pub fn select_candidates(rows: &[Candidate]) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = rows.iter().filter(|c| c.is_eligible()).cloned().collect();
     out.sort_by(|a, b| {
         b.grade()
             .cmp(&a.grade())
+            .then_with(|| b.themed.cmp(&a.themed))
             .then_with(|| b.policy_floor_breach.cmp(&a.policy_floor_breach))
             .then_with(|| {
                 b.policy_upside
@@ -472,6 +476,31 @@ mod tests {
             ..solid("2010")
         };
         assert_eq!(unknown.grade(), Grade::Watch);
+    }
+
+    #[test]
+    fn theme_moves_up_within_the_same_grade_only() {
+        let themed_watch = Candidate {
+            themed: true,
+            ..cand("5001", Some(0.02), true, false, false)
+        };
+        let plain_recommend = Candidate {
+            consecutive_increases: Some(3),
+            ..solid("5002")
+        };
+        let themed_recommend = Candidate {
+            themed: true,
+            consecutive_increases: Some(2),
+            ..solid("5003")
+        };
+        let all = select_candidates(&[themed_watch, plain_recommend, themed_recommend]);
+        let codes: Vec<&str> = all.iter().map(|c| c.code.as_str()).collect();
+        assert_eq!(
+            codes,
+            vec!["5003", "5002", "5001"],
+            "テーマは同じ評価の中でだけ先"
+        );
+        assert_eq!(all[2].grade(), Grade::Watch, "テーマで評価は上がらない");
     }
 
     #[test]

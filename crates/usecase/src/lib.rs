@@ -14,6 +14,7 @@ pub mod master;
 pub mod portfolio;
 pub mod recommend;
 pub mod screening;
+pub mod themes;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PortError(pub String);

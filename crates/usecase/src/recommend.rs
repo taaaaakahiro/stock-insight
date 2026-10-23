@@ -27,6 +27,8 @@ pub struct RecommendationRow {
     /// 3段階の評価（評価を付ける前に保存した日の分は None）
     pub grade: Option<Grade>,
     pub reason: String,
+    /// 当たっている注目テーマの名前（今の照合結果）
+    pub themes: Vec<String>,
     pub stock: StockRow,
 }
 
@@ -40,6 +42,8 @@ pub struct Explain {
     pub gap: Option<PolicyGap>,
     /// 有報・半期報告書の配当方針の文（DOE・配当性向の数字を拾った文）
     pub phrases: Vec<String>,
+    /// 当たっている注目テーマの名前
+    pub themes: Vec<String>,
 }
 
 pub trait RecommendRepository {
@@ -49,6 +53,8 @@ pub trait RecommendRepository {
     async fn candidates(&self) -> Result<Vec<StockRow>, PortError>;
     /// 銘柄ごとの配当方針の文（有報・半期報告書の DOE・配当性向の数字を拾った文）。(コード, 文) の列
     async fn policy_phrases(&self, codes: &[String]) -> Result<Vec<(String, String)>, PortError>;
+    /// 注目テーマに当たっている銘柄（コード, テーマ名）の列（全銘柄分。表は小さい）
+    async fn themes(&self) -> Result<Vec<(String, String)>, PortError>;
     /// その日の結果がすでにあるか
     async fn exists(&self, date: &str) -> Result<bool, PortError>;
     /// 1日分をまとめて保存する（MIN_PICKS〜PICK_COUNT 行）
@@ -70,8 +76,8 @@ pub trait Recommender {
     async fn explain(&self, picks: &[Explain]) -> Result<Vec<RawPick>, PortError>;
 }
 
-/// 一覧の1行から、候補の判定に使う値だけを取り出す
-pub fn candidate_of(r: &StockRow) -> Candidate {
+/// 一覧の1行から、候補の判定に使う値だけを取り出す。`themed` は注目テーマに当たっているか
+pub fn candidate_of(r: &StockRow, themed: bool) -> Candidate {
     let gap = r.policy_gap();
     Candidate {
         code: r.code.clone(),
@@ -91,17 +97,28 @@ pub fn candidate_of(r: &StockRow) -> Candidate {
         policy_floor_breach: gap.is_some_and(|g| g.level == PolicyLevel::Floor),
         op_growth_q: r.op_growth_q,
         profit_one_off: r.profit_one_off,
+        themed,
     }
 }
 
-/// ルールによる候補の絞り込みと順位づけ（株式だけ）。先頭から PICK_COUNT 件が画面に出る分
-pub fn candidates_of(rows: &[StockRow]) -> Vec<Candidate> {
+/// ルールによる候補の絞り込みと順位づけ（株式だけ）。先頭から PICK_COUNT 件が画面に出る分。
+/// `themes` は (コード, テーマ名) の列
+pub fn candidates_of(rows: &[StockRow], themes: &[(String, String)]) -> Vec<Candidate> {
     let all: Vec<Candidate> = rows
         .iter()
         .filter(|r| r.kind == "stock")
-        .map(candidate_of)
+        .map(|r| candidate_of(r, themes.iter().any(|(code, _)| *code == r.code)))
         .collect();
     select_candidates(&all)
+}
+
+/// 1銘柄に当たっているテーマ名
+fn themes_of(themes: &[(String, String)], code: &str) -> Vec<String> {
+    themes
+        .iter()
+        .filter(|(c, _)| c == code)
+        .map(|(_, name)| name.clone())
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,7 +162,8 @@ pub async fn generate<R: RecommendRepository, A: Recommender>(
         return Ok(Outcome::Skipped(format!("already generated for {date}")));
     }
     let rows = repo.candidates().await?;
-    let mut picks = candidates_of(&rows);
+    let themes = repo.themes().await?;
+    let mut picks = candidates_of(&rows, &themes);
     if picks.is_empty() {
         return Ok(Outcome::Skipped("no candidates".into()));
     }
@@ -166,6 +184,7 @@ pub async fn generate<R: RecommendRepository, A: Recommender>(
                     .filter(|(code, _)| *code == c.code)
                     .map(|(_, p)| p.clone())
                     .collect(),
+                themes: themes_of(&themes, &c.code),
                 stock,
             })
         })
@@ -198,6 +217,7 @@ mod tests {
         existing: Vec<String>,
         saved: RefCell<Vec<(String, String, Vec<Pick>)>>,
         asked_phrases: RefCell<Vec<String>>,
+        themes: Vec<(String, String)>,
     }
 
     impl RecommendRepository for Fake {
@@ -215,6 +235,9 @@ mod tests {
                 .borrow_mut()
                 .extend(codes.iter().cloned());
             Ok(vec![(codes[0].clone(), "DOE3.5%を下限とします。".into())])
+        }
+        async fn themes(&self) -> Result<Vec<(String, String)>, PortError> {
+            Ok(self.themes.clone())
         }
         async fn exists(&self, date: &str) -> Result<bool, PortError> {
             Ok(self.existing.iter().any(|d| d == date))
@@ -350,6 +373,7 @@ mod tests {
             existing: vec![],
             saved: RefCell::new(vec![]),
             asked_phrases: RefCell::new(vec![]),
+            themes: vec![],
         }
     }
 
@@ -386,6 +410,7 @@ mod tests {
         assert_eq!(seen[0].gap.as_ref().map(|g| g.key()), Some("doe_floor"));
         assert_eq!(seen[0].phrases, vec!["DOE3.5%を下限とします。".to_string()]);
         assert!(seen[1].phrases.is_empty());
+        assert!(seen[0].themes.is_empty());
         assert_eq!(
             repo.asked_phrases.borrow().len(),
             10,
@@ -462,8 +487,27 @@ mod tests {
     fn candidates_ignore_non_stocks() {
         let mut etf = row("1306", 0.02, true);
         etf.kind = "etf".into();
-        let c = candidates_of(&[etf, row("7203", 0.03, true)]);
+        let c = candidates_of(&[etf, row("7203", 0.03, true)], &[]);
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].code, "7203");
+    }
+
+    #[test]
+    fn themed_stocks_come_first_and_reach_the_ai() {
+        let mut repo = fake(run("succeeded", NOW - 3600), 30);
+        // 5017 は奇数コード（バリューでない）で本来は後ろのほうだが、テーマに当たっているので同じ評価の先頭
+        repo.themes = vec![
+            ("5017".into(), "半導体".into()),
+            ("5017".into(), "データセンター".into()),
+        ];
+        let ai = echo();
+        block_on(generate(&repo, &ai, NOW)).unwrap();
+        let seen = ai.seen.borrow();
+        assert_eq!(seen[0].stock.code, "5017");
+        assert_eq!(
+            seen[0].themes,
+            vec!["半導体".to_string(), "データセンター".to_string()]
+        );
+        assert!(seen[1].themes.is_empty());
     }
 }

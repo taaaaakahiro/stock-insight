@@ -9,6 +9,11 @@
 //!   PUT /api/portfolio/:code        銘柄を登録
 //!   DELETE /api/portfolio/:code     登録を外す
 //!   GET /api/recommendations        最新日の AIレコメンド（F7）
+//!   GET /api/themes                 注目テーマ（管理者が登録。全員が読める）
+//!   GET /api/themes/:id             1テーマと、当たった銘柄
+//!   POST /api/themes                テーマを登録して照合（管理者）
+//!   PUT /api/themes/:id             テーマを書き換えて照合しなおす（管理者）
+//!   DELETE /api/themes/:id          テーマを消す（管理者）
 //!
 //! 一覧・配当方針・状態は、データの版（最新バッチと EDINET の取り込み）をキーに Cache API へ置く。
 //! D1 の無料枠（読み取り 500万行/日）を画面の操作で使い切らないため。
@@ -20,6 +25,7 @@ use adapter_cf::ai::WorkersAi;
 use adapter_cf::clerk::{ClerkDirectory, ClerkVerifier};
 use adapter_cf::d1::{D1Indicators, D1Portfolio};
 use adapter_cf::d1_recommend::D1Recommendations;
+use adapter_cf::d1_themes::D1Themes;
 use adapter_cf::users::D1Users;
 use domain::access::Access;
 use domain::screening::ScreeningFilter;
@@ -31,6 +37,7 @@ use usecase::auth::{authenticate, AuthError, AuthUser, CachedUsers, RequestMeta,
 use usecase::detail::{stock_detail, StockDetail};
 use usecase::portfolio::PortfolioError;
 use usecase::screening::{data_status, disclosures, reit_detail, screen, StockRow};
+use usecase::themes::ThemesError;
 use usecase::Clock;
 use worker::{
     event, Cache, Context, Env, Request, Response, Result, RouteContext, Router, ScheduleContext,
@@ -138,6 +145,11 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .put_async("/api/portfolio/:code", portfolio_add)
         .delete_async("/api/portfolio/:code", portfolio_remove)
         .get_async("/api/recommendations", recommendations)
+        .get_async("/api/themes", themes_list)
+        .get_async("/api/themes/:id", theme_detail)
+        .post_async("/api/themes", theme_create)
+        .put_async("/api/themes/:id", theme_update)
+        .delete_async("/api/themes/:id", theme_delete)
         .or_else_any_method("/api/*path", |_, _| {
             json_error(404, "not_found", "no such endpoint")
         })
@@ -517,12 +529,144 @@ async fn recommendations(_req: Request, ctx: RouteContext<AuthUser>) -> Result<R
                     v["rank"] = json!(r.rank);
                     v["grade"] = json!(r.grade.map(|g| g.as_str()));
                     v["reason"] = json!(r.reason);
+                    v["themes"] = json!(r.themes);
                     v
                 }).collect::<Vec<_>>(),
             })),
         })),
         Err(e) => internal(&e.0),
     }
+}
+
+fn theme_json(t: &usecase::themes::Theme) -> Value {
+    json!({ "id": t.id, "name": t.name, "words": t.words, "count": t.count, "updated_at": t.updated_at })
+}
+
+/// 管理者だけが使える操作。管理者でなければ 403 の応答を Err に入れる
+fn require_admin(ctx: &RouteContext<AuthUser>) -> std::result::Result<(), Result<Response>> {
+    if ctx.data.is_admin {
+        Ok(())
+    } else {
+        Err(json_error(403, "forbidden", "admin only"))
+    }
+}
+
+fn theme_id(ctx: &RouteContext<AuthUser>) -> Option<i64> {
+    ctx.param("id").and_then(|s| s.parse().ok())
+}
+
+/// 登録・書き換えの入力 { name, words: [..] }。words は配列か、読点・改行で区切った文字列でもよい
+fn theme_input(body: &Value) -> Option<(String, Vec<String>)> {
+    let name = body.get("name")?.as_str()?.to_string();
+    let words: Vec<String> = match body.get("words")? {
+        Value::Array(a) => a
+            .iter()
+            .filter_map(|w| w.as_str().map(str::to_string))
+            .collect(),
+        Value::String(s) => s
+            .split(['、', ',', '\n'])
+            .map(|w| w.trim().to_string())
+            .collect(),
+        _ => return None,
+    };
+    Some((name, words))
+}
+
+fn theme_result(r: std::result::Result<Value, ThemesError>) -> Result<Response> {
+    match r {
+        Ok(v) => json_response(&v, 200, "no-store"),
+        Err(ThemesError::Invalid(e)) => json_error(400, "bad_request", &e.to_string()),
+        Err(ThemesError::NotFound) => json_error(404, "not_found", "no such theme"),
+        Err(ThemesError::Port(e)) if e.0.contains("UNIQUE") => {
+            json_error(409, "duplicate", "a theme with that name exists")
+        }
+        Err(ThemesError::Port(e)) => internal(&e.0),
+    }
+}
+
+async fn themes_list(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let repo = D1Themes::new(ctx.env.d1(DB_BINDING)?);
+    match usecase::themes::list(&repo).await {
+        Ok(ts) => json_response(
+            &json!({ "themes": ts.iter().map(theme_json).collect::<Vec<_>>() }),
+            200,
+            "no-store",
+        ),
+        Err(e) => internal(&e.0),
+    }
+}
+
+async fn theme_detail(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let Some(id) = theme_id(&ctx) else {
+        return json_error(400, "bad_request", "bad theme id");
+    };
+    let repo = D1Themes::new(ctx.env.d1(DB_BINDING)?);
+    theme_result(usecase::themes::detail(&repo, id).await.map(|(t, stocks)| {
+        json!({
+            "theme": theme_json(&t),
+            "stocks": stocks.iter().map(|s| json!({ "code": s.code, "name": s.name, "matched_word": s.matched_word })).collect::<Vec<_>>(),
+        })
+    }))
+}
+
+async fn theme_create(mut req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    if let Err(res) = require_admin(&ctx) {
+        return res;
+    }
+    let Some((name, words)) = req
+        .json::<Value>()
+        .await
+        .ok()
+        .as_ref()
+        .and_then(theme_input)
+    else {
+        return json_error(400, "bad_request", "name and words are required");
+    };
+    let repo = D1Themes::new(ctx.env.d1(DB_BINDING)?);
+    theme_result(
+        usecase::themes::create(&repo, &name, &words, WorkerClock.now_unix())
+            .await
+            .map(|id| json!({ "id": id })),
+    )
+}
+
+async fn theme_update(mut req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    if let Err(res) = require_admin(&ctx) {
+        return res;
+    }
+    let Some(id) = theme_id(&ctx) else {
+        return json_error(400, "bad_request", "bad theme id");
+    };
+    let Some((name, words)) = req
+        .json::<Value>()
+        .await
+        .ok()
+        .as_ref()
+        .and_then(theme_input)
+    else {
+        return json_error(400, "bad_request", "name and words are required");
+    };
+    let repo = D1Themes::new(ctx.env.d1(DB_BINDING)?);
+    theme_result(
+        usecase::themes::update(&repo, id, &name, &words, WorkerClock.now_unix())
+            .await
+            .map(|()| json!({ "ok": true })),
+    )
+}
+
+async fn theme_delete(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    if let Err(res) = require_admin(&ctx) {
+        return res;
+    }
+    let Some(id) = theme_id(&ctx) else {
+        return json_error(400, "bad_request", "bad theme id");
+    };
+    let repo = D1Themes::new(ctx.env.d1(DB_BINDING)?);
+    theme_result(
+        usecase::themes::delete(&repo, id)
+            .await
+            .map(|()| json!({ "ok": true })),
+    )
 }
 
 /// 銘柄の詳細（F3）: 5年の年次、四半期単独の損益、利回りと株価の推移

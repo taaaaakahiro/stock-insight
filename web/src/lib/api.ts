@@ -260,15 +260,19 @@ export function apiGet<T>(
 }
 
 export async function apiFetch<T>(
-  method: "GET" | "PUT" | "DELETE",
+  method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
   getToken: () => Promise<string | null>,
   signal?: AbortSignal,
+  body?: unknown,
 ): Promise<T> {
   const token = await getToken();
+  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
   const res = await fetch(path, {
     method,
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
     signal,
   });
   if (!res.ok) {
@@ -287,8 +291,27 @@ export async function apiFetch<T>(
 /** 3段階の評価。strong = 強く推奨 / recommend = 推奨 / watch = 注目。評価を付ける前の日の結果は null */
 export type Grade = "strong" | "recommend" | "watch";
 
-/** AIレコメンド（F7）の1銘柄。一覧と同じ指標に、順位・評価と理由がつく */
-export type Recommendation = StockRow & { rank: number; grade: Grade | null; reason: string };
+/** AIレコメンド（F7）の1銘柄。一覧と同じ指標に、順位・評価・理由と、当たっている注目テーマの名前がつく */
+export type Recommendation = StockRow & {
+  rank: number;
+  grade: Grade | null;
+  reason: string;
+  themes: string[];
+};
+
+/** 注目テーマ（管理者が登録）。words は照合に使う言葉、count は当たった銘柄数 */
+export type Theme = {
+  id: number;
+  name: string;
+  words: string[];
+  count: number;
+  updated_at: number;
+};
+export type Themes = { themes: Theme[] };
+export type ThemeDetail = {
+  theme: Theme;
+  stocks: { code: string; name: string | null; matched_word: string }[];
+};
 
 /** day は最新日の結果。まだ1日も作っていなければ null */
 export type Recommendations = {

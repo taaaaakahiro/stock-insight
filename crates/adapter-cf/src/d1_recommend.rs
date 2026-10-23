@@ -109,6 +109,23 @@ impl RecommendRepository for D1Recommendations {
         Ok(out)
     }
 
+    async fn themes(&self) -> Result<Vec<(String, String)>, PortError> {
+        #[derive(Deserialize)]
+        struct ThemeRow {
+            code: String,
+            name: String,
+        }
+        let rows: Vec<ThemeRow> = self
+            .db
+            .prepare(query::STOCK_THEME_NAMES)
+            .all()
+            .await
+            .map_err(err)?
+            .results()
+            .map_err(err)?;
+        Ok(rows.into_iter().map(|r| (r.code, r.name)).collect())
+    }
+
     async fn exists(&self, date: &str) -> Result<bool, PortError> {
         let n: Option<f64> = self
             .db
@@ -162,6 +179,7 @@ impl RecommendRepository for D1Recommendations {
         let Some(first) = meta.first() else {
             return Ok(None);
         };
+        let themes = self.themes().await?;
         let day = Recommendations {
             date: first.date.clone(),
             model: first.model.clone(),
@@ -169,11 +187,19 @@ impl RecommendRepository for D1Recommendations {
             rows: meta
                 .iter()
                 .zip(stocks)
-                .map(|(m, s)| RecommendationRow {
-                    rank: m.rank as u32,
-                    grade: m.grade.as_deref().and_then(Grade::parse),
-                    reason: m.reason.clone(),
-                    stock: StockRow::from(s),
+                .map(|(m, s)| {
+                    let stock = StockRow::from(s);
+                    RecommendationRow {
+                        rank: m.rank as u32,
+                        grade: m.grade.as_deref().and_then(Grade::parse),
+                        reason: m.reason.clone(),
+                        themes: themes
+                            .iter()
+                            .filter(|(code, _)| *code == stock.code)
+                            .map(|(_, name)| name.clone())
+                            .collect(),
+                        stock,
+                    }
                 })
                 .collect(),
         };
