@@ -2,7 +2,7 @@
 
 use crate::d1::Row;
 use crate::query;
-use domain::recommend::Pick;
+use domain::recommend::{Grade, Pick};
 use serde::Deserialize;
 use usecase::recommend::{RecommendRepository, RecommendationRow, Recommendations};
 use usecase::screening::{DataStatus, StockRow};
@@ -39,6 +39,7 @@ struct RunRow {
 struct RecoRow {
     date: String,
     rank: i64,
+    grade: Option<String>,
     reason: String,
     model: String,
     created_at: i64,
@@ -74,6 +75,40 @@ impl RecommendRepository for D1Recommendations {
         Ok(rows.into_iter().map(StockRow::from).collect())
     }
 
+    /// 配当方針の文。1銘柄に有報と半期報告書の両方があれば両方（新しい順）。同じ文は1つにする
+    async fn policy_phrases(&self, codes: &[String]) -> Result<Vec<(String, String)>, PortError> {
+        if codes.is_empty() {
+            return Ok(vec![]);
+        }
+        #[derive(Deserialize)]
+        struct PhraseRow {
+            code: String,
+            doe_phrase: Option<String>,
+            payout_phrase: Option<String>,
+        }
+        let args: Vec<JsValue> = codes.iter().map(|c| JsValue::from_str(c)).collect();
+        let rows: Vec<PhraseRow> = self
+            .db
+            .prepare(query::policy_phrases(codes.len()))
+            .bind(&args)
+            .map_err(err)?
+            .all()
+            .await
+            .map_err(err)?
+            .results()
+            .map_err(err)?;
+        let mut out: Vec<(String, String)> = vec![];
+        for r in rows {
+            for p in [r.doe_phrase, r.payout_phrase].into_iter().flatten() {
+                let item = (r.code.clone(), p);
+                if !out.contains(&item) {
+                    out.push(item);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     async fn exists(&self, date: &str) -> Result<bool, PortError> {
         let n: Option<f64> = self
             .db
@@ -106,6 +141,7 @@ impl RecommendRepository for D1Recommendations {
                         JsValue::from_str(&p.reason),
                         JsValue::from_str(model),
                         JsValue::from_f64(now as f64),
+                        JsValue::from_str(p.grade.as_str()),
                     ])
                     .map_err(err)
             })
@@ -135,6 +171,7 @@ impl RecommendRepository for D1Recommendations {
                 .zip(stocks)
                 .map(|(m, s)| RecommendationRow {
                     rank: m.rank as u32,
+                    grade: m.grade.as_deref().and_then(Grade::parse),
                     reason: m.reason.clone(),
                     stock: StockRow::from(s),
                 })

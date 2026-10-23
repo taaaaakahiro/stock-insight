@@ -280,7 +280,7 @@ pub fn recommend_candidates() -> String {
 /// 最新日のレコメンド（順位順）に、銘柄名と最新の指標をつける
 pub fn recommendation_rows() -> String {
     format!(
-        "SELECT r.date, r.rank, r.reason, r.model, r.created_at, {LIST_COLUMNS} \
+        "SELECT r.date, r.rank, r.grade, r.reason, r.model, r.created_at, {LIST_COLUMNS} \
          FROM recommendations r JOIN indicators_latest i ON i.code = r.code \
          LEFT JOIN stocks s ON s.code = r.code \
          WHERE r.date = (SELECT MAX(date) FROM recommendations) ORDER BY r.rank"
@@ -289,7 +289,17 @@ pub fn recommendation_rows() -> String {
 
 pub const RECOMMENDATION_EXISTS: &str = "SELECT COUNT(*) AS n FROM recommendations WHERE date = ?";
 pub const RECOMMENDATION_INSERT: &str = "INSERT INTO recommendations \
-     (date, rank, code, reason, model, created_at) VALUES (?, ?, ?, ?, ?, ?)";
+     (date, rank, code, reason, model, created_at, grade) VALUES (?, ?, ?, ?, ?, ?, ?)";
+
+/// 選んだ銘柄の配当方針の文（有報・半期報告書の DOE・配当性向の数字を拾った文）。? は銘柄コード × n
+pub fn policy_phrases(n: usize) -> String {
+    let marks = vec!["?"; n.max(1)].join(", ");
+    format!(
+        "SELECT code, doe_phrase, payout_phrase FROM edinet_docs \
+         WHERE code IN ({marks}) AND (doe_phrase IS NOT NULL OR payout_phrase IS NOT NULL) \
+         ORDER BY code, submitted DESC"
+    )
+}
 
 /// 1銘柄の REIT の要約と明細（? は銘柄コード）
 pub const REIT_DETAIL: &str = "SELECT p.doc_id, p.submitted, p.period_end, p.sector, p.short_loans, p.long_loans, \
@@ -489,6 +499,10 @@ mod tests {
             .contains(&format!("SELECT {LIST_COLUMNS} FROM indicators_latest")));
         assert!(recommend_candidates().contains("COALESCE(s.kind, 'stock') = 'stock'"));
         assert!(recommendation_rows().contains(LIST_COLUMNS));
+        assert!(recommendation_rows().contains("r.grade"));
+        assert!(RECOMMENDATION_INSERT.ends_with("grade) VALUES (?, ?, ?, ?, ?, ?, ?)"));
+        assert!(policy_phrases(3).contains("IN (?, ?, ?)"));
+        assert!(policy_phrases(0).contains("IN (?)"));
         assert!(recommendation_rows().ends_with("ORDER BY r.rank"));
     }
 }

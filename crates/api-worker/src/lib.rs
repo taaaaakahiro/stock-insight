@@ -475,7 +475,7 @@ fn portfolio_result(r: std::result::Result<(), PortfolioError>) -> Result<Respon
     }
 }
 
-/// F7: その日のバッチが成功していて、まだ結果がなければ AI に上位10銘柄を選ばせて保存する
+/// F7: その日のバッチが成功していて、まだ結果がなければ上位10銘柄を選んで評価し、AI に理由を書かせて保存する
 async fn recommend_cron(env: &Env) {
     let (db, ai) = match (env.d1(DB_BINDING), env.ai(AI_BINDING)) {
         (Ok(db), Ok(ai)) => (db, ai),
@@ -515,6 +515,7 @@ async fn recommendations(_req: Request, ctx: RouteContext<AuthUser>) -> Result<R
                 "rows": d.rows.iter().map(|r| {
                     let mut v = row_json(&r.stock);
                     v["rank"] = json!(r.rank);
+                    v["grade"] = json!(r.grade.map(|g| g.as_str()));
                     v["reason"] = json!(r.reason);
                     v
                 }).collect::<Vec<_>>(),

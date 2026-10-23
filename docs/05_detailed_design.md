@@ -69,7 +69,7 @@
 
 ### AIレコメンド（F7、実装済み）
 
-`usecase::recommend::generate`。API Worker の Cron Trigger（平日21:00 JST、`0 12 * * 1-5`）から呼ぶ。候補の条件・モデル・検証の詳細は [08](08_indicator_sources.md#aiレコメンドf7の候補と使うモデル)。
+`usecase::recommend::generate`。API Worker の Cron Trigger（平日21:00 JST、`0 12 * * 1-5`）から呼ぶ。候補の絞り込み・3段階の評価・順位はルールで決め、AI には理由の文章だけを書かせる。条件・モデル・検証の詳細は [08](08_indicator_sources.md#aiレコメンドf7の候補評価と使うモデル)。
 
 1. 最新の batch_runs が今日終わった `succeeded` でなければ何もしない。同じ株価の日付の結果がすでにあっても何もしない
 2. ルールで候補を50銘柄に絞る（株式・利回りが0より大きく8%未満・配当性向50%超・PBR1.5倍超（保有株の売りサイン）は除く・「バリュー株」または「5年配当かつ通期黒字」。満たす条件の多い順、同点は利回りの高い順）
@@ -180,7 +180,7 @@ J-Quants を1ジョブで順に取り込むのは、J-Quants が日付指定で�
 | edinet_docs | code, doc_kind (PK: code+doc_kind。annual/semiannual), doc_id, submitted, period_end, r2_key, progressive_dividend, no_dividend_cut, dividend_raise, doe_target, payout_target, phrases（JSON の文字列配列）, fetched_at, doe_floor, doe_goal, doe_phrase（DOE の下限・目標と、その数字を拾った文）, payout_floor, payout_goal, payout_phrase（配当性向の下限・目標と、その文。payout_target は下限（なければ目標）として残す） | 0007, 0013, 0014 |
 | sync_state | key (PK。`jq_synced_until`・`edinet_listed_until`), value, updated_at | 0004 |
 | splits | code, date（権利落ち日）(PK: code+date), factor（`AdjFactor`。1:2 の分割なら 0.5）, fetched_at | 0009 |
-| recommendations | date（株価の日付）, rank (PK: date+rank), code, reason, model, created_at | 0008 |
+| recommendations | date（株価の日付）, rank (PK: date+rank), code, reason, model, created_at, grade（strong / recommend / watch。評価を付ける前の行は NULL） | 0008, 0016 |
 | batch_runs | run_id (PK), started_at, finished_at, target, succeeded, failed, status（running/succeeded/failed） | 0001 |
 
 索引: indicators_latest の dividend_yield・pbr・payout_ratio・valuation、stocks の kind。
