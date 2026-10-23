@@ -284,8 +284,11 @@ export async function apiFetch<T>(
   return (await res.json()) as T;
 }
 
-/** AIレコメンド（F7）の1銘柄。一覧と同じ指標に、順位と理由がつく */
-export type Recommendation = StockRow & { rank: number; reason: string };
+/** 3段階の評価。strong = 強く推奨 / recommend = 推奨 / watch = 注目。評価を付ける前の日の結果は null */
+export type Grade = "strong" | "recommend" | "watch";
+
+/** AIレコメンド（F7）の1銘柄。一覧と同じ指標に、順位・評価と理由がつく */
+export type Recommendation = StockRow & { rank: number; grade: Grade | null; reason: string };
 
 /** day は最新日の結果。まだ1日も作っていなければ null */
 export type Recommendations = {

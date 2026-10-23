@@ -4,8 +4,7 @@ use crate::recommend::{parse_response, request_body, MODEL};
 use domain::recommend::RawPick;
 use serde::Serialize;
 use serde_json::Value;
-use usecase::recommend::Recommender;
-use usecase::screening::StockRow;
+use usecase::recommend::{Explain, Recommender};
 use usecase::PortError;
 use wasm_bindgen::JsValue;
 use worker::Ai;
@@ -36,8 +35,8 @@ impl Recommender for WorkersAi {
         MODEL
     }
 
-    async fn rank(&self, candidates: &[StockRow]) -> Result<Vec<RawPick>, PortError> {
-        let input = Input(to_js_object(&request_body(candidates))?);
+    async fn explain(&self, picks: &[Explain]) -> Result<Vec<RawPick>, PortError> {
+        let input = Input(to_js_object(&request_body(picks))?);
         let output: Value = self
             .ai
             .run(MODEL, input)

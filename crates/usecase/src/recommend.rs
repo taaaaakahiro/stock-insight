@@ -1,10 +1,13 @@
-//! AIレコメンド（F7）: 日次バッチのあとにルールで候補を絞り、Workers AI に上位10銘柄と理由を出させて保存する。
-//! AI は説明と優先順位付けだけに使う。答えのうち壊れた分（候補にない・重複など）は捨て、
+//! AIレコメンド（F7）: 日次バッチのあとにルールで候補を絞り、3段階の評価と順位をこちらで決め、
+//! Workers AI に各銘柄の理由だけを書かせて保存する。答えのうち壊れた分（理由がない・空など）は捨て、
 //! 正しい分が MIN_PICKS に届かなければ保存しない。
 
 use crate::screening::{DataStatus, StockRow};
 use crate::PortError;
-use domain::recommend::{select_candidates, validate_picks, Candidate, Pick, RawPick};
+use domain::dividend_policy::{PolicyGap, PolicyLevel};
+use domain::recommend::{
+    select_candidates, validate_picks, Candidate, Grade, Pick, RawPick, PICK_COUNT,
+};
 use domain::Date;
 
 /// 保存した1日分
@@ -21,8 +24,22 @@ pub struct Recommendations {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecommendationRow {
     pub rank: u32,
+    /// 3段階の評価（評価を付ける前に保存した日の分は None）
+    pub grade: Option<Grade>,
     pub reason: String,
     pub stock: StockRow,
+}
+
+/// AI に理由を書かせる1銘柄: こちらで決めた順位・評価と、その根拠
+#[derive(Debug, Clone, PartialEq)]
+pub struct Explain {
+    pub rank: u32,
+    pub grade: Grade,
+    pub stock: StockRow,
+    /// 会社の配当方針との乖離（方針がないか満たしていれば None）
+    pub gap: Option<PolicyGap>,
+    /// 有報・半期報告書の配当方針の文（DOE・配当性向の数字を拾った文）
+    pub phrases: Vec<String>,
 }
 
 pub trait RecommendRepository {
@@ -30,6 +47,8 @@ pub trait RecommendRepository {
     async fn latest_run(&self) -> Result<Option<DataStatus>, PortError>;
     /// ルールに合いそうな株式（種類が株式で、バリュー株か「5年連続配当かつ通期黒字」）。最終判定は domain で行う
     async fn candidates(&self) -> Result<Vec<StockRow>, PortError>;
+    /// 銘柄ごとの配当方針の文（有報・半期報告書の DOE・配当性向の数字を拾った文）。(コード, 文) の列
+    async fn policy_phrases(&self, codes: &[String]) -> Result<Vec<(String, String)>, PortError>;
     /// その日の結果がすでにあるか
     async fn exists(&self, date: &str) -> Result<bool, PortError>;
     /// 1日分をまとめて保存する（MIN_PICKS〜PICK_COUNT 行）
@@ -44,29 +63,43 @@ pub trait RecommendRepository {
     async fn latest(&self) -> Result<Option<Recommendations>, PortError>;
 }
 
-/// AI（Workers AI）。候補の指標を渡して、上位の銘柄コードと理由を受け取る
+/// AI（Workers AI）。こちらで選んだ銘柄と根拠を渡して、各銘柄の理由の文章を受け取る
 pub trait Recommender {
     fn model(&self) -> &str;
-    /// 答えの JSON を解釈できなければ Err。中身の検証（候補にあるか等）は呼び出し側で行う
-    async fn rank(&self, candidates: &[StockRow]) -> Result<Vec<RawPick>, PortError>;
+    /// 答えの JSON を解釈できなければ Err。中身の検証（空でないか等）は呼び出し側で行う
+    async fn explain(&self, picks: &[Explain]) -> Result<Vec<RawPick>, PortError>;
 }
 
-/// AI に渡す前の、ルールによる候補の絞り込み
+/// 一覧の1行から、候補の判定に使う値だけを取り出す
+pub fn candidate_of(r: &StockRow) -> Candidate {
+    let gap = r.policy_gap();
+    Candidate {
+        code: r.code.clone(),
+        dividend_yield: r.dividend_yield,
+        is_value: r.is_value,
+        yield_cheap: r.valuation == "cheap",
+        dividend_every_year: r.dividend_every_year,
+        no_loss_years: r.no_loss_years,
+        no_quarterly_loss: r.no_quarterly_loss,
+        profit_uptrend: r.profit_uptrend,
+        payout_ratio: r.payout_ratio,
+        pbr: r.pbr,
+        dividend_cut: r.dividend_cut,
+        consecutive_increases: r.consecutive_increases,
+        progressive_dividend: r.progressive_dividend,
+        policy_upside: gap.as_ref().map(|g| g.upside),
+        policy_floor_breach: gap.is_some_and(|g| g.level == PolicyLevel::Floor),
+        op_growth_q: r.op_growth_q,
+        profit_one_off: r.profit_one_off,
+    }
+}
+
+/// ルールによる候補の絞り込みと順位づけ（株式だけ）。先頭から PICK_COUNT 件が画面に出る分
 pub fn candidates_of(rows: &[StockRow]) -> Vec<Candidate> {
     let all: Vec<Candidate> = rows
         .iter()
         .filter(|r| r.kind == "stock")
-        .map(|r| Candidate {
-            code: r.code.clone(),
-            dividend_yield: r.dividend_yield,
-            is_value: r.is_value,
-            dividend_every_year: r.dividend_every_year,
-            no_loss_years: r.no_loss_years,
-            no_quarterly_loss: r.no_quarterly_loss,
-            profit_uptrend: r.profit_uptrend,
-            payout_ratio: r.payout_ratio,
-            pbr: r.pbr,
-        })
+        .map(candidate_of)
         .collect();
     select_candidates(&all)
 }
@@ -112,16 +145,33 @@ pub async fn generate<R: RecommendRepository, A: Recommender>(
         return Ok(Outcome::Skipped(format!("already generated for {date}")));
     }
     let rows = repo.candidates().await?;
-    let candidates = candidates_of(&rows);
-    if candidates.is_empty() {
+    let mut picks = candidates_of(&rows);
+    if picks.is_empty() {
         return Ok(Outcome::Skipped("no candidates".into()));
     }
-    let shortlist: Vec<StockRow> = candidates
+    picks.truncate(PICK_COUNT);
+    let codes: Vec<String> = picks.iter().map(|c| c.code.clone()).collect();
+    let phrases = repo.policy_phrases(&codes).await?;
+    let explains: Vec<Explain> = picks
         .iter()
-        .filter_map(|c| rows.iter().find(|r| r.code == c.code).cloned())
+        .enumerate()
+        .filter_map(|(i, c)| {
+            let stock = rows.iter().find(|r| r.code == c.code)?.clone();
+            Some(Explain {
+                rank: i as u32 + 1,
+                grade: c.grade(),
+                gap: stock.policy_gap(),
+                phrases: phrases
+                    .iter()
+                    .filter(|(code, _)| *code == c.code)
+                    .map(|(_, p)| p.clone())
+                    .collect(),
+                stock,
+            })
+        })
         .collect();
-    let raw = ai.rank(&shortlist).await?;
-    let v = validate_picks(&raw, &candidates).map_err(|e| PortError(format!("ai: {e}")))?;
+    let raw = ai.explain(&explains).await?;
+    let v = validate_picks(&raw, &picks).map_err(|e| PortError(format!("ai: {e}")))?;
     repo.save(&date, ai.model(), &v.picks, now).await?;
     Ok(Outcome::Saved {
         date,
@@ -147,6 +197,7 @@ mod tests {
         rows: Vec<StockRow>,
         existing: Vec<String>,
         saved: RefCell<Vec<(String, String, Vec<Pick>)>>,
+        asked_phrases: RefCell<Vec<String>>,
     }
 
     impl RecommendRepository for Fake {
@@ -155,6 +206,15 @@ mod tests {
         }
         async fn candidates(&self) -> Result<Vec<StockRow>, PortError> {
             Ok(self.rows.clone())
+        }
+        async fn policy_phrases(
+            &self,
+            codes: &[String],
+        ) -> Result<Vec<(String, String)>, PortError> {
+            self.asked_phrases
+                .borrow_mut()
+                .extend(codes.iter().cloned());
+            Ok(vec![(codes[0].clone(), "DOE3.5%を下限とします。".into())])
         }
         async fn exists(&self, date: &str) -> Result<bool, PortError> {
             Ok(self.existing.iter().any(|d| d == date))
@@ -176,9 +236,17 @@ mod tests {
         }
     }
 
-    /// 渡された候補をそのまま上から返す偽の AI
+    /// 渡された銘柄すべてに理由を返す偽の AI。渡されたものを覚えておく
     struct EchoAi {
         broken: bool,
+        seen: RefCell<Vec<Explain>>,
+    }
+
+    fn echo() -> EchoAi {
+        EchoAi {
+            broken: false,
+            seen: RefCell::new(vec![]),
+        }
     }
 
     /// 決まった答えを返す偽の AI
@@ -188,7 +256,7 @@ mod tests {
         fn model(&self) -> &str {
             "fake-model"
         }
-        async fn rank(&self, _candidates: &[StockRow]) -> Result<Vec<RawPick>, PortError> {
+        async fn explain(&self, _picks: &[Explain]) -> Result<Vec<RawPick>, PortError> {
             Ok(self.0.clone())
         }
     }
@@ -197,16 +265,16 @@ mod tests {
         fn model(&self) -> &str {
             "fake-model"
         }
-        async fn rank(&self, candidates: &[StockRow]) -> Result<Vec<RawPick>, PortError> {
+        async fn explain(&self, picks: &[Explain]) -> Result<Vec<RawPick>, PortError> {
             if self.broken {
                 return Err(PortError("ai: bad json".into()));
             }
-            Ok(candidates
+            self.seen.borrow_mut().extend(picks.iter().cloned());
+            Ok(picks
                 .iter()
-                .take(10)
-                .map(|r| RawPick {
-                    code: r.code.clone(),
-                    reason: format!("{} は割安", r.code),
+                .map(|p| RawPick {
+                    code: p.stock.code.clone(),
+                    reason: format!("{} は割安", p.stock.code),
                 })
                 .collect())
         }
@@ -281,13 +349,21 @@ mod tests {
                 .collect(),
             existing: vec![],
             saved: RefCell::new(vec![]),
+            asked_phrases: RefCell::new(vec![]),
         }
     }
 
     #[test]
     fn saves_ten_picks_after_a_successful_batch() {
-        let repo = fake(run("succeeded", NOW - 3600), 30);
-        let out = block_on(generate(&repo, &EchoAi { broken: false }, NOW)).unwrap();
+        let mut repo = fake(run("succeeded", NOW - 3600), 30);
+        // 5003 だけ方針の下限を割っていて業績も良い → 強く推奨で1位
+        let strong = &mut repo.rows[3];
+        strong.doe = Some(0.028);
+        strong.doe_floor = Some(0.035);
+        strong.op_growth_q = Some(0.12);
+        strong.profit_one_off = Some(false);
+        let ai = echo();
+        let out = block_on(generate(&repo, &ai, NOW)).unwrap();
         assert_eq!(
             out,
             Outcome::Saved {
@@ -300,14 +376,28 @@ mod tests {
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0].1, "fake-model");
         assert_eq!(saved[0].2[0].rank, 1);
-        assert_eq!(saved[0].2[0].code, "5000", "条件を多く満たす銘柄が先");
+        assert_eq!(saved[0].2[0].code, "5003", "評価の高い銘柄が先");
+        assert_eq!(saved[0].2[0].grade, Grade::Strong);
+        assert_eq!(saved[0].2[1].grade, Grade::Watch);
+
+        let seen = ai.seen.borrow();
+        assert_eq!(seen.len(), 10, "画面に出す10件だけ AI に渡す");
+        assert_eq!(seen[0].rank, 1);
+        assert_eq!(seen[0].gap.as_ref().map(|g| g.key()), Some("doe_floor"));
+        assert_eq!(seen[0].phrases, vec!["DOE3.5%を下限とします。".to_string()]);
+        assert!(seen[1].phrases.is_empty());
+        assert_eq!(
+            repo.asked_phrases.borrow().len(),
+            10,
+            "方針の文は選んだ銘柄の分だけ読む"
+        );
     }
 
     #[test]
     fn skips_when_batch_failed_or_old_or_done() {
         let skipped = |repo: &Fake| {
             matches!(
-                block_on(generate(repo, &EchoAi { broken: false }, NOW)).unwrap(),
+                block_on(generate(repo, &echo(), NOW)).unwrap(),
                 Outcome::Skipped(_)
             )
         };
@@ -327,12 +417,16 @@ mod tests {
     #[test]
     fn broken_ai_answer_is_not_saved() {
         let repo = fake(run("succeeded", NOW - 3600), 30);
-        assert!(block_on(generate(&repo, &EchoAi { broken: true }, NOW)).is_err());
+        let broken = EchoAi {
+            broken: true,
+            seen: RefCell::new(vec![]),
+        };
+        assert!(block_on(generate(&repo, &broken, NOW)).is_err());
         assert!(repo.saved.borrow().is_empty());
 
         // 候補が MIN_PICKS 未満なら AI の答えも足りず、保存しない
         let few = fake(run("succeeded", NOW - 3600), 4);
-        assert!(block_on(generate(&few, &EchoAi { broken: false }, NOW)).is_err());
+        assert!(block_on(generate(&few, &echo(), NOW)).is_err());
         assert!(few.saved.borrow().is_empty());
     }
 
@@ -343,24 +437,25 @@ mod tests {
             code: code.into(),
             reason: format!("{code} は割安"),
         };
-        let mut answer: Vec<RawPick> = (0..10).map(|i| pick(&format!("{}", 5000 + i))).collect();
-        answer[4] = pick("5000"); // 重複
-        answer[7] = pick("9999"); // 候補にない
+        // 同じ評価なら条件を多く満たす順（偶数コードがバリュー）→ コード順なので、5000, 5002, …, 5018
+        let mut answer: Vec<RawPick> = (0..10)
+            .map(|i| pick(&format!("{}", 5000 + 2 * i)))
+            .collect();
+        answer[4] = pick("5000"); // 5008 の理由がなく、5000 が2回（2回目は無視）
+        answer[7] = pick("9999"); // 5014 の理由がなく、候補にない銘柄の理由（無視）
         let out = block_on(generate(&repo, &FixedAi(answer), NOW)).unwrap();
         assert_eq!(
             out,
             Outcome::Saved {
                 date: "2026-10-21".into(),
                 picks: 8,
-                dropped: vec![
-                    "code 5000 appears twice".into(),
-                    "code 9999 is not a candidate".into()
-                ],
+                dropped: vec!["no reason for 5008".into(), "no reason for 5014".into()],
             }
         );
         let saved = repo.saved.borrow();
         assert_eq!(saved[0].2.len(), 8);
         assert_eq!(saved[0].2[7].rank, 8);
+        assert_eq!(saved[0].2[7].code, "5018");
     }
 
     #[test]

@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import { DocPreview } from "@/components/doc-preview";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
 import { Badge } from "@/components/ui/badge";
-import { apiGet, type Recommendation, type Recommendations } from "@/lib/api";
+import { apiGet, type Grade, type Recommendation, type Recommendations } from "@/lib/api";
 import { useAuthState } from "@/lib/auth";
-import { count, jstDateTime, pct, times, yen, ymd } from "@/lib/format";
+import { count, growth, jstDateTime, pct, times, yen, ymd } from "@/lib/format";
 import { navigate } from "@/lib/router";
+import { cn } from "@/lib/utils";
 
 type Load = { state: "loading" } | { state: "ok"; data: Recommendations } | { state: "error" };
 
@@ -32,7 +33,7 @@ function NameLink({ r }: { r: Recommendation }) {
   );
 }
 
-/** 一覧と同じ5年分のバッジ（当てはまるものだけ） */
+/** 一覧と同じ5年分のバッジ（当てはまるものだけ）。一過性の疑いは赤で */
 function Flags({ r }: { r: Recommendation }) {
   const flags = [
     r.is_value && "バリュー",
@@ -41,7 +42,7 @@ function Flags({ r }: { r: Recommendation }) {
     r.no_quarterly_loss && "四半期黒字",
     r.profit_uptrend && "増益傾向",
   ].filter((f): f is string => typeof f === "string");
-  if (flags.length === 0) return null;
+  if (flags.length === 0 && !r.profit_one_off) return null;
   return (
     <span className="flex flex-wrap gap-1">
       {flags.map((f) => (
@@ -49,7 +50,90 @@ function Flags({ r }: { r: Recommendation }) {
           {f}
         </Badge>
       ))}
+      {r.profit_one_off && (
+        <Badge
+          variant="outline"
+          className="border-expensive/40 bg-expensive/10 text-expensive"
+          title="直近の四半期の利益が一過性の疑い（純利益の伸びが営業利益の伸びを大きく上回る、または直近の四半期だけ増益で4四半期の合計は減益）"
+        >
+          一過性?
+        </Badge>
+      )}
     </span>
+  );
+}
+
+const GRADES: Record<Grade, { stars: string; label: string; className: string; hint: string }> = {
+  strong: {
+    stars: "★★★",
+    label: "強く推奨",
+    className: "bg-cheap/15 text-cheap",
+    hint: "会社の配当方針（DOE・配当性向の下限・目標）と今の配当の差が大きく（下限割れ、または方針どおりなら配当 +20% 以上）、業績の質（通期黒字・増益・一過性でない）を満たし、割安",
+  },
+  recommend: {
+    stars: "★★",
+    label: "推奨",
+    className: "bg-primary/10 text-primary",
+    hint: "業績の質を満たし、増配の根拠（方針との差・2年以上の連続増配・累進配当の方針）がある",
+  },
+  watch: {
+    stars: "★",
+    label: "注目",
+    className: "bg-muted text-muted-foreground",
+    hint: "割安で増配も期待できるが、一過性の疑いがあるか、業績の判定材料が足りない",
+  },
+};
+
+/** 3段階の評価（★の数）。評価を付ける前の日の結果にはない */
+function GradeBadge({ grade }: { grade: Grade | null }) {
+  if (!grade) return null;
+  const g = GRADES[grade];
+  return (
+    <span
+      className={cn("rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap", g.className)}
+      title={g.hint}
+    >
+      <span aria-hidden>{g.stars}</span> {g.label}
+    </span>
+  );
+}
+
+const GAP_LABEL: Record<NonNullable<Recommendation["policy_gap"]>["basis"], string> = {
+  doe_floor: "DOE の下限",
+  doe_goal: "DOE の目標",
+  payout_floor: "配当性向の下限",
+  payout_goal: "配当性向の目標",
+};
+
+/** 評価の根拠（方針との差と直近四半期の伸び）。理由の文章とは別に、数字で確かめられるようにする */
+function Basis({ r }: { r: Recommendation }) {
+  const gap = r.policy_gap;
+  const items = [
+    gap && {
+      key: "gap",
+      text: `${GAP_LABEL[gap.basis]} ${pct(gap.policy, gap.basis.startsWith("doe") ? 1 : 0)} に対して今は ${pct(gap.now, gap.basis.startsWith("doe") ? 1 : 0)}。方針どおりなら配当 ${growth(gap.upside)}`,
+      className: gap.basis.endsWith("_floor") ? "text-expensive" : "text-primary",
+    },
+    r.op_growth_q != null && {
+      key: "q",
+      text: `直近四半期の営業利益 ${growth(r.op_growth_q)}`,
+      className: r.op_growth_q >= 0 ? "text-cheap" : "text-expensive",
+    },
+    r.op_growth_ttm != null && {
+      key: "ttm",
+      text: `直近4四半期の合計 ${growth(r.op_growth_ttm)}`,
+      className: r.op_growth_ttm >= 0 ? "text-cheap" : "text-expensive",
+    },
+  ].filter((i): i is { key: string; text: string; className: string } => Boolean(i));
+  if (items.length === 0) return null;
+  return (
+    <ul className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
+      {items.map((i) => (
+        <li key={i.key} className={cn("tabular-nums", i.className)}>
+          {i.text}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -81,9 +165,11 @@ function Item({ r }: { r: Recommendation }) {
             <NameLink r={r} />
             <DocPreview r={r} />
             <span className="text-xs text-muted-foreground">{sub}</span>
+            <GradeBadge grade={r.grade} />
             <Flags r={r} />
           </div>
           <p className="text-sm">{r.reason}</p>
+          <Basis r={r} />
           <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:grid-cols-4 lg:grid-cols-8">
             {METRICS.map((m) => (
               <div key={m.label}>
@@ -144,12 +230,18 @@ export function RecommendPage() {
       {day ? (
         <>
           <p className="text-sm text-muted-foreground">
-            ルールで絞った候補（株式で、配当利回りが8%未満、配当性向50%以下・PBR1.5倍以下、バリュー株か「5年連続で配当あり
-            かつ 通期で赤字なし」）の指標を AI
-            に渡し、増配が期待できて割安な順に10銘柄を選ばせています。AI
-            の答えに重複や候補にない銘柄があればその分を除くので、10銘柄より少ない日もあります。数字の計算は
-            AI にさせていません。
+            ルールで絞った候補（株式で、配当利回りが8%未満、配当性向50%以下・PBR1.5倍以下、減配なし、バリュー株か「5年連続で配当あり
+            かつ 通期で赤字なし」）を、評価（★★★ 強く推奨 → ★★ 推奨 → ★
+            注目）と、会社の配当方針との差・業績の質の順に並べて上位10銘柄を選んでいます。評価と順位はルールで決め、AI
+            には有価証券報告書の配当方針の文と直近の四半期の数字を渡して、理由の文章だけを書かせています。理由を書けなかった銘柄は除くので、10銘柄より少ない日もあります。
           </p>
+          <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            {(Object.keys(GRADES) as Grade[]).map((g) => (
+              <li key={g}>
+                <span aria-hidden>{GRADES[g].stars}</span> {GRADES[g].label}: {GRADES[g].hint}
+              </li>
+            ))}
+          </ul>
           <ol className="flex flex-col gap-3">
             {day.rows.map((r) => (
               <Item key={r.code} r={r} />
