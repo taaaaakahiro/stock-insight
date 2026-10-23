@@ -108,7 +108,7 @@ fn multi_row(
 const INDICATOR_COLUMNS: &str = "code, run_id, fetched_at, price, price_date, dividend_ttm, dividend_yield, \
      yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin, no_loss_years, \
      profit_uptrend, valuation, fin_doc_id, fin_submitted, dividend_every_year, no_quarterly_loss, is_value, data_years, \
-     sales_growth, op_growth, dividend_basis, dividend_cut";
+     sales_growth, op_growth, dividend_basis, dividend_cut, op_growth_q, net_growth_q, op_growth_ttm, profit_one_off";
 
 /// 一覧用の最新指標（1銘柄1行）を upsert する
 pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
@@ -148,12 +148,16 @@ pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
                     Val::Text(if f { "forecast" } else { "actual" }.into())
                 }),
                 Val::opt_b(i.dividend_cut),
+                Val::opt_f(i.op_growth_q),
+                Val::opt_f(i.net_growth_q),
+                Val::opt_f(i.op_growth_ttm),
+                Val::opt_b(i.profit_one_off),
             ]
         })
         .collect();
     multi_row(
         &format!("INSERT INTO indicators_latest ({INDICATOR_COLUMNS})"),
-        27,
+        31,
         "ON CONFLICT(code) DO UPDATE SET run_id = excluded.run_id, fetched_at = excluded.fetched_at, \
          price = excluded.price, price_date = excluded.price_date, dividend_ttm = excluded.dividend_ttm, \
          dividend_yield = excluded.dividend_yield, yield_percentile = excluded.yield_percentile, pbr = excluded.pbr, \
@@ -164,7 +168,9 @@ pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
          dividend_every_year = excluded.dividend_every_year, no_quarterly_loss = excluded.no_quarterly_loss, \
          is_value = excluded.is_value, data_years = excluded.data_years, \
          sales_growth = excluded.sales_growth, op_growth = excluded.op_growth, \
-         dividend_basis = excluded.dividend_basis, dividend_cut = excluded.dividend_cut",
+         dividend_basis = excluded.dividend_basis, dividend_cut = excluded.dividend_cut, \
+         op_growth_q = excluded.op_growth_q, net_growth_q = excluded.net_growth_q, \
+         op_growth_ttm = excluded.op_growth_ttm, profit_one_off = excluded.profit_one_off",
         rows,
         usize::MAX,
     )
@@ -617,17 +623,23 @@ mod tests {
                 op_growth: None,
                 dividend_is_forecast: Some(true),
                 dividend_cut: Some(true),
+                op_growth_q: Some(0.2),
+                net_growth_q: None,
+                op_growth_ttm: None,
+                profit_one_off: Some(false),
             },
             fin_doc_id: None,
             fin_submitted: None,
         };
         let snaps: Vec<_> = (0..12).map(|i| snap(&format!("{}", 1300 + i))).collect();
         let stmts = snapshots_stmts(&snaps);
-        assert_eq!(stmts.len(), 4, "27列なので1文3行まで");
+        assert_eq!(stmts.len(), 4, "31列なので1文3行まで");
         assert!(stmts.iter().all(|s| s.params.len() <= 100));
         assert_eq!(stmts[0].sql.matches("(?, ").count(), 3);
         assert_eq!(stmts[0].params[25], Val::Text("forecast".into()));
         assert_eq!(stmts[0].params[26], Val::Int(1));
+        assert_eq!(stmts[0].params[27], Val::Real(0.2));
+        assert_eq!(stmts[0].params[30], Val::Int(0));
         let h = price_history_stmts(
             &vec![("7203".into(), "x".into(), "2026-07-01".into()); 25],
             1,

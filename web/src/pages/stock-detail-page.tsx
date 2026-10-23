@@ -93,6 +93,8 @@ function Detail({ d }: { d: StockDetail }) {
           { label: "営業利益率", value: pct(s.operating_margin, 1) },
           { label: "売上の伸び", value: growth(s.sales_growth) },
           { label: "営業利益の伸び", value: growth(s.op_growth) },
+          { label: "直近四半期の営業利益の伸び", value: growth(s.op_growth_q) },
+          { label: "直近4四半期の営業利益の伸び", value: growth(s.op_growth_ttm) },
         ]
       : []),
   ];

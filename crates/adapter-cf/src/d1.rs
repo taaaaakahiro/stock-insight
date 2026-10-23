@@ -82,6 +82,10 @@ pub(crate) struct Row {
     doe_goal: Option<f64>,
     payout_floor: Option<f64>,
     payout_goal: Option<f64>,
+    op_growth_q: Option<f64>,
+    net_growth_q: Option<f64>,
+    op_growth_ttm: Option<f64>,
+    profit_one_off: Option<i64>,
     #[serde(default)]
     reit_sector: Option<String>,
     #[serde(default)]
@@ -155,6 +159,10 @@ impl From<Row> for StockRow {
             payout_floor: r.payout_floor,
             payout_goal: r.payout_goal,
             payout_forecast,
+            op_growth_q: r.op_growth_q,
+            net_growth_q: r.net_growth_q,
+            op_growth_ttm: r.op_growth_ttm,
+            profit_one_off: r.profit_one_off.map(|v| v != 0),
             // reit_profile の行があるときだけ（期末日は必ず入る）
             reit: r.reit_period_end.clone().map(|period_end| ReitListFields {
                 sector: r.reit_sector,
