@@ -36,8 +36,9 @@ pub struct Candidate {
     pub policy_upside: Option<f64>,
     /// その乖離が「下限割れ」（会社が守ると言った線を下回っている）
     pub policy_floor_breach: bool,
-    /// 直近の四半期単独の営業利益の前年同期比と、利益が一過性の疑い
+    /// 直近の四半期単独の営業利益の前年同期比、直近4四半期合計の営業利益の伸び、利益が一過性の疑い
     pub op_growth_q: Option<f64>,
+    pub op_growth_ttm: Option<f64>,
     pub profit_one_off: Option<bool>,
     /// 管理者が登録した注目テーマに当たっている（有報の事業の内容にテーマの言葉がある）
     pub themed: bool,
@@ -46,9 +47,9 @@ pub struct Candidate {
 /// 3段階の評価。乖離が大きく業績の質も良ければ強く推奨、一律に「おすすめ」としない
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Grade {
-    /// 注目: 割安で増配も期待できるが、一過性の疑いがあるか、業績の判定材料が足りない
+    /// 注目: 割安で増配も期待できるが、直近が減益か、一過性の疑いがあるか、業績の判定材料が足りない
     Watch,
-    /// 推奨: 業績の質を満たし、増配の根拠（乖離・連続増配・累進配当）がある
+    /// 推奨: 業績が明らかに悪くなく、増配の根拠（乖離・連続増配・累進配当）がある
     Recommend,
     /// 強く推奨: 方針との乖離が大きい（下限割れ、または余地 STRONG_UPSIDE 以上）＋ 業績の質 ＋ 割安
     Strong,
@@ -103,11 +104,36 @@ impl Candidate {
         .count() as u8
     }
 
-    /// 業績の質: 通期で赤字がなく、一過性の疑いがなく、増益（直近の四半期の営業利益が前年同期比プラス、または増益傾向）
+    /// 通期で赤字がなく、一過性の疑いがない
+    fn clean_earnings(&self) -> bool {
+        self.no_loss_years == Some(true) && self.profit_one_off != Some(true)
+    }
+
+    /// 直近の勢い: 直近の四半期の営業利益が前年同期比プラス。四半期の値が分からないときだけ5年の増益傾向で代用する
+    /// （直近が減益と分かっているのに、5年の傾きだけで増益とはみなさない）
+    fn recent_growing(&self) -> bool {
+        match self.op_growth_q {
+            Some(g) => g > 0.0,
+            None => self.profit_uptrend == Some(true),
+        }
+    }
+
+    /// 1年を通して減益でない: 直近4四半期の合計が前年を下回らない（分からなければ問わない）
+    fn year_not_down(&self) -> bool {
+        self.op_growth_ttm.is_none_or(|t| t >= 0.0)
+    }
+
+    /// 業績の質（強く推奨の条件）: 赤字なし・一過性でない・直近の四半期が増益・1年を通しても減益でない
     pub fn solid_earnings(&self) -> bool {
-        let growing =
-            self.op_growth_q.is_some_and(|g| g > 0.0) || self.profit_uptrend == Some(true);
-        self.no_loss_years == Some(true) && self.profit_one_off != Some(true) && growing
+        self.clean_earnings() && self.recent_growing() && self.year_not_down()
+    }
+
+    /// 業績が明らかに悪くない（推奨の条件）: 赤字なし・一過性でない・1年を通して減益でなく、
+    /// 直近の四半期か4四半期の合計のどちらかは増益
+    pub fn fair_earnings(&self) -> bool {
+        self.clean_earnings()
+            && self.year_not_down()
+            && (self.recent_growing() || self.op_growth_ttm.is_some_and(|t| t > 0.0))
     }
 
     /// 割安: バリュー株、または利回りの過去5年比で割安
@@ -130,7 +156,7 @@ impl Candidate {
     pub fn grade(&self) -> Grade {
         if self.big_gap() && self.solid_earnings() && self.cheap() {
             Grade::Strong
-        } else if self.raise_basis() && self.solid_earnings() {
+        } else if self.raise_basis() && self.fair_earnings() {
             Grade::Recommend
         } else {
             Grade::Watch
@@ -385,10 +411,11 @@ mod tests {
         assert!(!unknown.is_eligible(), "5年分の判定がなければ候補にしない");
     }
 
-    /// 業績の質を満たす候補（通期黒字・直近四半期 +10%・一過性なし）
+    /// 業績の質を満たす候補（通期黒字・直近四半期 +10%・4四半期合計 +5%・一過性なし）
     fn solid(code: &str) -> Candidate {
         Candidate {
             op_growth_q: Some(0.1),
+            op_growth_ttm: Some(0.05),
             profit_one_off: Some(false),
             ..cand(code, Some(0.035), true, true, true)
         }
@@ -440,15 +467,46 @@ mod tests {
             ..solid("2007")
         };
         assert_eq!(one_off.grade(), Grade::Watch);
-        // 直近四半期が減益でも増益傾向があれば質を満たす
-        let trend = Candidate {
+        // 直近四半期が減益なら、5年の増益傾向があっても強く推奨にはしない。4四半期合計がプラスなら推奨
+        let recent_down = Candidate {
             policy_floor_breach: true,
             policy_upside: Some(0.3),
-            op_growth_q: Some(-0.05),
+            op_growth_q: Some(-0.13),
+            op_growth_ttm: Some(0.15),
             profit_uptrend: Some(true),
             ..solid("2008")
         };
-        assert_eq!(trend.grade(), Grade::Strong);
+        assert_eq!(recent_down.grade(), Grade::Recommend, "7241 のような形");
+        // 直近も4四半期合計も減益なら、下限割れでも注目どまり
+        let both_down = Candidate {
+            op_growth_ttm: Some(-0.14),
+            op_growth_q: Some(-0.24),
+            ..recent_down.clone()
+        };
+        assert_eq!(both_down.grade(), Grade::Watch, "1377 のような形");
+        // 直近が減益で4四半期合計が分からなければ、明らかに悪くないとは言えない
+        let recent_down_only = Candidate {
+            op_growth_ttm: None,
+            op_growth_q: Some(-0.47),
+            ..recent_down.clone()
+        };
+        assert_eq!(recent_down_only.grade(), Grade::Watch, "1798 のような形");
+        // 四半期の値がなく5年の傾きは上向きでも、4四半期合計が減益なら注目
+        let year_down = Candidate {
+            op_growth_q: None,
+            op_growth_ttm: Some(-0.19),
+            profit_uptrend: Some(true),
+            ..recent_down.clone()
+        };
+        assert_eq!(year_down.grade(), Grade::Watch, "9633 のような形");
+        // 四半期の値がなければ5年の増益傾向で代用する（4四半期合計がプラス）
+        let trend_only = Candidate {
+            op_growth_q: None,
+            op_growth_ttm: Some(0.9),
+            profit_uptrend: Some(true),
+            ..recent_down.clone()
+        };
+        assert_eq!(trend_only.grade(), Grade::Strong, "7022 のような形");
         // 乖離が大きく質も良いが割安でない（バリューでも利回り割安でもない）→ 推奨
         let fair = Candidate {
             policy_floor_breach: true,
@@ -467,11 +525,12 @@ mod tests {
             Grade::Strong,
             "利回りの過去5年比で割安でもよい"
         );
-        // 業績の判定材料がなければ注目
+        // 業績の判定材料（四半期の値・4四半期合計・5年の傾き）がなければ注目
         let unknown = Candidate {
             policy_floor_breach: true,
             policy_upside: Some(0.3),
             op_growth_q: None,
+            op_growth_ttm: None,
             profit_uptrend: None,
             ..solid("2010")
         };

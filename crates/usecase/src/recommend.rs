@@ -119,6 +119,7 @@ pub fn candidate_of(r: &StockRow, themed: bool) -> Candidate {
         policy_upside: gap.as_ref().map(|g| g.upside),
         policy_floor_breach: gap.is_some_and(|g| g.level == PolicyLevel::Floor),
         op_growth_q: r.op_growth_q,
+        op_growth_ttm: r.op_growth_ttm,
         profit_one_off: r.profit_one_off,
         themed,
     }
@@ -467,6 +468,7 @@ mod tests {
         strong.doe = Some(0.028);
         strong.doe_floor = Some(0.035);
         strong.op_growth_q = Some(0.12);
+        strong.op_growth_ttm = Some(0.08);
         strong.profit_one_off = Some(false);
         let ai = echo();
         let out = block_on(generate(&repo, &ai, NOW)).unwrap();
