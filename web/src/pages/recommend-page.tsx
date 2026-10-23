@@ -1,8 +1,17 @@
-import { useEffect, useState } from "react";
+import { RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { DocPreview } from "@/components/doc-preview";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
 import { Badge } from "@/components/ui/badge";
-import { apiGet, type Grade, type Recommendation, type Recommendations } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import {
+  ApiError,
+  apiFetch,
+  apiGet,
+  type Grade,
+  type Recommendation,
+  type Recommendations,
+} from "@/lib/api";
 import { useAuthState } from "@/lib/auth";
 import { count, growth, jstDateTime, pct, times, yen, ymd } from "@/lib/format";
 import { navigate } from "@/lib/router";
@@ -148,6 +157,71 @@ const METRICS: { label: string; render: (r: Recommendation) => string }[] = [
   { label: "営業利益率", render: (r) => pct(r.operating_margin, 1) },
 ];
 
+/**
+ * 管理者だけのボタン。直近の日次バッチが成功していれば、その株価の日付のレコメンドを今の評価・順位で作り直す
+ * （日本時間で1日1回まで。AI の呼び出しがあるので十数秒かかる）
+ */
+function RegenerateButton({ onDone }: { onDone: () => void }) {
+  const { getToken } = useAuthState();
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const run = async () => {
+    if (
+      !window.confirm(
+        "AIレコメンドを作り直します（1日1回まで）。今の結果は置き換わります。よろしいですか？",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setNote(null);
+    try {
+      const r = await apiFetch<{ date: string; picks: number }>(
+        "POST",
+        "/api/recommendations/regenerate",
+        getToken,
+      );
+      setNote(`${ymd(r.date)}終値で${r.picks}銘柄を作り直しました。`);
+      onDone();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 429) {
+        setNote("今日はもう作り直しています（1日1回まで）。明日またお試しください。");
+      } else if (e instanceof ApiError && e.status === 409) {
+        setNote(
+          e.message.includes("running")
+            ? "日次バッチが走っています。終わってからお試しください。"
+            : `いまは作れません（${e.message}）。`,
+        );
+      } else {
+        setNote("作り直せませんでした。時間をおいて再度お試しください。");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={busy}
+        onClick={() => void run()}
+        title="直近の日次バッチの株価で、今の評価と順位でレコメンドを作り直す（1日1回まで）"
+      >
+        <RefreshCw aria-hidden className={busy ? "animate-spin" : ""} />
+        {busy ? "作り直しています…" : "作り直す"}
+      </Button>
+      {note && (
+        <span role="status" className="text-xs text-muted-foreground">
+          {note}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function Item({ r }: { r: Recommendation }) {
   const sub = [r.code, r.sector33].filter(Boolean).join("・");
   return (
@@ -193,11 +267,12 @@ function Item({ r }: { r: Recommendation }) {
   );
 }
 
-export function RecommendPage() {
+export function RecommendPage({ isAdmin }: { isAdmin: boolean }) {
   const { getToken } = useAuthState();
   const [load, setLoad] = useState<Load>({ state: "loading" });
 
-  useEffect(() => {
+  // 初回と、ボタンで作り直したあとに読む
+  const reload = useCallback(() => {
     const ctrl = new AbortController();
     apiGet<Recommendations>("/api/recommendations", getToken, ctrl.signal)
       .then((data) => setLoad({ state: "ok", data }))
@@ -206,6 +281,8 @@ export function RecommendPage() {
       });
     return () => ctrl.abort();
   }, [getToken]);
+
+  useEffect(reload, [reload]);
 
   if (load.state === "loading") {
     return <p className="text-sm text-muted-foreground">読み込み中…</p>;
@@ -225,11 +302,15 @@ export function RecommendPage() {
         <h2 id="recommend-heading" className="text-sm">
           AIレコメンド
         </h2>
-        {day && (
-          <p className="text-xs tabular-nums text-muted-foreground">
-            {ymd(day.date)}終値の指標から、{jstDateTime(day.created_at)}に作成（{day.model}）
-          </p>
-        )}
+        <div className="flex flex-wrap items-center gap-3">
+          {day && (
+            <p className="text-xs tabular-nums text-muted-foreground">
+              {ymd(day.date)}終値の指標から、{jstDateTime(day.created_at)}に
+              {day.manual ? "作り直し" : "作成"}（{day.model}）
+            </p>
+          )}
+          {isAdmin && <RegenerateButton onDone={reload} />}
+        </div>
       </div>
 
       <p role="note" className="rounded-lg border border-warning/50 bg-warning/10 p-3 text-sm">

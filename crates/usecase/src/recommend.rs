@@ -17,8 +17,26 @@ pub struct Recommendations {
     pub date: String,
     pub model: String,
     pub created_at: i64,
+    /// 画面のボタンで作り直した分なら true（Cron で作った分と、列を足す前の分は false）
+    pub manual: bool,
     /// 順位順
     pub rows: Vec<RecommendationRow>,
+}
+
+/// 保存の元: 21:00 の Cron か、画面のボタン
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Cron,
+    Manual,
+}
+
+impl Source {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Source::Cron => "cron",
+            Source::Manual => "manual",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,14 +75,19 @@ pub trait RecommendRepository {
     async fn themes(&self) -> Result<Vec<(String, String)>, PortError>;
     /// その日の結果がすでにあるか
     async fn exists(&self, date: &str) -> Result<bool, PortError>;
-    /// 1日分をまとめて保存する（MIN_PICKS〜PICK_COUNT 行）
+    /// 1日分をまとめて保存する（MIN_PICKS〜PICK_COUNT 行）。`replace` ならその日の行を消してから入れる
+    /// （消すのと入れるのは1回の batch で、途中で切れて空にならないように）
     async fn save(
         &self,
         date: &str,
         model: &str,
         picks: &[Pick],
         now: i64,
+        source: Source,
+        replace: bool,
     ) -> Result<(), PortError>;
+    /// since（UNIX秒）以降に画面のボタンで作り直した回数
+    async fn manual_count_since(&self, since: i64) -> Result<i64, PortError>;
     /// 最新日の結果（銘柄名と最新の指標つき）
     async fn latest(&self) -> Result<Option<Recommendations>, PortError>;
 }
@@ -125,6 +148,8 @@ fn themes_of(themes: &[(String, String)], code: &str) -> Vec<String> {
 pub enum Outcome {
     /// 何もしなかった理由
     Skipped(String),
+    /// 作り直しは1日1回まで（画面のボタン）
+    Limited,
     Saved {
         date: String,
         picks: usize,
@@ -133,7 +158,15 @@ pub enum Outcome {
     },
 }
 
-/// その日のバッチが成功していて、まだ結果がなければ生成して保存する
+/// 画面のボタンで作り直せる回数（日本時間の1日あたり）
+pub const MANUAL_PER_DAY: i64 = 1;
+
+/// 日本時間でその日の 0:00 の UNIX 秒
+fn start_of_day_jst(now: i64) -> i64 {
+    now - (now + 9 * 3600).rem_euclid(86_400)
+}
+
+/// その日のバッチが成功していて、まだ結果がなければ生成して保存する（21:00 の Cron）
 pub async fn generate<R: RecommendRepository, A: Recommender>(
     repo: &R,
     ai: &A,
@@ -161,6 +194,43 @@ pub async fn generate<R: RecommendRepository, A: Recommender>(
     if repo.exists(&date).await? {
         return Ok(Outcome::Skipped(format!("already generated for {date}")));
     }
+    build_and_save(repo, ai, &date, now, Source::Cron, false).await
+}
+
+/// 画面のボタン: 直近のバッチが成功していれば（今日でなくてもよい）、その株価の日付の結果を作り直す。
+/// 日本時間の1日に MANUAL_PER_DAY 回まで。その日の行があれば消して入れ替える
+pub async fn regenerate<R: RecommendRepository, A: Recommender>(
+    repo: &R,
+    ai: &A,
+    now: i64,
+) -> Result<Outcome, PortError> {
+    let Some(run) = repo.latest_run().await? else {
+        return Ok(Outcome::Skipped("no batch run yet".into()));
+    };
+    if run.status != "succeeded" {
+        return Ok(Outcome::Skipped(format!(
+            "latest batch {} is {}",
+            run.run_id, run.status
+        )));
+    }
+    let Some(date) = run.latest_price_date else {
+        return Ok(Outcome::Skipped("no prices yet".into()));
+    };
+    if repo.manual_count_since(start_of_day_jst(now)).await? >= MANUAL_PER_DAY {
+        return Ok(Outcome::Limited);
+    }
+    build_and_save(repo, ai, &date, now, Source::Manual, true).await
+}
+
+/// 候補を絞って順位と評価を決め、AI に理由を書かせて保存する（generate と regenerate の共通部分）
+async fn build_and_save<R: RecommendRepository, A: Recommender>(
+    repo: &R,
+    ai: &A,
+    date: &str,
+    now: i64,
+    source: Source,
+    replace: bool,
+) -> Result<Outcome, PortError> {
     let rows = repo.candidates().await?;
     let themes = repo.themes().await?;
     let mut picks = candidates_of(&rows, &themes);
@@ -191,9 +261,10 @@ pub async fn generate<R: RecommendRepository, A: Recommender>(
         .collect();
     let raw = ai.explain(&explains).await?;
     let v = validate_picks(&raw, &picks).map_err(|e| PortError(format!("ai: {e}")))?;
-    repo.save(&date, ai.model(), &v.picks, now).await?;
+    repo.save(date, ai.model(), &v.picks, now, source, replace)
+        .await?;
     Ok(Outcome::Saved {
-        date,
+        date: date.to_string(),
         picks: v.picks.len(),
         dropped: v.dropped.iter().map(|d| d.to_string()).collect(),
     })
@@ -218,6 +289,9 @@ mod tests {
         saved: RefCell<Vec<(String, String, Vec<Pick>)>>,
         asked_phrases: RefCell<Vec<String>>,
         themes: Vec<(String, String)>,
+        /// 画面のボタンで作り直した時刻
+        manual_at: Vec<i64>,
+        saved_how: RefCell<Vec<(Source, bool)>>,
     }
 
     impl RecommendRepository for Fake {
@@ -248,11 +322,17 @@ mod tests {
             model: &str,
             picks: &[Pick],
             _now: i64,
+            source: Source,
+            replace: bool,
         ) -> Result<(), PortError> {
             self.saved
                 .borrow_mut()
                 .push((date.into(), model.into(), picks.to_vec()));
+            self.saved_how.borrow_mut().push((source, replace));
             Ok(())
+        }
+        async fn manual_count_since(&self, since: i64) -> Result<i64, PortError> {
+            Ok(self.manual_at.iter().filter(|t| **t >= since).count() as i64)
         }
         async fn latest(&self) -> Result<Option<Recommendations>, PortError> {
             Ok(None)
@@ -374,6 +454,8 @@ mod tests {
             saved: RefCell::new(vec![]),
             asked_phrases: RefCell::new(vec![]),
             themes: vec![],
+            manual_at: vec![],
+            saved_how: RefCell::new(vec![]),
         }
     }
 
@@ -401,6 +483,7 @@ mod tests {
         assert_eq!(saved[0].1, "fake-model");
         assert_eq!(saved[0].2[0].rank, 1);
         assert_eq!(saved[0].2[0].code, "5003", "評価の高い銘柄が先");
+        assert_eq!(repo.saved_how.borrow()[0], (Source::Cron, false));
         assert_eq!(saved[0].2[0].grade, Grade::Strong);
         assert_eq!(saved[0].2[1].grade, Grade::Watch);
 
@@ -481,6 +564,43 @@ mod tests {
         assert_eq!(saved[0].2.len(), 8);
         assert_eq!(saved[0].2[7].rank, 8);
         assert_eq!(saved[0].2[7].code, "5018");
+    }
+
+    #[test]
+    fn regenerate_replaces_the_day_once_per_day() {
+        // 前日に終わったバッチでも、成功していれば作り直せる。その日の行は入れ替える
+        let mut repo = fake(run("succeeded", NOW - 86_400), 30);
+        repo.existing.push("2026-10-21".into());
+        let out = block_on(regenerate(&repo, &echo(), NOW)).unwrap();
+        assert!(matches!(out, Outcome::Saved { picks: 10, .. }), "{out:?}");
+        assert_eq!(repo.saved_how.borrow()[0], (Source::Manual, true));
+
+        // 日本時間の今日（2026-10-21 21:00 JST の 0:00 は 15:00 UTC の前日）にもう作り直していれば断る
+        let mut limited = fake(run("succeeded", NOW - 3600), 30);
+        limited.manual_at = vec![NOW - 6 * 3600]; // 15:00 JST
+        assert_eq!(
+            block_on(regenerate(&limited, &echo(), NOW)).unwrap(),
+            Outcome::Limited
+        );
+        // 前日の分は数えない（0:00 JST = 2026-10-20 15:00 UTC より前）
+        let mut yesterday = fake(run("succeeded", NOW - 3600), 30);
+        yesterday.manual_at = vec![NOW - 22 * 3600];
+        assert!(matches!(
+            block_on(regenerate(&yesterday, &echo(), NOW)).unwrap(),
+            Outcome::Saved { .. }
+        ));
+        assert_eq!(start_of_day_jst(NOW), NOW - 21 * 3600);
+
+        // バッチが走っている・失敗していれば作れない
+        assert!(matches!(
+            block_on(regenerate(
+                &fake(run("running", NOW - 600), 30),
+                &echo(),
+                NOW
+            ))
+            .unwrap(),
+            Outcome::Skipped(_)
+        ));
     }
 
     #[test]

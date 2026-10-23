@@ -4,7 +4,7 @@ use crate::d1::Row;
 use crate::query;
 use domain::recommend::{Grade, Pick};
 use serde::Deserialize;
-use usecase::recommend::{RecommendRepository, RecommendationRow, Recommendations};
+use usecase::recommend::{RecommendRepository, RecommendationRow, Recommendations, Source};
 use usecase::screening::{DataStatus, StockRow};
 use usecase::PortError;
 use worker::wasm_bindgen::JsValue;
@@ -43,6 +43,7 @@ struct RecoRow {
     reason: String,
     model: String,
     created_at: i64,
+    source: Option<String>,
 }
 
 impl RecommendRepository for D1Recommendations {
@@ -138,17 +139,27 @@ impl RecommendRepository for D1Recommendations {
         Ok(n.unwrap_or(0.0) > 0.0)
     }
 
-    /// 1日分を1回の batch で書く（D1 への要求と書き込み行数を最小にする）
+    /// 1日分を1回の batch で書く（D1 への要求と書き込み行数を最小にする）。replace ならその日の行を先に消す
     async fn save(
         &self,
         date: &str,
         model: &str,
         picks: &[Pick],
         now: i64,
+        source: Source,
+        replace: bool,
     ) -> Result<(), PortError> {
-        let stmts = picks
-            .iter()
-            .map(|p| {
+        let mut stmts = vec![];
+        if replace {
+            stmts.push(
+                self.db
+                    .prepare(query::RECOMMENDATION_DELETE_DATE)
+                    .bind(&[JsValue::from_str(date)])
+                    .map_err(err)?,
+            );
+        }
+        for p in picks {
+            stmts.push(
                 self.db
                     .prepare(query::RECOMMENDATION_INSERT)
                     .bind(&[
@@ -159,12 +170,25 @@ impl RecommendRepository for D1Recommendations {
                         JsValue::from_str(model),
                         JsValue::from_f64(now as f64),
                         JsValue::from_str(p.grade.as_str()),
+                        JsValue::from_str(source.as_str()),
                     ])
-                    .map_err(err)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+                    .map_err(err)?,
+            );
+        }
         self.db.batch(stmts).await.map_err(err)?;
         Ok(())
+    }
+
+    async fn manual_count_since(&self, since: i64) -> Result<i64, PortError> {
+        let n: Option<f64> = self
+            .db
+            .prepare(query::RECOMMENDATION_MANUAL_SINCE)
+            .bind(&[JsValue::from_f64(since as f64)])
+            .map_err(err)?
+            .first(Some("n"))
+            .await
+            .map_err(err)?;
+        Ok(n.unwrap_or(0.0) as i64)
     }
 
     async fn latest(&self) -> Result<Option<Recommendations>, PortError> {
@@ -184,6 +208,7 @@ impl RecommendRepository for D1Recommendations {
             date: first.date.clone(),
             model: first.model.clone(),
             created_at: first.created_at,
+            manual: first.source.as_deref() == Some("manual"),
             rows: meta
                 .iter()
                 .zip(stocks)

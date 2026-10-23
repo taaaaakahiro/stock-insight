@@ -138,7 +138,7 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
             </Tabs>
             {view === "screening" && <ScreeningPage />}
             {view === "portfolio" && <PortfolioPage />}
-            {view === "recommend" && <RecommendPage />}
+            {view === "recommend" && <RecommendPage isAdmin={me.is_admin} />}
             {view === "themes" && <ThemesPage isAdmin={me.is_admin} />}
           </>
         )}
