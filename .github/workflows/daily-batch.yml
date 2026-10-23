@@ -31,6 +31,9 @@ on:
       refetch_doe:
         description: "true なら EDINET の新しい書類のあと、DOE・配当性向の下限・目標の数字が欠けている保存済みの書類を取り直す（数百通。10〜20分ほど）"
         default: "false"
+      refetch_business:
+        description: "true なら EDINET の新しい書類のあと、「事業の内容」の文をまだ持っていない保存済みの有報を取り直す（注目テーマの照合用。数千通あるので時間切れまで進め、残りは次回）"
+        default: "false"
   schedule:
     # 予備（09:45 UTC = 18:45 JST、平日）。Cloudflare 側で起動済みなら should-run が止める
     - cron: "45 9 * * 1-5"
@@ -183,7 +186,7 @@ jobs:
         with:
           name: batch-cli
       - run: chmod +x batch-cli
-      - run: ./batch-cli sync-edinet --rate 60 --max-minutes 300 --raw-dir raw ${{ github.event.inputs.refetch_doe == 'true' && '--refetch-doe' || '' }}
+      - run: ./batch-cli sync-edinet --rate 60 --max-minutes 300 --raw-dir raw ${{ github.event.inputs.refetch_doe == 'true' && '--refetch-doe' || '' }} ${{ github.event.inputs.refetch_business == 'true' && '--refetch-business' || '' }}
       # EDINET の文章を銘柄・種類ごとの gzip JSON で R2 に置く。同じキーに上書きするので古い書類は残らない。
       # 新しい有報で古くなった半期報告書と上場廃止の銘柄は消す。途中で失敗しても、取れた分は置く
       - name: upload EDINET texts to R2

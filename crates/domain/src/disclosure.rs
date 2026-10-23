@@ -47,13 +47,16 @@ pub enum Section {
     BusinessPolicy,
     /// 経営者による財政状態、経営成績及びキャッシュ・フローの状況の分析
     Mdna,
+    /// 事業の内容（注目テーマとの照合に使う。配当方針の手がかりは探さない）
+    Business,
 }
 
 impl Section {
-    pub const ALL: [Section; 3] = [
+    pub const ALL: [Section; 4] = [
         Section::DividendPolicy,
         Section::BusinessPolicy,
         Section::Mdna,
+        Section::Business,
     ];
 
     pub fn key(self) -> &'static str {
@@ -61,6 +64,7 @@ impl Section {
             Section::DividendPolicy => "dividend_policy",
             Section::BusinessPolicy => "business_policy",
             Section::Mdna => "mdna",
+            Section::Business => "business",
         }
     }
 
@@ -75,6 +79,8 @@ impl Section {
             Some(Section::BusinessPolicy)
         } else if local_name.starts_with("ManagementAnalysisOfFinancialPosition") {
             Some(Section::Mdna)
+        } else if local_name.starts_with("DescriptionOfBusiness") {
+            Some(Section::Business)
         } else {
             None
         }
@@ -206,7 +212,7 @@ impl PolicyValues {
     }
 }
 
-/// 項目ごとの文章から手がかりを拾う。配当政策の文を先に並べる。
+/// 項目ごとの文章から手がかりを拾う。配当政策の文を先に並べ、事業の内容は見ない（配当の方針ではない）。
 /// DOE・配当性向の下限・目標は文ごとに違うこと（従来の計画と新しい計画）があるので、いちばん大きい値を取る
 /// （引き上げのほうが多く、古い値は「従来の…から」と書かれることが多い）
 pub fn detect(sections: &[(Section, &str)]) -> DividendSignals {
@@ -215,7 +221,7 @@ pub fn detect(sections: &[(Section, &str)]) -> DividendSignals {
     let mut sig = DividendSignals::default();
     let mut doe_values = PolicyValues::default();
     let mut payout_values = PolicyValues::default();
-    for (_, text) in sorted {
+    for (_, text) in sorted.into_iter().filter(|(s, _)| *s != Section::Business) {
         for sentence in text.split('。').map(str::trim).filter(|s| !s.is_empty()) {
             let has = |words: &[&str]| words.iter().any(|w| sentence.contains(w));
             let progressive = has(PROGRESSIVE);
@@ -590,6 +596,16 @@ mod tests {
     fn no_signals_in_plain_text() {
         let s = detect(&[(Section::Mdna, "売上高は前期比5%増加しました。")]);
         assert_eq!(s, DividendSignals::default());
+        let business = detect(&[(Section::Business, "累進配当型の商品を販売しています。")]);
+        assert_eq!(
+            business,
+            DividendSignals::default(),
+            "事業の内容は配当方針として読まない"
+        );
+        assert_eq!(
+            Section::from_element("DescriptionOfBusinessTextBlock"),
+            Some(Section::Business)
+        );
     }
 
     #[test]

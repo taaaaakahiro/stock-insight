@@ -15,6 +15,7 @@ pub mod reit;
 pub mod screening;
 pub mod split;
 pub mod stock_master;
+pub mod theme;
 
 pub use indicators::*;
 pub use model::*;

@@ -192,6 +192,24 @@ impl D1Store {
         Ok(rows.iter().filter_map(doc_ref).collect())
     }
 
+    /// 「事業の内容」の文をまだ持っていない有報（before より前に取ったもの）。注目テーマの照合を始める前に
+    /// 取り込んだ書類を取り直すために使う。半期報告書には事業の内容がないので対象にしない
+    pub async fn edinet_docs_without_business(
+        &self,
+        before: i64,
+    ) -> Result<Vec<DocRef>, PortError> {
+        let rows = self
+            .query(&Stmt {
+                sql: "SELECT code, doc_kind, doc_id, submitted, period_end FROM edinet_docs \
+                      WHERE doc_kind = 'annual' AND business_text IS NULL AND fetched_at < ? \
+                      ORDER BY submitted, doc_id"
+                    .into(),
+                params: vec![Val::Int(before)],
+            })
+            .await?;
+        Ok(rows.iter().filter_map(doc_ref).collect())
+    }
+
     pub async fn save_edinet_docs(&self, docs: &[EdinetDoc], now: i64) -> Result<(), PortError> {
         for s in edinet_docs_stmts(docs, now) {
             self.exec(&s).await?;

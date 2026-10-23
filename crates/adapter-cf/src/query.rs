@@ -226,6 +226,29 @@ pub const EDINET_DOCS: &str =
      payout_floor, payout_goal, payout_phrase, phrases \
      FROM edinet_docs WHERE code = ? ORDER BY doc_kind";
 
+/// 注目テーマ（管理者が登録）。count は照合で当たった銘柄数
+pub const THEMES: &str = "SELECT t.id, t.name, t.words, t.updated_at, \
+     (SELECT COUNT(*) FROM stock_themes s WHERE s.theme_id = t.id) AS count \
+     FROM themes t ORDER BY t.name";
+pub const THEME: &str = "SELECT t.id, t.name, t.words, t.updated_at, \
+     (SELECT COUNT(*) FROM stock_themes s WHERE s.theme_id = t.id) AS count \
+     FROM themes t WHERE t.id = ?";
+pub const THEME_INSERT: &str =
+    "INSERT INTO themes (name, words, created_at, updated_at) VALUES (?, ?, ?, ?) RETURNING id";
+pub const THEME_UPDATE: &str = "UPDATE themes SET name = ?, words = ?, updated_at = ? WHERE id = ?";
+pub const THEME_DELETE: &str = "DELETE FROM themes WHERE id = ?";
+pub const STOCK_THEMES_DELETE: &str = "DELETE FROM stock_themes WHERE theme_id = ?";
+/// 1つの言葉を「事業の内容」の文と突き合わせて入れる（? は theme_id, 言葉, 言葉）。先に当たった言葉を残す
+pub const STOCK_THEMES_MATCH: &str =
+    "INSERT OR IGNORE INTO stock_themes (theme_id, code, matched_word) \
+     SELECT DISTINCT ?, code, ? FROM edinet_docs WHERE instr(business_text, ?) > 0";
+pub const THEME_STOCKS: &str =
+    "SELECT st.code, s.name, st.matched_word FROM stock_themes st LEFT JOIN stocks s ON s.code = st.code \
+     WHERE st.theme_id = ? ORDER BY st.code";
+/// 銘柄ごとのテーマ名（レコメンドの順位づけと表示に使う）
+pub const STOCK_THEME_NAMES: &str =
+    "SELECT st.code, t.name FROM stock_themes st JOIN themes t ON t.id = st.theme_id ORDER BY st.code, t.name";
+
 pub const PORTFOLIO_CODES: &str =
     "SELECT code FROM portfolio_items WHERE user_id = ? ORDER BY added_at, code";
 pub const PORTFOLIO_ADD: &str =

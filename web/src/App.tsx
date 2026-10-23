@@ -12,8 +12,9 @@ import { PortfolioPage } from "@/pages/portfolio-page";
 import { RecommendPage } from "@/pages/recommend-page";
 import { ScreeningPage } from "@/pages/screening-page";
 import { StockDetailPage } from "@/pages/stock-detail-page";
+import { ThemesPage } from "@/pages/themes-page";
 
-type View = "screening" | "portfolio" | "recommend";
+type View = "screening" | "portfolio" | "recommend" | "themes";
 
 // 画面の切り替えは URL の # に残す（? はスクリーニングの条件が使う）
 const viewFromHash = (): View => {
@@ -22,6 +23,8 @@ const viewFromHash = (): View => {
       return "portfolio";
     case "#recommend":
       return "recommend";
+    case "#themes":
+      return "themes";
     default:
       return "screening";
   }
@@ -130,11 +133,13 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
                   {codes.size > 0 && <span className="ml-1 tabular-nums">({codes.size})</span>}
                 </TabsTrigger>
                 <TabsTrigger value="recommend">AIレコメンド</TabsTrigger>
+                <TabsTrigger value="themes">注目テーマ</TabsTrigger>
               </TabsList>
             </Tabs>
             {view === "screening" && <ScreeningPage />}
             {view === "portfolio" && <PortfolioPage />}
             {view === "recommend" && <RecommendPage />}
+            {view === "themes" && <ThemesPage isAdmin={me.is_admin} />}
           </>
         )}
       </main>

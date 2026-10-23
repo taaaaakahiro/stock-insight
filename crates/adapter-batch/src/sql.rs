@@ -395,14 +395,15 @@ pub fn edinet_docs_stmts(docs: &[EdinetDoc], fetched_at: i64) -> Vec<Stmt> {
                 Val::opt_f(s.payout_floor),
                 Val::opt_f(s.payout_goal),
                 s.payout_phrase.clone().map_or(Val::Null, Val::Text),
+                Val::Text(e.business_text.clone()),
             ]
         })
         .collect();
     multi_row(
         "INSERT INTO edinet_docs (code, doc_kind, doc_id, submitted, period_end, r2_key, progressive_dividend, \
          no_dividend_cut, dividend_raise, doe_target, payout_target, phrases, fetched_at, \
-         doe_floor, doe_goal, doe_phrase, payout_floor, payout_goal, payout_phrase)",
-        19,
+         doe_floor, doe_goal, doe_phrase, payout_floor, payout_goal, payout_phrase, business_text)",
+        20,
         "ON CONFLICT(code, doc_kind) DO UPDATE SET doc_id = excluded.doc_id, submitted = excluded.submitted, \
          period_end = excluded.period_end, r2_key = excluded.r2_key, \
          progressive_dividend = excluded.progressive_dividend, no_dividend_cut = excluded.no_dividend_cut, \
@@ -410,7 +411,7 @@ pub fn edinet_docs_stmts(docs: &[EdinetDoc], fetched_at: i64) -> Vec<Stmt> {
          payout_target = excluded.payout_target, phrases = excluded.phrases, fetched_at = excluded.fetched_at, \
          doe_floor = excluded.doe_floor, doe_goal = excluded.doe_goal, doe_phrase = excluded.doe_phrase, \
          payout_floor = excluded.payout_floor, payout_goal = excluded.payout_goal, \
-         payout_phrase = excluded.payout_phrase",
+         payout_phrase = excluded.payout_phrase, business_text = excluded.business_text",
         rows,
         usize::MAX,
     )
@@ -670,9 +671,10 @@ mod tests {
                 phrases: vec!["累進配当を基本方針とし…".into()],
                 ..Default::default()
             },
+            business_text: "当社グループは自動車の製造販売を…".into(),
         };
         let stmts = edinet_docs_stmts(&vec![doc; 8], 1);
-        assert_eq!(stmts.len(), 2, "19列なので1文5行まで");
+        assert_eq!(stmts.len(), 2, "20列なので1文5行まで");
         let p = &stmts[0].params;
         assert_eq!(p[5], Val::Text("edinet/7203/annual.json.gz".into()));
         assert_eq!(p[6], Val::Int(1));
@@ -684,6 +686,7 @@ mod tests {
         assert_eq!(p[16], Val::Real(0.3));
         assert_eq!(p[17], Val::Null);
         assert_eq!(p[18], Val::Text("配当性向30%以上を基本とします。".into()));
+        assert_eq!(p[19], Val::Text("当社グループは自動車の製造販売を…".into()));
         let del = delete_edinet_doc_stmt(&("7203".into(), DocKind::Semiannual));
         assert_eq!(
             del.render(),

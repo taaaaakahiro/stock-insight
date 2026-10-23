@@ -19,7 +19,7 @@ const SYSTEM_PROMPT: &str = "\
 渡されるのは、ルールで選んで順位と評価（強く推奨・推奨・注目）を付け終えた銘柄の一覧（JSON）です。\
 順位と評価はこちらで決めてあるので変えず、各銘柄について、その評価になった理由を書いてください。\
 各銘柄には「良い点」（こちらで判定済みの、値つきの短い文）、「評価の決め手」（評価の根拠）、「注意」、\
-「配当方針の原文」（有価証券報告書の文）がついています。\
+「配当方針の原文」（有価証券報告書の文）、「注目テーマ」（管理者が登録したテーマで、有報の事業の内容に当たったもの）がついています。\
 理由の書き方:\
 (1) 日本語で1〜3文、全体で60〜140文字。銘柄名やコードから書き始めない（画面に銘柄名は出ている）。\
 (2) 「評価の決め手」があれば必ず最初に書く。会社の配当方針（DOE や配当性向の下限・目標）と今の配当の差は、値を使って具体的に書く。\
@@ -27,7 +27,8 @@ const SYSTEM_PROMPT: &str = "\
 書き方の例（値は例なので使わない）: 有報で DOE 3.5%を下限とする方針だが、今の配当では DOE 2.8%にとどまり、方針どおりなら配当は25%増える余地がある。直近の四半期も営業利益が前年同期比 +12.3%と伸びており、PBR 0.85倍と割安。\
 (4) 「良い点」「評価の決め手」「注意」に書かれていない評価（高い・低い・安い・余地がある など）を自分で付け足さない。書かれていない項目には触れない（「配当性向はなし」「不明」のように、無いことも書かない）。\
 (5) 「注意」があれば、最後に1文で短く触れる（それが「注目」どまりの理由）。\
-(6) 銘柄ごとに同じ書き出しや同じ項目の並びを使い回さない。\
+(6) 「注目テーマ」があれば、テーマ名を挙げて「市場の注目テーマに関わる事業」と一言で触れる（テーマの中身や将来性は書かない）。\
+(7) 銘柄ごとに同じ書き出しや同じ項目の並びを使い回さない。\
 渡された銘柄すべてに、渡された順で理由を返してください。銘柄を足したり減らしたりしてはいけません。\
 答えは指定した JSON だけを返し、他の文章は書かないでください。\
 これは参考情報であり投資助言ではありません。";
@@ -219,6 +220,9 @@ fn explain_json(e: &Explain) -> Value {
     if !e.phrases.is_empty() {
         c.insert("配当方針の原文".into(), json!(e.phrases));
     }
+    if !e.themes.is_empty() {
+        c.insert("注目テーマ".into(), json!(e.themes));
+    }
     Value::Object(c)
 }
 
@@ -359,6 +363,7 @@ mod tests {
             grade,
             gap: r.policy_gap(),
             phrases: vec![],
+            themes: vec![],
             stock: r,
         }
     }
@@ -371,6 +376,7 @@ mod tests {
         e.stock.op_growth_q = Some(0.123);
         e.gap = e.stock.policy_gap();
         e.phrases = vec!["DOE3.5%を下限とします。".into()];
+        e.themes = vec!["半導体".into()];
         let body = request_body(&[e]);
         assert_eq!(body["messages"][0]["role"], "system");
         let user: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap())
@@ -402,6 +408,7 @@ mod tests {
             ])
         );
         assert_eq!(c["配当方針の原文"], json!(["DOE3.5%を下限とします。"]));
+        assert_eq!(c["注目テーマ"], json!(["半導体"]));
         assert!(c.get("注意").is_none());
         assert_eq!(body["response_format"]["type"], "json_schema");
         let arr = &body["response_format"]["json_schema"]["properties"]["reasons"];
@@ -461,6 +468,7 @@ mod tests {
             ])
         );
         assert!(c.get("配当方針の原文").is_none());
+        assert!(c.get("注目テーマ").is_none());
 
         // 直近は増益だが4四半期の合計は減益
         r.net_growth_q = Some(0.1);

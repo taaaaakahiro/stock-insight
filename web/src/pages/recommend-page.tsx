@@ -167,6 +167,15 @@ function Item({ r }: { r: Recommendation }) {
             <span className="text-xs text-muted-foreground">{sub}</span>
             <GradeBadge grade={r.grade} />
             <Flags r={r} />
+            {r.themes.map((t) => (
+              <Badge
+                key={t}
+                variant="secondary"
+                title="管理者が登録した注目テーマ。有価証券報告書の「事業の内容」にテーマの言葉がある"
+              >
+                #{t}
+              </Badge>
+            ))}
           </div>
           <p className="text-sm">{r.reason}</p>
           <Basis r={r} />
@@ -232,7 +241,7 @@ export function RecommendPage() {
           <p className="text-sm text-muted-foreground">
             ルールで絞った候補（株式で、配当利回りが8%未満、配当性向50%以下・PBR1.5倍以下、減配なし、バリュー株か「5年連続で配当あり
             かつ 通期で赤字なし」）を、評価（★★★ 強く推奨 → ★★ 推奨 → ★
-            注目）と、会社の配当方針との差・業績の質の順に並べて上位10銘柄を選んでいます。評価と順位はルールで決め、AI
+            注目）と、注目テーマ（同じ評価の中で先）・会社の配当方針との差・業績の質の順に並べて上位10銘柄を選んでいます。評価と順位はルールで決め、AI
             には有価証券報告書の配当方針の文と直近の四半期の数字を渡して、理由の文章だけを書かせています。理由を書けなかった銘柄は除くので、10銘柄より少ない日もあります。
           </p>
           <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">

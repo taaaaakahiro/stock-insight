@@ -39,6 +39,8 @@
 //!   --refetch-doe           新しい書類のあと、保存済みで方針の数字が欠けている書類（DOE に触れているのに下限・
 //!                           目標がない、配当性向の目標があるのに下限・目標に分けていない）を取り直す
 //!                           （数字を拾う仕組みより前に取り込んだ分。文章も R2 用に書き直す）
+//!   --refetch-business      新しい書類のあと、保存済みで「事業の内容」の文をまだ持っていない有報を取り直す
+//!                           （注目テーマの照合を始める前に取り込んだ分。数千通あるので数回に分かれる）
 //!   R2 から消すファイルのキーは {raw-dir}/edinet-delete.txt に1行ずつ書く（ワークフローが消す）
 //!
 //! sync-reit のオプション（--from / --until / --rate / --max-minutes / --raw-dir は sync-jq と同じ）:
@@ -96,6 +98,7 @@ struct Args {
     limit: usize,
     refill_prices: bool,
     refetch_doe: bool,
+    refetch_business: bool,
     refill_forecasts: bool,
     out: Option<String>,
 }
@@ -120,6 +123,7 @@ fn parse_args() -> Result<Args, String> {
         limit: 5,
         refill_prices: false,
         refetch_doe: false,
+        refetch_business: false,
         refill_forecasts: false,
         out: None,
     };
@@ -132,6 +136,7 @@ fn parse_args() -> Result<Args, String> {
             "--force" => a.force = true,
             "--refill-prices" => a.refill_prices = true,
             "--refetch-doe" => a.refetch_doe = true,
+            "--refetch-business" => a.refetch_business = true,
             "--refill-forecasts" => a.refill_forecasts = true,
             "--from" => a.from = Some(date(val()?)?),
             "--until" => a.until = Some(date(val()?)?),
@@ -262,6 +267,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0016_recommendation_grade",
         include_str!("../../../migrations/0016_recommendation_grade.sql"),
+    ),
+    (
+        "0017_themes",
+        include_str!("../../../migrations/0017_themes.sql"),
     ),
 ];
 
@@ -794,32 +803,62 @@ async fn sync_edinet(args: Args) -> Result<(), String> {
         return Err(e);
     }
     if args.refetch_doe {
-        refetch_doe(&ed, &store, &raw_dir, now, started, deadline).await?;
+        let docs = store
+            .edinet_docs_without_policy_values(now)
+            .await
+            .map_err(|e| e.0)?;
+        refetch(
+            &ed,
+            &store,
+            &raw_dir,
+            now,
+            started,
+            deadline,
+            &docs,
+            "DOE / payout policy",
+        )
+        .await?;
+    }
+    if args.refetch_business {
+        let docs = store
+            .edinet_docs_without_business(now)
+            .await
+            .map_err(|e| e.0)?;
+        refetch(
+            &ed,
+            &store,
+            &raw_dir,
+            now,
+            started,
+            deadline,
+            &docs,
+            "business text",
+        )
+        .await?;
     }
     Ok(())
 }
 
-/// 保存済みで方針の数字が欠けている書類（DOE の下限・目標、配当性向の下限・目標）を取り直す（この実行で取った分は除く）。
+/// 保存済みの書類を取り直す（この実行で取った分は除く。`what` はログに出す目的）。
 /// 書類一覧の進み具合（EDINET_CURSOR_KEY）は変えない。時間切れなら、次に同じオプションで続きを取る
-async fn refetch_doe(
+#[allow(clippy::too_many_arguments)]
+async fn refetch(
     ed: &EdinetClient,
     store: &d1::D1Store,
     raw_dir: &std::path::Path,
     now: i64,
     started: Instant,
     deadline: std::time::Duration,
+    docs: &[DocRef],
+    what: &str,
 ) -> Result<(), String> {
-    let docs = store
-        .edinet_docs_without_policy_values(now)
-        .await
-        .map_err(|e| e.0)?;
     println!(
-        "sync-edinet: {} stored reports to refetch for DOE / payout policy",
+        "sync-edinet: {} stored reports to refetch for {what}",
         docs.len()
     );
     let mut pending = vec![];
     let mut done = 0;
-    for doc in &docs {
+    for doc in docs {
         if started.elapsed() > deadline {
             println!("sync-edinet: time limit reached; refetch the rest next time");
             break;
@@ -846,7 +885,7 @@ async fn refetch_doe(
         .save_edinet_docs(&pending, now)
         .await
         .map_err(|e| e.0)?;
-    println!("sync-edinet: {done} refetched for DOE / payout policy");
+    println!("sync-edinet: {done} refetched for {what}");
     Ok(())
 }
 
@@ -882,6 +921,12 @@ async fn fetch_doc(
     let refs: Vec<(domain::disclosure::Section, &str)> =
         sections.iter().map(|(s, t)| (*s, t.as_str())).collect();
     let signals = domain::disclosure::detect(&refs);
+    // 「事業の内容」は注目テーマとの照合用に D1 にも短く持つ（項目がなければ空文字 = 読んだが無かった）
+    let business_text = sections
+        .iter()
+        .find(|(s, _)| *s == domain::disclosure::Section::Business)
+        .map(|(_, t)| domain::theme::business_excerpt(t))
+        .unwrap_or_default();
     let body = serde_json::json!({
         "source": "EDINET",
         "code": doc.code,
@@ -933,6 +978,7 @@ async fn fetch_doc(
     Ok(EdinetDoc {
         doc: doc.clone(),
         signals,
+        business_text,
     })
 }
 
