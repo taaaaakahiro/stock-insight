@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { doeNow } from "@/components/results-table";
-import { apiGet, type EdinetDoc, type EdinetDocs, type StockRow } from "@/lib/api";
+import { apiGet, type EdinetDoc, type EdinetDocs, type PolicyGap, type StockRow } from "@/lib/api";
 import { useAuthState } from "@/lib/auth";
-import { pct, points, yen, ymd } from "@/lib/format";
+import { growth, pct, points, yen, ymd } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const KIND_LABEL: Record<EdinetDoc["doc_kind"], string> = {
@@ -49,7 +49,13 @@ export function DividendPolicy({ r }: { r: StockRow }) {
   const docs = [...load.docs].sort((a, b) => b.submitted.localeCompare(a.submitted));
   const floor = r.doe_floor;
   const goal = r.doe_goal;
-  const payoutTarget = docs.find((d) => d.payout_target != null)?.payout_target ?? null;
+  const payoutFloor = r.payout_floor;
+  const payoutGoal = r.payout_goal;
+  // 下限・目標に分ける前に取り込んだ書類の値（取り直せば消える）
+  const payoutOld =
+    payoutFloor == null && payoutGoal == null
+      ? (docs.find((d) => d.payout_target != null)?.payout_target ?? null)
+      : null;
   const badges = [
     docs.some((d) => d.progressive_dividend) && { label: "累進配当", tone: "good" },
     docs.some((d) => d.no_dividend_cut) && { label: "非減配", tone: "good" },
@@ -61,11 +67,18 @@ export function DividendPolicy({ r }: { r: StockRow }) {
         label: "DOE（数字なし）",
         tone: "doe",
       },
-    payoutTarget != null && { label: `配当性向 ${pct(payoutTarget, 0)}以上`, tone: "doe" },
+    payoutFloor != null && { label: `配当性向 下限 ${pct(payoutFloor, 0)}`, tone: "doe" },
+    payoutGoal != null && { label: `配当性向 目標 ${pct(payoutGoal, 0)}`, tone: "doe" },
+    payoutOld != null && { label: `配当性向 ${pct(payoutOld, 0)}以上`, tone: "doe" },
   ].filter((b): b is { label: string; tone: string } => Boolean(b));
   // docs は空でない（上で返している）
-  const source = docs.find((d) => d.doe_phrase) ?? (docs[0] as EdinetDoc);
-  const quote = source.doe_phrase ?? source.phrases[0] ?? null;
+  const source =
+    docs.find((d) => d.doe_phrase) ?? docs.find((d) => d.payout_phrase) ?? (docs[0] as EdinetDoc);
+  const quotes = [
+    source.doe_phrase,
+    source.payout_phrase !== source.doe_phrase ? source.payout_phrase : null,
+  ].filter((q): q is string => Boolean(q));
+  if (quotes.length === 0 && source.phrases[0]) quotes.push(source.phrases[0]);
 
   return (
     <div className="rounded-xl border p-4">
@@ -91,19 +104,118 @@ export function DividendPolicy({ r }: { r: StockRow }) {
         </ul>
       ) : (
         <p className="mb-3 text-sm text-muted-foreground">
-          累進配当・非減配・DOE・配当性向の目標の記述は見つかりませんでした。
+          累進配当・非減配・DOE・配当性向の下限や目標の記述は見つかりませんでした。
         </p>
       )}
+      {r.policy_gap && <GapNote gap={r.policy_gap} />}
       {(floor != null || goal != null) && <DoeCompare r={r} floor={floor} goal={goal} />}
-      {quote && (
+      {(payoutFloor != null || payoutGoal != null) && (
+        <PayoutCompare r={r} floor={payoutFloor} goal={payoutGoal} />
+      )}
+      {quotes.length > 0 && (
         <blockquote className="mt-3 border-t pt-3 text-sm leading-relaxed text-muted-foreground">
-          「{quote}」<span className="ml-1 text-xs">（書類管理番号 {source.doc_id}）</span>
+          {quotes.map((q) => (
+            <p key={q}>「{q}」</p>
+          ))}
+          <span className="text-xs">（書類管理番号 {source.doc_id}）</span>
         </blockquote>
       )}
       <p className="mt-2 text-xs text-muted-foreground">
         言葉と数字を機械的に拾っています。判断は原文で確かめてください。DOE は 1株配当 ÷ BPS
         の簡易な値で、会社の計算（株主資本の平均など）とは少しずれます。
       </p>
+    </div>
+  );
+}
+
+const GAP_LABEL: Record<PolicyGap["basis"], string> = {
+  doe_floor: "DOE の下限",
+  doe_goal: "DOE の目標",
+  payout_floor: "配当性向の下限",
+  payout_goal: "配当性向の目標",
+};
+
+/** 方針と今の配当の乖離（方針どおりなら配当が何 % 増えるか）。下限割れは赤で強く出す */
+function GapNote({ gap }: { gap: PolicyGap }) {
+  const breach = gap.basis.endsWith("_floor");
+  const digits = gap.basis.startsWith("doe") ? 1 : 0;
+  return (
+    <p
+      className={cn(
+        "mb-3 rounded-lg px-3 py-2 text-sm",
+        breach ? "bg-expensive/10 text-expensive" : "bg-primary/10 text-primary",
+      )}
+    >
+      {breach ? "方針の下限を下回っています。" : "方針の目標に届いていません。"}
+      {GAP_LABEL[gap.basis]} {pct(gap.policy, digits)} に対して今は {pct(gap.now, digits)}。
+      方針どおりなら配当は <span className="font-medium">{growth(gap.upside)}</span>
+      （増配の余地）
+    </p>
+  );
+}
+
+/** 今の配当性向（実績・予想）を下限・目標と比べ、下限・目標を 1株配当（円）に直す。EPS は 株価 ÷ PER */
+function PayoutCompare({
+  r,
+  floor,
+  goal,
+}: {
+  r: StockRow;
+  floor: number | null;
+  goal: number | null;
+}) {
+  const now = r.dividend_basis === "forecast" ? r.payout_forecast : r.payout_ratio;
+  const eps = r.per != null && r.per > 0 ? r.price / r.per : null;
+  const dpsAt = (payout: number | null) => (eps != null && payout != null ? eps * payout : null);
+  const epsNote = (payout: number) =>
+    eps != null ? `EPS ${yen(eps)} × ${pct(payout, 0)}` : "EPS が出ていません（赤字など）";
+  const diff = now != null && floor != null ? now - floor : null;
+  return (
+    <div className="mt-3 border-t pt-3">
+      <p className="mb-1 text-xs text-muted-foreground">配当性向（1株配当 ÷ EPS）</p>
+      <p className="mb-2 text-sm">
+        今 <span className="tabular-nums">{pct(now, 1)}</span>
+        <span className="ml-1 text-xs text-muted-foreground">
+          （{r.dividend_basis === "forecast" ? "会社予想の配当 ÷ 直近の本決算の EPS" : "実績"}）
+        </span>
+        {floor != null && (
+          <span className="ml-3">
+            下限 <span className="tabular-nums">{pct(floor, 0)}</span>
+          </span>
+        )}
+        {goal != null && (
+          <span className="ml-3">
+            目標 <span className="tabular-nums">{pct(goal, 0)}</span>
+          </span>
+        )}
+      </p>
+      {diff != null && (
+        <p className="mb-3 text-sm">
+          下限まで{" "}
+          <span className={cn("font-medium", diff < 0 ? "text-expensive" : "text-cheap")}>
+            {points(diff)}
+          </span>
+          {diff < 0 ? "（下限の方針より配当が少ない）" : " の余裕"}
+        </p>
+      )}
+      <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {floor != null && (
+          <Amount
+            label="下限の配当性向で守られる配当"
+            dps={dpsAt(floor)}
+            price={r.price}
+            note={epsNote(floor)}
+          />
+        )}
+        {goal != null && (
+          <Amount
+            label="目標の配当性向での配当"
+            dps={dpsAt(goal)}
+            price={r.price}
+            note={epsNote(goal)}
+          />
+        )}
+      </dl>
     </div>
   );
 }

@@ -36,8 +36,9 @@
 //! sync-edinet のオプション（--from / --until / --rate / --max-minutes / --raw-dir は sync-jq と同じ）:
 //!   --dry-run <file>        D1 を読み書きせず、--from〜--until の一覧から --limit 件だけ取って SQL と文章を書く
 //!   --limit <n>             --dry-run で取る書類の数（既定 5）
-//!   --refetch-doe           新しい書類のあと、保存済みで DOE に触れているのに下限・目標の数字がない書類を
-//!                           取り直す（DOE の数字を拾う前に取り込んだ分。文章も R2 用に書き直す）
+//!   --refetch-doe           新しい書類のあと、保存済みで方針の数字が欠けている書類（DOE に触れているのに下限・
+//!                           目標がない、配当性向の目標があるのに下限・目標に分けていない）を取り直す
+//!                           （数字を拾う仕組みより前に取り込んだ分。文章も R2 用に書き直す）
 //!   R2 から消すファイルのキーは {raw-dir}/edinet-delete.txt に1行ずつ書く（ワークフローが消す）
 //!
 //! sync-reit のオプション（--from / --until / --rate / --max-minutes / --raw-dir は sync-jq と同じ）:
@@ -249,6 +250,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0013_doe_policy",
         include_str!("../../../migrations/0013_doe_policy.sql"),
+    ),
+    (
+        "0014_payout_policy",
+        include_str!("../../../migrations/0014_payout_policy.sql"),
     ),
 ];
 
@@ -786,7 +791,7 @@ async fn sync_edinet(args: Args) -> Result<(), String> {
     Ok(())
 }
 
-/// 保存済みで DOE に触れているのに下限・目標の数字がない書類を取り直す（この実行で取った分は除く）。
+/// 保存済みで方針の数字が欠けている書類（DOE の下限・目標、配当性向の下限・目標）を取り直す（この実行で取った分は除く）。
 /// 書類一覧の進み具合（EDINET_CURSOR_KEY）は変えない。時間切れなら、次に同じオプションで続きを取る
 async fn refetch_doe(
     ed: &EdinetClient,
@@ -797,11 +802,11 @@ async fn refetch_doe(
     deadline: std::time::Duration,
 ) -> Result<(), String> {
     let docs = store
-        .edinet_docs_without_doe_values(now)
+        .edinet_docs_without_policy_values(now)
         .await
         .map_err(|e| e.0)?;
     println!(
-        "sync-edinet: {} stored reports to refetch for DOE",
+        "sync-edinet: {} stored reports to refetch for DOE / payout policy",
         docs.len()
     );
     let mut pending = vec![];
@@ -833,7 +838,7 @@ async fn refetch_doe(
         .save_edinet_docs(&pending, now)
         .await
         .map_err(|e| e.0)?;
-    println!("sync-edinet: {done} refetched for DOE");
+    println!("sync-edinet: {done} refetched for DOE / payout policy");
     Ok(())
 }
 

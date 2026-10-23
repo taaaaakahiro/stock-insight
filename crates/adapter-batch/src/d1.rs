@@ -171,16 +171,19 @@ impl D1Store {
             .collect())
     }
 
-    /// DOE に触れているのに下限・目標の数字がない書類（before より前に取ったもの）。DOE の数字を拾う前に
-    /// 取り込んだ書類を取り直すために使う
-    pub async fn edinet_docs_without_doe_values(
+    /// 方針の数字が欠けている書類（before より前に取ったもの）: DOE に触れているのに下限・目標がない、または
+    /// 配当性向の目標（古い列）があるのに下限・目標に分けていない。数字を拾う仕組みより前に取り込んだ書類を
+    /// 取り直すために使う
+    pub async fn edinet_docs_without_policy_values(
         &self,
         before: i64,
     ) -> Result<Vec<DocRef>, PortError> {
         let rows = self
             .query(&Stmt {
                 sql: "SELECT code, doc_kind, doc_id, submitted, period_end FROM edinet_docs \
-                      WHERE doe_target = 1 AND doe_floor IS NULL AND doe_goal IS NULL AND fetched_at < ? \
+                      WHERE ((doe_target = 1 AND doe_floor IS NULL AND doe_goal IS NULL) \
+                          OR (payout_target IS NOT NULL AND payout_floor IS NULL AND payout_goal IS NULL)) \
+                        AND fetched_at < ? \
                       ORDER BY submitted, doc_id"
                     .into(),
                 params: vec![Val::Int(before)],

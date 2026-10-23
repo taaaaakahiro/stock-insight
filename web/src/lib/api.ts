@@ -45,8 +45,23 @@ export type StockRow = {
   doe_goal: number | null;
   /** 会社予想の配当で見た DOE（予想がなければ null。実績は doe） */
   doe_forecast: number | null;
+  /** 有報・半期報告書に書かれた配当性向の下限・目標（新しい書類の値。書かれていなければ null） */
+  payout_floor: number | null;
+  payout_goal: number | null;
+  /** 会社予想の配当で見た配当性向（予想がなければ null。実績は payout_ratio） */
+  payout_forecast: number | null;
+  /** 会社の配当方針（DOE・配当性向の下限・目標）と今の配当の乖離。方針がないか満たしていれば null */
+  policy_gap: PolicyGap | null;
   /** REIT の金利・稼働率（有報から。REIT 以外や未取り込みなら null）。比率は小数 */
   reit?: ReitListFields | null;
+};
+
+/** 方針どおりに払った場合、配当が何 % 増えるか（upside: 0.2 = 20% 増）。下限割れを目標未達より重く見る */
+export type PolicyGap = {
+  basis: "doe_floor" | "doe_goal" | "payout_floor" | "payout_goal";
+  policy: number;
+  now: number;
+  upside: number;
 };
 
 export type ReitListFields = {
@@ -133,12 +148,16 @@ export type EdinetDoc = {
   no_dividend_cut: boolean;
   dividend_raise: boolean;
   doe_target: boolean;
-  /** 配当性向の目標（0.3 = 30%） */
+  /** 配当性向の下限（なければ目標）（0.3 = 30%）。古い列で、中身は payout_floor ?? payout_goal */
   payout_target: number | null;
   /** DOE の下限・目標（0.035 = 3.5%）と、その数字を拾った文 */
   doe_floor: number | null;
   doe_goal: number | null;
   doe_phrase: string | null;
+  /** 配当性向の下限・目標と、その数字を拾った文 */
+  payout_floor: number | null;
+  payout_goal: number | null;
+  payout_phrase: string | null;
   /** 手がかりの言葉を含む文 */
   phrases: string[];
 };

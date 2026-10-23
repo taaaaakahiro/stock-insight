@@ -386,20 +386,25 @@ pub fn edinet_docs_stmts(docs: &[EdinetDoc], fetched_at: i64) -> Vec<Stmt> {
                 Val::opt_f(s.doe_floor),
                 Val::opt_f(s.doe_goal),
                 s.doe_phrase.clone().map_or(Val::Null, Val::Text),
+                Val::opt_f(s.payout_floor),
+                Val::opt_f(s.payout_goal),
+                s.payout_phrase.clone().map_or(Val::Null, Val::Text),
             ]
         })
         .collect();
     multi_row(
         "INSERT INTO edinet_docs (code, doc_kind, doc_id, submitted, period_end, r2_key, progressive_dividend, \
          no_dividend_cut, dividend_raise, doe_target, payout_target, phrases, fetched_at, \
-         doe_floor, doe_goal, doe_phrase)",
-        16,
+         doe_floor, doe_goal, doe_phrase, payout_floor, payout_goal, payout_phrase)",
+        19,
         "ON CONFLICT(code, doc_kind) DO UPDATE SET doc_id = excluded.doc_id, submitted = excluded.submitted, \
          period_end = excluded.period_end, r2_key = excluded.r2_key, \
          progressive_dividend = excluded.progressive_dividend, no_dividend_cut = excluded.no_dividend_cut, \
          dividend_raise = excluded.dividend_raise, doe_target = excluded.doe_target, \
          payout_target = excluded.payout_target, phrases = excluded.phrases, fetched_at = excluded.fetched_at, \
-         doe_floor = excluded.doe_floor, doe_goal = excluded.doe_goal, doe_phrase = excluded.doe_phrase",
+         doe_floor = excluded.doe_floor, doe_goal = excluded.doe_goal, doe_phrase = excluded.doe_phrase, \
+         payout_floor = excluded.payout_floor, payout_goal = excluded.payout_goal, \
+         payout_phrase = excluded.payout_phrase",
         rows,
         usize::MAX,
     )
@@ -646,6 +651,8 @@ mod tests {
             signals: DividendSignals {
                 progressive: true,
                 payout_target: Some(0.3),
+                payout_floor: Some(0.3),
+                payout_phrase: Some("配当性向30%以上を基本とします。".into()),
                 doe_floor: Some(0.035),
                 doe_phrase: Some("DOE3.5%を下限とします。".into()),
                 phrases: vec!["累進配当を基本方針とし…".into()],
@@ -653,7 +660,7 @@ mod tests {
             },
         };
         let stmts = edinet_docs_stmts(&vec![doc; 8], 1);
-        assert_eq!(stmts.len(), 2, "16列なので1文6行まで");
+        assert_eq!(stmts.len(), 2, "19列なので1文5行まで");
         let p = &stmts[0].params;
         assert_eq!(p[5], Val::Text("edinet/7203/annual.json.gz".into()));
         assert_eq!(p[6], Val::Int(1));
@@ -662,6 +669,9 @@ mod tests {
         assert_eq!(p[13], Val::Real(0.035));
         assert_eq!(p[14], Val::Null);
         assert_eq!(p[15], Val::Text("DOE3.5%を下限とします。".into()));
+        assert_eq!(p[16], Val::Real(0.3));
+        assert_eq!(p[17], Val::Null);
+        assert_eq!(p[18], Val::Text("配当性向30%以上を基本とします。".into()));
         let del = delete_edinet_doc_stmt(&("7203".into(), DocKind::Semiannual));
         assert_eq!(
             del.render(),

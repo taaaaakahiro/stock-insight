@@ -29,7 +29,7 @@ on:
         description: "true なら取り込み済みの直近1年の決算短信を読み直し、会社予想の配当だけを埋める（財務と進み具合はそのまま。250日分ほどで5〜10分）"
         default: "false"
       refetch_doe:
-        description: "true なら EDINET の新しい書類のあと、DOE に触れているのに下限・目標の数字がない保存済みの書類を取り直す（数百通。10〜20分ほど）"
+        description: "true なら EDINET の新しい書類のあと、DOE・配当性向の下限・目標の数字が欠けている保存済みの書類を取り直す（数百通。10〜20分ほど）"
         default: "false"
   schedule:
     # 予備（09:45 UTC = 18:45 JST、平日）。Cloudflare 側で起動済みなら should-run が止める
