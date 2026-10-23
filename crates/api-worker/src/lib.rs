@@ -8,7 +8,7 @@
 //!   GET /api/portfolio              登録した銘柄と売り時のサイン
 //!   PUT /api/portfolio/:code        銘柄を登録
 //!   DELETE /api/portfolio/:code     登録を外す
-//!   GET /api/recommendations        最新日の AIレコメンド（F7）
+//!   GET /api/recommendations        最新日の AIレコメンド（F7）。キャッシュしない（作り直しの直後に古い結果を見せない）
 //!   POST /api/recommendations/regenerate  AIレコメンドを作り直す（管理者。日本時間で1日1回まで）
 //!   GET /api/themes                 注目テーマ（管理者が登録。全員が読める）
 //!   GET /api/themes/:id             1テーマと、当たった銘柄
@@ -528,22 +528,27 @@ async fn recommend_cron(env: &Env) {
 async fn recommendations(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
     let repo = D1Recommendations::new(ctx.env.d1(DB_BINDING)?);
     match usecase::recommend::latest(&repo).await {
-        Ok(day) => json_ok(&json!({
-            "day": day.map(|d| json!({
-                "date": d.date,
-                "model": d.model,
-                "created_at": d.created_at,
-                "manual": d.manual,
-                "rows": d.rows.iter().map(|r| {
-                    let mut v = row_json(&r.stock);
-                    v["rank"] = json!(r.rank);
-                    v["grade"] = json!(r.grade.map(|g| g.as_str()));
-                    v["reason"] = json!(r.reason);
-                    v["themes"] = json!(r.themes);
-                    v
-                }).collect::<Vec<_>>(),
-            })),
-        })),
+        // 作り直しの直後に古い結果を見せないよう、ブラウザに持たせない（1日数回しか読まない）
+        Ok(day) => json_response(
+            &json!({
+                "day": day.map(|d| json!({
+                    "date": d.date,
+                    "model": d.model,
+                    "created_at": d.created_at,
+                    "manual": d.manual,
+                    "rows": d.rows.iter().map(|r| {
+                        let mut v = row_json(&r.stock);
+                        v["rank"] = json!(r.rank);
+                        v["grade"] = json!(r.grade.map(|g| g.as_str()));
+                        v["reason"] = json!(r.reason);
+                        v["themes"] = json!(r.themes);
+                        v
+                    }).collect::<Vec<_>>(),
+                })),
+            }),
+            200,
+            "no-store",
+        ),
         Err(e) => internal(&e.0),
     }
 }
