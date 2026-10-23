@@ -411,3 +411,77 @@ export function switchKind(f: Filters, kind: Kind): Filters {
 export function isInvalidInput(input: string | undefined): boolean {
   return input !== undefined && input.trim() !== "" && toApiNumber(input, "times") === undefined;
 }
+
+/** 範囲の入力欄のまとまり。全部を並べると長いので、まとまりごとに畳む（open は最初から開くもの） */
+export const METRIC_GROUPS: { label: string; keys: MetricKey[]; open?: boolean }[] = [
+  {
+    label: "配当",
+    keys: ["dividend_yield", "dividend_ttm", "payout_ratio", "consecutive_increases"],
+    open: true,
+  },
+  { label: "割安さ", keys: ["pbr", "per", "yield_percentile", "price"], open: true },
+  { label: "配当方針（DOE）", keys: ["doe", "doe_floor", "doe_margin"] },
+  {
+    label: "業績",
+    keys: ["operating_margin", "sales_growth", "op_growth", "op_growth_q", "op_growth_ttm"],
+  },
+  {
+    label: "借入・物件",
+    keys: [
+      "floating_ratio",
+      "unknown_ratio",
+      "reprice_ratio",
+      "reprice_max_ratio",
+      "avg_rate",
+      "occupancy",
+    ],
+  },
+];
+
+/** そのタブで使えるまとまり（使える指標だけ残し、空のまとまりは外す） */
+export function metricGroupsFor(kind: Kind) {
+  const keys = new Set(metricsFor(kind).map((m) => m.key));
+  return METRIC_GROUPS.map((g) => ({ ...g, keys: g.keys.filter((k) => keys.has(k)) })).filter(
+    (g) => g.keys.length > 0,
+  );
+}
+
+const VALUATION_LABEL: Record<Exclude<Valuation, "">, string> = {
+  cheap: "高い",
+  neutral: "ふつう",
+  expensive: "低い",
+};
+
+/** 効いている条件（一覧の上にチップで出し、× で外す）。検索語・並び順・ページは含めない */
+export function activeConditions(f: Filters): { id: string; label: string; clear: Filters }[] {
+  const out: { id: string; label: string; clear: Filters }[] = [];
+  const add = (id: string, label: string, patch: Partial<Filters>) =>
+    out.push({ id, label, clear: { ...f, ...patch, page: 1 } });
+  for (const flag of FLAGS) if (f[flag.key]) add(flag.key, flag.label, { [flag.key]: false });
+  for (const m of f.markets) add(`market:${m}`, m, { markets: f.markets.filter((x) => x !== m) });
+  for (const s of f.sizes)
+    add(`size:${s}`, SIZES.find((x) => x.key === s)?.label ?? s, {
+      sizes: f.sizes.filter((x) => x !== s),
+    });
+  for (const s of f.sectors) add(`sector:${s}`, s, { sectors: f.sectors.filter((x) => x !== s) });
+  for (const s of f.reitSectors)
+    add(`reit:${s}`, reitSectorLabel(s) ?? s, {
+      reitSectors: f.reitSectors.filter((x) => x !== s),
+    });
+  if (f.valuation)
+    add(
+      "valuation",
+      `${f.kind === "stock" ? "配当" : "分配金"}利回りの過去5年比: ${VALUATION_LABEL[f.valuation]}`,
+      { valuation: "" },
+    );
+  for (const m of metricsFor(f.kind)) {
+    const min = f.ranges[`${m.key}_min`]?.trim();
+    const max = f.ranges[`${m.key}_max`]?.trim();
+    if (!min && !max) continue;
+    const u = UNIT_SUFFIX[m.unit];
+    const range = min && max ? `${min}〜${max}${u}` : min ? `${min}${u}以上` : `${max}${u}以下`;
+    const { [`${m.key}_min` as const]: _min, [`${m.key}_max` as const]: _max, ...rest } = f.ranges;
+    add(m.key, `${metricLabel(m.key, f.kind)} ${range}`, { ranges: rest });
+  }
+  return out;
+}

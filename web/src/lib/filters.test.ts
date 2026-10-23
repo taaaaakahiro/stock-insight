@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeConditions,
   DEFAULT_FILTERS,
   fromQuery,
   isInvalidInput,
+  METRIC_GROUPS,
+  METRICS,
+  metricGroupsFor,
   metricLabel,
   switchKind,
   toApiNumber,
@@ -137,5 +141,45 @@ describe("format", () => {
   it("shows times in JST", () => {
     // 2026-10-21 09:30 UTC = 18:30 JST
     expect(jstDateTime(Date.UTC(2026, 9, 21, 9, 30) / 1000)).toBe("10/21 18:30");
+  });
+});
+
+describe("activeConditions", () => {
+  it("lists each condition with a filter that removes only it", () => {
+    const f = {
+      ...DEFAULT_FILTERS,
+      isValue: true,
+      markets: ["プライム", "グロース"],
+      ranges: { dividend_yield_min: "3.5", pbr_max: "1", per_min: "5", per_max: "15" },
+      valuation: "cheap" as const,
+      page: 3,
+    };
+    const list = activeConditions(f);
+    expect(list.map((c) => c.label)).toEqual([
+      "バリュー株",
+      "プライム",
+      "グロース",
+      "配当利回りの過去5年比: 高い",
+      "配当利回り 3.5%以上",
+      "PBR 1倍以下",
+      "PER 5〜15倍",
+    ]);
+    const per = list.find((c) => c.id === "per")?.clear;
+    expect(per?.ranges).toEqual({ dividend_yield_min: "3.5", pbr_max: "1" });
+    expect(per?.page).toBe(1);
+    expect(list.find((c) => c.id === "market:プライム")?.clear.markets).toEqual(["グロース"]);
+  });
+
+  it("is empty for the defaults and ignores blank inputs", () => {
+    expect(activeConditions(DEFAULT_FILTERS)).toEqual([]);
+    expect(activeConditions({ ...DEFAULT_FILTERS, ranges: { pbr_min: " " } })).toEqual([]);
+  });
+
+  it("groups only the metrics the tab has", () => {
+    const reit = metricGroupsFor("reit").map((g) => g.label);
+    expect(reit).toEqual(["配当", "割安さ", "借入・物件"]);
+    expect(metricGroupsFor("reit")[1]?.keys).toEqual(["yield_percentile", "price"]);
+    const all = METRIC_GROUPS.flatMap((g) => g.keys).sort();
+    expect(all).toEqual(METRICS.map((m) => m.key).sort());
   });
 });
