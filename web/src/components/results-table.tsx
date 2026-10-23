@@ -163,13 +163,22 @@ function SizeBadge({ size }: { size: StockRow["size_class"] }) {
   );
 }
 
-/** 名称（なければコードだけ）と、コード・業種・規模 */
-export function NameCell({ r, link = true }: { r: StockRow; link?: boolean }) {
+/** 名称（なければコードだけ）と、コード・業種・規模。wrap は折り返して全部出す（スマホのカード。表は1行で省略） */
+export function NameCell({
+  r,
+  link = true,
+  wrap = false,
+}: {
+  r: StockRow;
+  link?: boolean;
+  wrap?: boolean;
+}) {
   const sector =
     r.kind === "stock" ? r.sector33 : r.kind === "reit" ? reitSectorLabel(r.reit?.sector) : null;
   const sub = [r.code, sector].filter(Boolean).join("・");
+  const nameClass = wrap ? "break-words" : "truncate";
   return (
-    <div className="flex min-w-0 flex-col">
+    <div className="flex min-w-0 flex-1 flex-col">
       {link ? (
         <a
           href={`/stocks/${r.code}`}
@@ -179,17 +188,17 @@ export function NameCell({ r, link = true }: { r: StockRow; link?: boolean }) {
             e.preventDefault();
             navigate(`/stocks/${r.code}`);
           }}
-          className="truncate font-medium underline-offset-4 hover:underline"
+          className={cn(nameClass, "font-medium underline-offset-4 hover:underline")}
           title={r.name ?? r.code}
         >
           {r.name ?? r.code}
         </a>
       ) : (
-        <span className="truncate font-medium" title={r.name ?? r.code}>
+        <span className={cn(nameClass, "font-medium")} title={r.name ?? r.code}>
           {r.name ?? r.code}
         </span>
       )}
-      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
         {r.name ? sub : sector}
         <SizeBadge size={r.size_class} />
       </span>
@@ -237,9 +246,14 @@ const BADGES: { key: keyof StockRow; label: string; hint: string; className: str
   },
 ];
 
+const policyOf = (r: StockRow) => r.progressive_dividend === true || r.no_dividend_cut === true;
+
+/** 出すバッジがあるか（スマホのカードは、なければ行ごと出さない） */
+export const hasFlags = (r: StockRow) => BADGES.some((b) => r[b.key] === true) || policyOf(r);
+
 export function Flags({ r }: { r: StockRow }) {
   const on = BADGES.filter((b) => r[b.key] === true);
-  const policy = r.progressive_dividend === true || r.no_dividend_cut === true;
+  const policy = policyOf(r);
   if (on.length === 0 && !policy) {
     return (
       <span className="text-xs text-muted-foreground" title="判定できる財務データがまだ足りません">
@@ -374,16 +388,19 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
 
       <ul className="flex flex-col gap-3 md:hidden">
         {rows.map((r) => (
-          <li key={r.code} className="rounded-xl border p-4">
-            <div className="mb-3 flex items-start justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-1">
-                <PortfolioToggle code={r.code} name={r.name ?? r.code} />
-                <NameCell r={r} />
-                {kind === "stock" && <DocPreview r={r} />}
-              </div>
-              {kind === "stock" && <Flags r={r} />}
+          <li key={r.code} className="rounded-xl border p-3">
+            {/* 名前に幅を全部使わせ、バッジは下の行へ（横に並べると名前が数文字で切れる） */}
+            <div className="flex items-start gap-1">
+              <PortfolioToggle code={r.code} name={r.name ?? r.code} />
+              <NameCell r={r} wrap />
+              {kind === "stock" && <DocPreview r={r} />}
             </div>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+            {kind === "stock" && hasFlags(r) && (
+              <div className="mt-2">
+                <Flags r={r} />
+              </div>
+            )}
+            <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 border-t pt-3 text-sm">
               {columns.map((c) => (
                 <div key={c.key} className="flex justify-between gap-2">
                   <dt className="text-muted-foreground">
