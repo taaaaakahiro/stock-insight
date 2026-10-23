@@ -63,7 +63,7 @@ function Flags({ r }: { r: Recommendation }) {
         <Badge
           variant="outline"
           className="border-expensive/40 bg-expensive/10 text-expensive"
-          title="直近の四半期の利益が一過性の疑い（純利益の伸びが営業利益の伸びを大きく上回る、または直近の四半期だけ増益で4四半期の合計は減益）"
+          title="直近の四半期の利益が一過性の疑い"
         >
           一過性?
         </Badge>
@@ -77,19 +77,19 @@ const GRADES: Record<Grade, { stars: string; label: string; className: string; h
     stars: "★★★",
     label: "強く推奨",
     className: "bg-cheap/15 text-cheap",
-    hint: "会社の配当方針（DOE・配当性向の下限・目標）と今の配当の差が大きく（下限割れ、または方針どおりなら配当 +20% 以上）、業績の質（通期黒字・増益・一過性でない）を満たし、割安",
+    hint: "増配の余地が大きく、業績もよく、割安",
   },
   recommend: {
     stars: "★★",
     label: "推奨",
     className: "bg-primary/10 text-primary",
-    hint: "業績の質を満たし、増配の根拠（方針との差・2年以上の連続増配・累進配当の方針）がある",
+    hint: "業績がよく、増配の根拠がある",
   },
   watch: {
     stars: "★",
     label: "注目",
     className: "bg-muted text-muted-foreground",
-    hint: "割安で増配も期待できるが、一過性の疑いがあるか、業績の判定材料が足りない",
+    hint: "割安で増配も期待できるが、確かめたい点がある",
   },
 };
 
@@ -242,11 +242,7 @@ function Item({ r }: { r: Recommendation }) {
             <GradeBadge grade={r.grade} />
             <Flags r={r} />
             {r.themes.map((t) => (
-              <Badge
-                key={t}
-                variant="secondary"
-                title="管理者が登録した注目テーマ。有価証券報告書の「事業の内容」にテーマの言葉がある"
-              >
+              <Badge key={t} variant="secondary" title="注目テーマ">
                 #{t}
               </Badge>
             ))}
@@ -319,16 +315,10 @@ export function RecommendPage({ isAdmin }: { isAdmin: boolean }) {
 
       {day ? (
         <>
-          <p className="text-sm text-muted-foreground">
-            ルールで絞った候補（株式で、配当利回りが8%未満、配当性向50%以下・PBR1.5倍以下、減配なし、バリュー株か「5年連続で配当あり
-            かつ 通期で赤字なし」）を、評価（★★★ 強く推奨 → ★★ 推奨 → ★
-            注目）と、注目テーマ（同じ評価の中で先）・会社の配当方針との差・業績の質の順に並べて上位10銘柄を選んでいます。評価と順位はルールで決め、AI
-            には有価証券報告書の配当方針の文と直近の四半期の数字を渡して、理由の文章だけを書かせています。理由を書けなかった銘柄は除くので、10銘柄より少ない日もあります。
-          </p>
           <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
             {(Object.keys(GRADES) as Grade[]).map((g) => (
-              <li key={g}>
-                <span aria-hidden>{GRADES[g].stars}</span> {GRADES[g].label}: {GRADES[g].hint}
+              <li key={g} title={GRADES[g].hint}>
+                <span aria-hidden>{GRADES[g].stars}</span> {GRADES[g].label}
               </li>
             ))}
           </ul>
