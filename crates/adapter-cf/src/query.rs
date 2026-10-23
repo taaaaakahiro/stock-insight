@@ -303,7 +303,7 @@ pub fn recommend_candidates() -> String {
 /// 最新日のレコメンド（順位順）に、銘柄名と最新の指標をつける
 pub fn recommendation_rows() -> String {
     format!(
-        "SELECT r.date, r.rank, r.grade, r.reason, r.model, r.created_at, {LIST_COLUMNS} \
+        "SELECT r.date, r.rank, r.grade, r.reason, r.model, r.created_at, r.source, {LIST_COLUMNS} \
          FROM recommendations r JOIN indicators_latest i ON i.code = r.code \
          LEFT JOIN stocks s ON s.code = r.code \
          WHERE r.date = (SELECT MAX(date) FROM recommendations) ORDER BY r.rank"
@@ -312,7 +312,11 @@ pub fn recommendation_rows() -> String {
 
 pub const RECOMMENDATION_EXISTS: &str = "SELECT COUNT(*) AS n FROM recommendations WHERE date = ?";
 pub const RECOMMENDATION_INSERT: &str = "INSERT INTO recommendations \
-     (date, rank, code, reason, model, created_at, grade) VALUES (?, ?, ?, ?, ?, ?, ?)";
+     (date, rank, code, reason, model, created_at, grade, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+pub const RECOMMENDATION_DELETE_DATE: &str = "DELETE FROM recommendations WHERE date = ?";
+/// 画面のボタンで作り直した回数（? は UNIX 秒。それ以降の分）。1日分は同じ created_at なので日付の数で数える
+pub const RECOMMENDATION_MANUAL_SINCE: &str =
+    "SELECT COUNT(DISTINCT created_at) AS n FROM recommendations WHERE source = 'manual' AND created_at >= ?";
 
 /// 選んだ銘柄の配当方針の文（有報・半期報告書の DOE・配当性向の数字を拾った文）。? は銘柄コード × n
 pub fn policy_phrases(n: usize) -> String {
@@ -523,7 +527,8 @@ mod tests {
         assert!(recommend_candidates().contains("COALESCE(s.kind, 'stock') = 'stock'"));
         assert!(recommendation_rows().contains(LIST_COLUMNS));
         assert!(recommendation_rows().contains("r.grade"));
-        assert!(RECOMMENDATION_INSERT.ends_with("grade) VALUES (?, ?, ?, ?, ?, ?, ?)"));
+        assert!(RECOMMENDATION_INSERT.ends_with("grade, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"));
+        assert!(recommendation_rows().contains("r.source,"));
         assert!(policy_phrases(3).contains("IN (?, ?, ?)"));
         assert!(policy_phrases(0).contains("IN (?)"));
         assert!(recommendation_rows().ends_with("ORDER BY r.rank"));

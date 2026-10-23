@@ -319,6 +319,8 @@ export type Recommendations = {
     date: string;
     model: string;
     created_at: number;
+    /** 画面のボタンで作り直した分なら true */
+    manual: boolean;
     rows: Recommendation[];
   } | null;
 };

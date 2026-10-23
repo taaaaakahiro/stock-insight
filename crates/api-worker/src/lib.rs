@@ -9,6 +9,7 @@
 //!   PUT /api/portfolio/:code        銘柄を登録
 //!   DELETE /api/portfolio/:code     登録を外す
 //!   GET /api/recommendations        最新日の AIレコメンド（F7）
+//!   POST /api/recommendations/regenerate  AIレコメンドを作り直す（管理者。日本時間で1日1回まで）
 //!   GET /api/themes                 注目テーマ（管理者が登録。全員が読める）
 //!   GET /api/themes/:id             1テーマと、当たった銘柄
 //!   POST /api/themes                テーマを登録して照合（管理者）
@@ -145,6 +146,10 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .put_async("/api/portfolio/:code", portfolio_add)
         .delete_async("/api/portfolio/:code", portfolio_remove)
         .get_async("/api/recommendations", recommendations)
+        .post_async(
+            "/api/recommendations/regenerate",
+            recommendations_regenerate,
+        )
         .get_async("/api/themes", themes_list)
         .get_async("/api/themes/:id", theme_detail)
         .post_async("/api/themes", theme_create)
@@ -512,6 +517,10 @@ async fn recommend_cron(env: &Env) {
         Ok(usecase::recommend::Outcome::Skipped(why)) => {
             worker::console_log!("cron {RECOMMEND_CRON}: skipped ({why})")
         }
+        // Cron は回数の上限を見ないので来ない
+        Ok(usecase::recommend::Outcome::Limited) => {
+            worker::console_log!("cron {RECOMMEND_CRON}: limited")
+        }
         Err(e) => worker::console_error!("cron {RECOMMEND_CRON}: {e}"),
     }
 }
@@ -524,6 +533,7 @@ async fn recommendations(_req: Request, ctx: RouteContext<AuthUser>) -> Result<R
                 "date": d.date,
                 "model": d.model,
                 "created_at": d.created_at,
+                "manual": d.manual,
                 "rows": d.rows.iter().map(|r| {
                     let mut v = row_json(&r.stock);
                     v["rank"] = json!(r.rank);
@@ -534,6 +544,48 @@ async fn recommendations(_req: Request, ctx: RouteContext<AuthUser>) -> Result<R
                 }).collect::<Vec<_>>(),
             })),
         })),
+        Err(e) => internal(&e.0),
+    }
+}
+
+/// 画面のボタン: 直近のバッチが成功していれば作り直す（管理者。1日1回まで）。AI の呼び出しがあるので十数秒かかる
+async fn recommendations_regenerate(
+    _req: Request,
+    ctx: RouteContext<AuthUser>,
+) -> Result<Response> {
+    if let Err(res) = require_admin(&ctx) {
+        return res;
+    }
+    let repo = D1Recommendations::new(ctx.env.d1(DB_BINDING)?);
+    let ai = WorkersAi::new(ctx.env.ai(AI_BINDING)?);
+    match usecase::recommend::regenerate(&repo, &ai, WorkerClock.now_unix()).await {
+        Ok(usecase::recommend::Outcome::Saved {
+            date,
+            picks,
+            dropped,
+        }) => {
+            worker::console_log!(
+                "regenerate by {}: saved {picks} recommendations for {date}",
+                ctx.data.id
+            );
+            for d in &dropped {
+                worker::console_log!("regenerate: dropped ({d})");
+            }
+            json_response(
+                &json!({ "date": date, "picks": picks, "dropped": dropped }),
+                200,
+                "no-store",
+            )
+        }
+        Ok(usecase::recommend::Outcome::Limited) => json_error(
+            429,
+            "limited",
+            &format!(
+                "up to {} manual regeneration(s) per day",
+                usecase::recommend::MANUAL_PER_DAY
+            ),
+        ),
+        Ok(usecase::recommend::Outcome::Skipped(why)) => json_error(409, "skipped", &why),
         Err(e) => internal(&e.0),
     }
 }

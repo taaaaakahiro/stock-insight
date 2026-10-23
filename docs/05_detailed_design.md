@@ -182,7 +182,7 @@ J-Quants を1ジョブで順に取り込むのは、J-Quants が日付指定で�
 | stock_themes | theme_id, code (PK: theme_id+code), matched_word。テーマを保存するたびに `instr(business_text, 言葉)` で作り直す | 0017 |
 | sync_state | key (PK。`jq_synced_until`・`edinet_listed_until`), value, updated_at | 0004 |
 | splits | code, date（権利落ち日）(PK: code+date), factor（`AdjFactor`。1:2 の分割なら 0.5）, fetched_at | 0009 |
-| recommendations | date（株価の日付）, rank (PK: date+rank), code, reason, model, created_at, grade（strong / recommend / watch。評価を付ける前の行は NULL） | 0008, 0016 |
+| recommendations | date（株価の日付）, rank (PK: date+rank), code, reason, model, created_at, grade（strong / recommend / watch。評価を付ける前の行は NULL）, source（cron / manual。画面のボタンで作り直した分。列を足す前の行は NULL） | 0008, 0016, 0018 |
 | batch_runs | run_id (PK), started_at, finished_at, target, succeeded, failed, status（running/succeeded/failed） | 0001 |
 
 索引: indicators_latest の dividend_yield・pbr・payout_ratio・valuation、stocks の kind。
