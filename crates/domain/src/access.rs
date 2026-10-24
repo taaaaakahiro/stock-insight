@@ -1,5 +1,44 @@
 //! 誰がこのアプリを使えるか（F1）。認証サービスに依存しない形で判定する。
 
+/// 利用を許可されたユーザーの区分。管理者はスーパーユーザー、それ以外は一般。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Superuser,
+    General,
+}
+
+/// 全ユーザーに影響する管理操作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Permission {
+    ManageThemes,
+    RegenerateRecommendations,
+}
+
+impl Role {
+    pub fn from_admin(is_admin: bool) -> Self {
+        if is_admin {
+            Self::Superuser
+        } else {
+            Self::General
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Superuser => "superuser",
+            Self::General => "general",
+        }
+    }
+
+    pub fn allows(self, permission: Permission) -> bool {
+        match permission {
+            Permission::ManageThemes | Permission::RegenerateRecommendations => {
+                self == Self::Superuser
+            }
+        }
+    }
+}
+
 /// 認証サービス（Clerk）から得たユーザーの情報
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectoryUser {
@@ -57,6 +96,19 @@ pub fn decide_access(user: &DirectoryUser, admin_email: Option<&str>) -> Access 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_superusers_can_manage_shared_content() {
+        for permission in [
+            Permission::ManageThemes,
+            Permission::RegenerateRecommendations,
+        ] {
+            assert!(Role::from_admin(true).allows(permission));
+            assert!(!Role::from_admin(false).allows(permission));
+        }
+        assert_eq!(Role::from_admin(true).as_str(), "superuser");
+        assert_eq!(Role::from_admin(false).as_str(), "general");
+    }
 
     fn user(google: bool, flagged: bool) -> DirectoryUser {
         DirectoryUser {

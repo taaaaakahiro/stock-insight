@@ -28,7 +28,7 @@ use adapter_cf::d1::{D1Indicators, D1Portfolio};
 use adapter_cf::d1_recommend::D1Recommendations;
 use adapter_cf::d1_themes::D1Themes;
 use adapter_cf::users::D1Users;
-use domain::access::Access;
+use domain::access::{Access, Permission};
 use domain::screening::ScreeningFilter;
 use serde_json::{json, Value};
 use std::cell::RefCell;
@@ -218,7 +218,15 @@ async fn auth(req: &Request, env: &Env) -> std::result::Result<AuthUser, Result<
 async fn me(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
     let u = &ctx.data;
     json_response(
-        &json!({ "id": u.id, "email": u.email, "display_name": u.display_name, "is_admin": u.is_admin }),
+        &json!({
+            "id": u.id, "email": u.email, "display_name": u.display_name,
+            "is_admin": u.is_admin,
+            "role": u.role().as_str(),
+            "permissions": {
+                "manage_themes": u.can(Permission::ManageThemes),
+                "regenerate_recommendations": u.can(Permission::RegenerateRecommendations),
+            },
+        }),
         200,
         "no-store",
     )
@@ -554,7 +562,7 @@ async fn recommendations_regenerate(
     _req: Request,
     ctx: RouteContext<AuthUser>,
 ) -> Result<Response> {
-    if let Err(res) = require_admin(&ctx) {
+    if let Err(res) = require_permission(&ctx, Permission::RegenerateRecommendations) {
         return res;
     }
     let repo = D1Recommendations::new(ctx.env.d1(DB_BINDING)?);
@@ -588,8 +596,11 @@ fn theme_json(t: &usecase::themes::Theme) -> Value {
 }
 
 /// 管理者だけが使える操作。管理者でなければ 403 の応答を Err に入れる
-fn require_admin(ctx: &RouteContext<AuthUser>) -> std::result::Result<(), Result<Response>> {
-    if ctx.data.is_admin {
+fn require_permission(
+    ctx: &RouteContext<AuthUser>,
+    permission: Permission,
+) -> std::result::Result<(), Result<Response>> {
+    if ctx.data.can(permission) {
         Ok(())
     } else {
         Err(json_error(403, "forbidden", "admin only"))
@@ -655,7 +666,7 @@ async fn theme_detail(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Resp
 }
 
 async fn theme_create(mut req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
-    if let Err(res) = require_admin(&ctx) {
+    if let Err(res) = require_permission(&ctx, Permission::ManageThemes) {
         return res;
     }
     let Some((name, words)) = req
@@ -676,7 +687,7 @@ async fn theme_create(mut req: Request, ctx: RouteContext<AuthUser>) -> Result<R
 }
 
 async fn theme_update(mut req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
-    if let Err(res) = require_admin(&ctx) {
+    if let Err(res) = require_permission(&ctx, Permission::ManageThemes) {
         return res;
     }
     let Some(id) = theme_id(&ctx) else {
@@ -700,7 +711,7 @@ async fn theme_update(mut req: Request, ctx: RouteContext<AuthUser>) -> Result<R
 }
 
 async fn theme_delete(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
-    if let Err(res) = require_admin(&ctx) {
+    if let Err(res) = require_permission(&ctx, Permission::ManageThemes) {
         return res;
     }
     let Some(id) = theme_id(&ctx) else {

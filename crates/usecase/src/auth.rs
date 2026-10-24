@@ -2,7 +2,7 @@
 //! Clerk への問い合わせは1ユーザー1時間に1回までにし、結果は users に保存する。
 
 use crate::{Clock, PortError};
-use domain::access::{decide_access, Access, DirectoryUser};
+use domain::access::{decide_access, Access, DirectoryUser, Permission, Role};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -16,6 +16,16 @@ pub struct AuthUser {
     pub email: String,
     pub display_name: String,
     pub is_admin: bool,
+}
+
+impl AuthUser {
+    pub fn role(&self) -> Role {
+        Role::from_admin(self.is_admin)
+    }
+
+    pub fn can(&self, permission: Permission) -> bool {
+        self.role().allows(permission)
+    }
 }
 
 /// users テーブルの1行
