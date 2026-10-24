@@ -5,6 +5,7 @@ pub mod access;
 pub mod analysis;
 pub mod calendar;
 pub mod disclosure;
+pub mod dividend_policy;
 pub mod indicators;
 pub mod model;
 pub mod portfolio;
@@ -14,6 +15,7 @@ pub mod reit;
 pub mod screening;
 pub mod split;
 pub mod stock_master;
+pub mod theme;
 
 pub use indicators::*;
 pub use model::*;

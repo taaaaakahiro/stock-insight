@@ -45,8 +45,29 @@ export type StockRow = {
   doe_goal: number | null;
   /** 会社予想の配当で見た DOE（予想がなければ null。実績は doe） */
   doe_forecast: number | null;
+  /** 有報・半期報告書に書かれた配当性向の下限・目標（新しい書類の値。書かれていなければ null） */
+  payout_floor: number | null;
+  payout_goal: number | null;
+  /** 会社予想の配当で見た配当性向（予想がなければ null。実績は payout_ratio） */
+  payout_forecast: number | null;
+  /** 会社の配当方針（DOE・配当性向の下限・目標）と今の配当の乖離。方針がないか満たしていれば null */
+  policy_gap: PolicyGap | null;
+  /** 直近の四半期単独の営業利益・純利益の前年同期比と、直近4四半期合計の営業利益の伸び */
+  op_growth_q: number | null;
+  net_growth_q: number | null;
+  op_growth_ttm: number | null;
+  /** 利益が一過性の疑い（純利益の伸びが営業利益の伸びを大きく上回る、または直近の四半期だけ増益で4四半期の合計は減益） */
+  profit_one_off: boolean | null;
   /** REIT の金利・稼働率（有報から。REIT 以外や未取り込みなら null）。比率は小数 */
   reit?: ReitListFields | null;
+};
+
+/** 方針どおりに払った場合、配当が何 % 増えるか（upside: 0.2 = 20% 増）。下限割れを目標未達より重く見る */
+export type PolicyGap = {
+  basis: "doe_floor" | "doe_goal" | "payout_floor" | "payout_goal";
+  policy: number;
+  now: number;
+  upside: number;
 };
 
 export type ReitListFields = {
@@ -133,12 +154,16 @@ export type EdinetDoc = {
   no_dividend_cut: boolean;
   dividend_raise: boolean;
   doe_target: boolean;
-  /** 配当性向の目標（0.3 = 30%） */
+  /** 配当性向の下限（なければ目標）（0.3 = 30%）。古い列で、中身は payout_floor ?? payout_goal */
   payout_target: number | null;
   /** DOE の下限・目標（0.035 = 3.5%）と、その数字を拾った文 */
   doe_floor: number | null;
   doe_goal: number | null;
   doe_phrase: string | null;
+  /** 配当性向の下限・目標と、その数字を拾った文 */
+  payout_floor: number | null;
+  payout_goal: number | null;
+  payout_phrase: string | null;
   /** 手がかりの言葉を含む文 */
   phrases: string[];
 };
@@ -235,15 +260,19 @@ export function apiGet<T>(
 }
 
 export async function apiFetch<T>(
-  method: "GET" | "PUT" | "DELETE",
+  method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
   getToken: () => Promise<string | null>,
   signal?: AbortSignal,
+  body?: unknown,
 ): Promise<T> {
   const token = await getToken();
+  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
   const res = await fetch(path, {
     method,
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
     signal,
   });
   if (!res.ok) {
@@ -259,8 +288,30 @@ export async function apiFetch<T>(
   return (await res.json()) as T;
 }
 
-/** AIレコメンド（F7）の1銘柄。一覧と同じ指標に、順位と理由がつく */
-export type Recommendation = StockRow & { rank: number; reason: string };
+/** 3段階の評価。strong = 強く推奨 / recommend = 推奨 / watch = 注目。評価を付ける前の日の結果は null */
+export type Grade = "strong" | "recommend" | "watch";
+
+/** AIレコメンド（F7）の1銘柄。一覧と同じ指標に、順位・評価・理由と、当たっている注目テーマの名前がつく */
+export type Recommendation = StockRow & {
+  rank: number;
+  grade: Grade | null;
+  reason: string;
+  themes: string[];
+};
+
+/** 注目テーマ（管理者が登録）。words は照合に使う言葉、count は当たった銘柄数 */
+export type Theme = {
+  id: number;
+  name: string;
+  words: string[];
+  count: number;
+  updated_at: number;
+};
+export type Themes = { themes: Theme[] };
+export type ThemeDetail = {
+  theme: Theme;
+  stocks: { code: string; name: string | null; matched_word: string }[];
+};
 
 /** day は最新日の結果。まだ1日も作っていなければ null */
 export type Recommendations = {
@@ -268,6 +319,8 @@ export type Recommendations = {
     date: string;
     model: string;
     created_at: number;
+    /** 画面のボタンで作り直した分なら true */
+    manual: boolean;
     rows: Recommendation[];
   } | null;
 };

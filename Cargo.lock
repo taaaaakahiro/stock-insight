@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adapter-batch"
-version = "0.3.2"
+version = "0.3.11"
 dependencies = [
  "domain",
  "flate2",
@@ -17,12 +17,14 @@ dependencies = [
 
 [[package]]
 name = "adapter-cf"
-version = "0.3.2"
+version = "0.3.11"
 dependencies = [
  "domain",
  "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "usecase",
+ "wasm-bindgen",
  "web-sys",
  "worker",
 ]
@@ -35,7 +37,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "api-worker"
-version = "0.3.2"
+version = "0.3.11"
 dependencies = [
  "adapter-cf",
  "domain",
@@ -90,7 +92,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "batch-cli"
-version = "0.3.2"
+version = "0.3.11"
 dependencies = [
  "adapter-batch",
  "domain",
@@ -209,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "0.3.2"
+version = "0.3.11"
 
 [[package]]
 name = "equivalent"
@@ -1244,7 +1246,7 @@ dependencies = [
 
 [[package]]
 name = "usecase"
-version = "0.3.2"
+version = "0.3.11"
 dependencies = [
  "domain",
 ]

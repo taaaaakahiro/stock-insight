@@ -35,6 +35,19 @@ macro_rules! doe_goal_sql {
          ORDER BY e.submitted DESC LIMIT 1)"
     };
 }
+/// 配当性向の下限・目標も同じく、書かれた新しい書類の値
+macro_rules! payout_floor_sql {
+    () => {
+        "(SELECT e.payout_floor FROM edinet_docs e WHERE e.code = i.code AND e.payout_floor IS NOT NULL \
+         ORDER BY e.submitted DESC LIMIT 1)"
+    };
+}
+macro_rules! payout_goal_sql {
+    () => {
+        "(SELECT e.payout_goal FROM edinet_docs e WHERE e.code = i.code AND e.payout_goal IS NOT NULL \
+         ORDER BY e.submitted DESC LIMIT 1)"
+    };
+}
 /// 比べる DOE: 会社予想の配当があれば 利回り × PBR（予想の配当 ÷ BPS）、なければ実績の DOE
 const DOE_NOW: &str =
     "(CASE WHEN i.dividend_basis = 'forecast' THEN i.dividend_yield * i.pbr ELSE i.doe END)";
@@ -73,12 +86,17 @@ pub const LIST_COLUMNS: &str = concat!(
      i.payout_ratio, i.doe, i.consecutive_increases, i.operating_margin, i.no_loss_years, i.profit_uptrend, \
      i.valuation, i.fetched_at, s.name, COALESCE(s.kind, 'stock') AS kind, s.market, s.sector33, s.size_class, \
      i.dividend_every_year, i.no_quarterly_loss, i.is_value, i.data_years, i.sales_growth, i.op_growth, i.dividend_cut, \
+     i.op_growth_q, i.net_growth_q, i.op_growth_ttm, i.profit_one_off, \
      (SELECT MAX(e.progressive_dividend) FROM edinet_docs e WHERE e.code = i.code) AS progressive_dividend, \
      (SELECT MAX(e.no_dividend_cut) FROM edinet_docs e WHERE e.code = i.code) AS no_dividend_cut, ",
     doe_floor_sql!(),
     " AS doe_floor, ",
     doe_goal_sql!(),
-    " AS doe_goal"
+    " AS doe_goal, ",
+    payout_floor_sql!(),
+    " AS payout_floor, ",
+    payout_goal_sql!(),
+    " AS payout_goal"
 );
 
 /// マスタにまだない銘柄も消えないよう LEFT JOIN（種類は株式として扱う）。REIT の要約も LEFT JOIN
@@ -204,8 +222,32 @@ pub fn portfolio_rows() -> String {
 /// 1銘柄の EDINET の書類と配当方針の手がかり（? は銘柄コード）
 pub const EDINET_DOCS: &str =
     "SELECT doc_kind, doc_id, submitted, period_end, progressive_dividend, \
-     no_dividend_cut, dividend_raise, doe_target, payout_target, doe_floor, doe_goal, doe_phrase, phrases \
+     no_dividend_cut, dividend_raise, doe_target, payout_target, doe_floor, doe_goal, doe_phrase, \
+     payout_floor, payout_goal, payout_phrase, phrases \
      FROM edinet_docs WHERE code = ? ORDER BY doc_kind";
+
+/// 注目テーマ（管理者が登録）。count は照合で当たった銘柄数
+pub const THEMES: &str = "SELECT t.id, t.name, t.words, t.updated_at, \
+     (SELECT COUNT(*) FROM stock_themes s WHERE s.theme_id = t.id) AS count \
+     FROM themes t ORDER BY t.name";
+pub const THEME: &str = "SELECT t.id, t.name, t.words, t.updated_at, \
+     (SELECT COUNT(*) FROM stock_themes s WHERE s.theme_id = t.id) AS count \
+     FROM themes t WHERE t.id = ?";
+pub const THEME_INSERT: &str =
+    "INSERT INTO themes (name, words, created_at, updated_at) VALUES (?, ?, ?, ?) RETURNING id";
+pub const THEME_UPDATE: &str = "UPDATE themes SET name = ?, words = ?, updated_at = ? WHERE id = ?";
+pub const THEME_DELETE: &str = "DELETE FROM themes WHERE id = ?";
+pub const STOCK_THEMES_DELETE: &str = "DELETE FROM stock_themes WHERE theme_id = ?";
+/// 1つの言葉を「事業の内容」の文と突き合わせて入れる（? は theme_id, 言葉, 言葉）。先に当たった言葉を残す
+pub const STOCK_THEMES_MATCH: &str =
+    "INSERT OR IGNORE INTO stock_themes (theme_id, code, matched_word) \
+     SELECT DISTINCT ?, code, ? FROM edinet_docs WHERE instr(business_text, ?) > 0";
+pub const THEME_STOCKS: &str =
+    "SELECT st.code, s.name, st.matched_word FROM stock_themes st LEFT JOIN stocks s ON s.code = st.code \
+     WHERE st.theme_id = ? ORDER BY st.code";
+/// 銘柄ごとのテーマ名（レコメンドの順位づけと表示に使う）
+pub const STOCK_THEME_NAMES: &str =
+    "SELECT st.code, t.name FROM stock_themes st JOIN themes t ON t.id = st.theme_id ORDER BY st.code, t.name";
 
 pub const PORTFOLIO_CODES: &str =
     "SELECT code FROM portfolio_items WHERE user_id = ? ORDER BY added_at, code";
@@ -261,7 +303,7 @@ pub fn recommend_candidates() -> String {
 /// 最新日のレコメンド（順位順）に、銘柄名と最新の指標をつける
 pub fn recommendation_rows() -> String {
     format!(
-        "SELECT r.date, r.rank, r.reason, r.model, r.created_at, {LIST_COLUMNS} \
+        "SELECT r.date, r.rank, r.grade, r.reason, r.model, r.created_at, r.source, {LIST_COLUMNS} \
          FROM recommendations r JOIN indicators_latest i ON i.code = r.code \
          LEFT JOIN stocks s ON s.code = r.code \
          WHERE r.date = (SELECT MAX(date) FROM recommendations) ORDER BY r.rank"
@@ -270,7 +312,18 @@ pub fn recommendation_rows() -> String {
 
 pub const RECOMMENDATION_EXISTS: &str = "SELECT COUNT(*) AS n FROM recommendations WHERE date = ?";
 pub const RECOMMENDATION_INSERT: &str = "INSERT INTO recommendations \
-     (date, rank, code, reason, model, created_at) VALUES (?, ?, ?, ?, ?, ?)";
+     (date, rank, code, reason, model, created_at, grade, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+pub const RECOMMENDATION_DELETE_DATE: &str = "DELETE FROM recommendations WHERE date = ?";
+
+/// 選んだ銘柄の配当方針の文（有報・半期報告書の DOE・配当性向の数字を拾った文）。? は銘柄コード × n
+pub fn policy_phrases(n: usize) -> String {
+    let marks = vec!["?"; n.max(1)].join(", ");
+    format!(
+        "SELECT code, doe_phrase, payout_phrase FROM edinet_docs \
+         WHERE code IN ({marks}) AND (doe_phrase IS NOT NULL OR payout_phrase IS NOT NULL) \
+         ORDER BY code, submitted DESC"
+    )
+}
 
 /// 1銘柄の REIT の要約と明細（? は銘柄コード）
 pub const REIT_DETAIL: &str = "SELECT p.doc_id, p.submitted, p.period_end, p.sector, p.short_loans, p.long_loans, \
@@ -385,9 +438,11 @@ mod tests {
     #[test]
     fn doe_columns_use_the_newest_document_and_forecast() {
         assert!(LIST_COLUMNS.ends_with(&format!(
-            "{} AS doe_floor, {} AS doe_goal",
+            "{} AS doe_floor, {} AS doe_goal, {} AS payout_floor, {} AS payout_goal",
             doe_floor_sql!(),
-            doe_goal_sql!()
+            doe_goal_sql!(),
+            payout_floor_sql!(),
+            payout_goal_sql!()
         )));
         assert!(doe_floor_sql!().contains("ORDER BY e.submitted DESC LIMIT 1"));
         let margin = metric_sql(Metric::DoeMargin);
@@ -468,6 +523,11 @@ mod tests {
             .contains(&format!("SELECT {LIST_COLUMNS} FROM indicators_latest")));
         assert!(recommend_candidates().contains("COALESCE(s.kind, 'stock') = 'stock'"));
         assert!(recommendation_rows().contains(LIST_COLUMNS));
+        assert!(recommendation_rows().contains("r.grade"));
+        assert!(RECOMMENDATION_INSERT.ends_with("grade, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"));
+        assert!(recommendation_rows().contains("r.source,"));
+        assert!(policy_phrases(3).contains("IN (?, ?, ?)"));
+        assert!(policy_phrases(0).contains("IN (?)"));
         assert!(recommendation_rows().ends_with("ORDER BY r.rank"));
     }
 }

@@ -108,7 +108,7 @@ fn multi_row(
 const INDICATOR_COLUMNS: &str = "code, run_id, fetched_at, price, price_date, dividend_ttm, dividend_yield, \
      yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin, no_loss_years, \
      profit_uptrend, valuation, fin_doc_id, fin_submitted, dividend_every_year, no_quarterly_loss, is_value, data_years, \
-     sales_growth, op_growth, dividend_basis, dividend_cut";
+     sales_growth, op_growth, dividend_basis, dividend_cut, op_growth_q, net_growth_q, op_growth_ttm, profit_one_off";
 
 /// 一覧用の最新指標（1銘柄1行）を upsert する
 pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
@@ -148,12 +148,16 @@ pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
                     Val::Text(if f { "forecast" } else { "actual" }.into())
                 }),
                 Val::opt_b(i.dividend_cut),
+                Val::opt_f(i.op_growth_q),
+                Val::opt_f(i.net_growth_q),
+                Val::opt_f(i.op_growth_ttm),
+                Val::opt_b(i.profit_one_off),
             ]
         })
         .collect();
     multi_row(
         &format!("INSERT INTO indicators_latest ({INDICATOR_COLUMNS})"),
-        27,
+        31,
         "ON CONFLICT(code) DO UPDATE SET run_id = excluded.run_id, fetched_at = excluded.fetched_at, \
          price = excluded.price, price_date = excluded.price_date, dividend_ttm = excluded.dividend_ttm, \
          dividend_yield = excluded.dividend_yield, yield_percentile = excluded.yield_percentile, pbr = excluded.pbr, \
@@ -164,7 +168,9 @@ pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
          dividend_every_year = excluded.dividend_every_year, no_quarterly_loss = excluded.no_quarterly_loss, \
          is_value = excluded.is_value, data_years = excluded.data_years, \
          sales_growth = excluded.sales_growth, op_growth = excluded.op_growth, \
-         dividend_basis = excluded.dividend_basis, dividend_cut = excluded.dividend_cut",
+         dividend_basis = excluded.dividend_basis, dividend_cut = excluded.dividend_cut, \
+         op_growth_q = excluded.op_growth_q, net_growth_q = excluded.net_growth_q, \
+         op_growth_ttm = excluded.op_growth_ttm, profit_one_off = excluded.profit_one_off",
         rows,
         usize::MAX,
     )
@@ -386,20 +392,26 @@ pub fn edinet_docs_stmts(docs: &[EdinetDoc], fetched_at: i64) -> Vec<Stmt> {
                 Val::opt_f(s.doe_floor),
                 Val::opt_f(s.doe_goal),
                 s.doe_phrase.clone().map_or(Val::Null, Val::Text),
+                Val::opt_f(s.payout_floor),
+                Val::opt_f(s.payout_goal),
+                s.payout_phrase.clone().map_or(Val::Null, Val::Text),
+                Val::Text(e.business_text.clone()),
             ]
         })
         .collect();
     multi_row(
         "INSERT INTO edinet_docs (code, doc_kind, doc_id, submitted, period_end, r2_key, progressive_dividend, \
          no_dividend_cut, dividend_raise, doe_target, payout_target, phrases, fetched_at, \
-         doe_floor, doe_goal, doe_phrase)",
-        16,
+         doe_floor, doe_goal, doe_phrase, payout_floor, payout_goal, payout_phrase, business_text)",
+        20,
         "ON CONFLICT(code, doc_kind) DO UPDATE SET doc_id = excluded.doc_id, submitted = excluded.submitted, \
          period_end = excluded.period_end, r2_key = excluded.r2_key, \
          progressive_dividend = excluded.progressive_dividend, no_dividend_cut = excluded.no_dividend_cut, \
          dividend_raise = excluded.dividend_raise, doe_target = excluded.doe_target, \
          payout_target = excluded.payout_target, phrases = excluded.phrases, fetched_at = excluded.fetched_at, \
-         doe_floor = excluded.doe_floor, doe_goal = excluded.doe_goal, doe_phrase = excluded.doe_phrase",
+         doe_floor = excluded.doe_floor, doe_goal = excluded.doe_goal, doe_phrase = excluded.doe_phrase, \
+         payout_floor = excluded.payout_floor, payout_goal = excluded.payout_goal, \
+         payout_phrase = excluded.payout_phrase, business_text = excluded.business_text",
         rows,
         usize::MAX,
     )
@@ -612,17 +624,23 @@ mod tests {
                 op_growth: None,
                 dividend_is_forecast: Some(true),
                 dividend_cut: Some(true),
+                op_growth_q: Some(0.2),
+                net_growth_q: None,
+                op_growth_ttm: None,
+                profit_one_off: Some(false),
             },
             fin_doc_id: None,
             fin_submitted: None,
         };
         let snaps: Vec<_> = (0..12).map(|i| snap(&format!("{}", 1300 + i))).collect();
         let stmts = snapshots_stmts(&snaps);
-        assert_eq!(stmts.len(), 4, "27列なので1文3行まで");
+        assert_eq!(stmts.len(), 4, "31列なので1文3行まで");
         assert!(stmts.iter().all(|s| s.params.len() <= 100));
         assert_eq!(stmts[0].sql.matches("(?, ").count(), 3);
         assert_eq!(stmts[0].params[25], Val::Text("forecast".into()));
         assert_eq!(stmts[0].params[26], Val::Int(1));
+        assert_eq!(stmts[0].params[27], Val::Real(0.2));
+        assert_eq!(stmts[0].params[30], Val::Int(0));
         let h = price_history_stmts(
             &vec![("7203".into(), "x".into(), "2026-07-01".into()); 25],
             1,
@@ -646,14 +664,17 @@ mod tests {
             signals: DividendSignals {
                 progressive: true,
                 payout_target: Some(0.3),
+                payout_floor: Some(0.3),
+                payout_phrase: Some("配当性向30%以上を基本とします。".into()),
                 doe_floor: Some(0.035),
                 doe_phrase: Some("DOE3.5%を下限とします。".into()),
                 phrases: vec!["累進配当を基本方針とし…".into()],
                 ..Default::default()
             },
+            business_text: "当社グループは自動車の製造販売を…".into(),
         };
         let stmts = edinet_docs_stmts(&vec![doc; 8], 1);
-        assert_eq!(stmts.len(), 2, "16列なので1文6行まで");
+        assert_eq!(stmts.len(), 2, "20列なので1文5行まで");
         let p = &stmts[0].params;
         assert_eq!(p[5], Val::Text("edinet/7203/annual.json.gz".into()));
         assert_eq!(p[6], Val::Int(1));
@@ -662,6 +683,10 @@ mod tests {
         assert_eq!(p[13], Val::Real(0.035));
         assert_eq!(p[14], Val::Null);
         assert_eq!(p[15], Val::Text("DOE3.5%を下限とします。".into()));
+        assert_eq!(p[16], Val::Real(0.3));
+        assert_eq!(p[17], Val::Null);
+        assert_eq!(p[18], Val::Text("配当性向30%以上を基本とします。".into()));
+        assert_eq!(p[19], Val::Text("当社グループは自動車の製造販売を…".into()));
         let del = delete_edinet_doc_stmt(&("7203".into(), DocKind::Semiannual));
         assert_eq!(
             del.render(),

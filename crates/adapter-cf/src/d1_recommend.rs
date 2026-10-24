@@ -2,9 +2,9 @@
 
 use crate::d1::Row;
 use crate::query;
-use domain::recommend::Pick;
+use domain::recommend::{Grade, Pick};
 use serde::Deserialize;
-use usecase::recommend::{RecommendRepository, RecommendationRow, Recommendations};
+use usecase::recommend::{RecommendRepository, RecommendationRow, Recommendations, Source};
 use usecase::screening::{DataStatus, StockRow};
 use usecase::PortError;
 use worker::wasm_bindgen::JsValue;
@@ -39,9 +39,11 @@ struct RunRow {
 struct RecoRow {
     date: String,
     rank: i64,
+    grade: Option<String>,
     reason: String,
     model: String,
     created_at: i64,
+    source: Option<String>,
 }
 
 impl RecommendRepository for D1Recommendations {
@@ -74,6 +76,57 @@ impl RecommendRepository for D1Recommendations {
         Ok(rows.into_iter().map(StockRow::from).collect())
     }
 
+    /// 配当方針の文。1銘柄に有報と半期報告書の両方があれば両方（新しい順）。同じ文は1つにする
+    async fn policy_phrases(&self, codes: &[String]) -> Result<Vec<(String, String)>, PortError> {
+        if codes.is_empty() {
+            return Ok(vec![]);
+        }
+        #[derive(Deserialize)]
+        struct PhraseRow {
+            code: String,
+            doe_phrase: Option<String>,
+            payout_phrase: Option<String>,
+        }
+        let args: Vec<JsValue> = codes.iter().map(|c| JsValue::from_str(c)).collect();
+        let rows: Vec<PhraseRow> = self
+            .db
+            .prepare(query::policy_phrases(codes.len()))
+            .bind(&args)
+            .map_err(err)?
+            .all()
+            .await
+            .map_err(err)?
+            .results()
+            .map_err(err)?;
+        let mut out: Vec<(String, String)> = vec![];
+        for r in rows {
+            for p in [r.doe_phrase, r.payout_phrase].into_iter().flatten() {
+                let item = (r.code.clone(), p);
+                if !out.contains(&item) {
+                    out.push(item);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    async fn themes(&self) -> Result<Vec<(String, String)>, PortError> {
+        #[derive(Deserialize)]
+        struct ThemeRow {
+            code: String,
+            name: String,
+        }
+        let rows: Vec<ThemeRow> = self
+            .db
+            .prepare(query::STOCK_THEME_NAMES)
+            .all()
+            .await
+            .map_err(err)?
+            .results()
+            .map_err(err)?;
+        Ok(rows.into_iter().map(|r| (r.code, r.name)).collect())
+    }
+
     async fn exists(&self, date: &str) -> Result<bool, PortError> {
         let n: Option<f64> = self
             .db
@@ -86,17 +139,27 @@ impl RecommendRepository for D1Recommendations {
         Ok(n.unwrap_or(0.0) > 0.0)
     }
 
-    /// 1日分を1回の batch で書く（D1 への要求と書き込み行数を最小にする）
+    /// 1日分を1回の batch で書く（D1 への要求と書き込み行数を最小にする）。replace ならその日の行を先に消す
     async fn save(
         &self,
         date: &str,
         model: &str,
         picks: &[Pick],
         now: i64,
+        source: Source,
+        replace: bool,
     ) -> Result<(), PortError> {
-        let stmts = picks
-            .iter()
-            .map(|p| {
+        let mut stmts = vec![];
+        if replace {
+            stmts.push(
+                self.db
+                    .prepare(query::RECOMMENDATION_DELETE_DATE)
+                    .bind(&[JsValue::from_str(date)])
+                    .map_err(err)?,
+            );
+        }
+        for p in picks {
+            stmts.push(
                 self.db
                     .prepare(query::RECOMMENDATION_INSERT)
                     .bind(&[
@@ -106,10 +169,12 @@ impl RecommendRepository for D1Recommendations {
                         JsValue::from_str(&p.reason),
                         JsValue::from_str(model),
                         JsValue::from_f64(now as f64),
+                        JsValue::from_str(p.grade.as_str()),
+                        JsValue::from_str(source.as_str()),
                     ])
-                    .map_err(err)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+                    .map_err(err)?,
+            );
+        }
         self.db.batch(stmts).await.map_err(err)?;
         Ok(())
     }
@@ -126,17 +191,28 @@ impl RecommendRepository for D1Recommendations {
         let Some(first) = meta.first() else {
             return Ok(None);
         };
+        let themes = self.themes().await?;
         let day = Recommendations {
             date: first.date.clone(),
             model: first.model.clone(),
             created_at: first.created_at,
+            manual: first.source.as_deref() == Some("manual"),
             rows: meta
                 .iter()
                 .zip(stocks)
-                .map(|(m, s)| RecommendationRow {
-                    rank: m.rank as u32,
-                    reason: m.reason.clone(),
-                    stock: StockRow::from(s),
+                .map(|(m, s)| {
+                    let stock = StockRow::from(s);
+                    RecommendationRow {
+                        rank: m.rank as u32,
+                        grade: m.grade.as_deref().and_then(Grade::parse),
+                        reason: m.reason.clone(),
+                        themes: themes
+                            .iter()
+                            .filter(|(code, _)| *code == stock.code)
+                            .map(|(_, name)| name.clone())
+                            .collect(),
+                        stock,
+                    }
                 })
                 .collect(),
         };

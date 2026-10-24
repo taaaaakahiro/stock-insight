@@ -25,8 +25,14 @@ on:
       refill_prices:
         description: "true なら取り込み済みの過去5年分の株価（終値）も取り直して履歴を埋める（財務と進み具合はそのまま。30〜45分ほど）"
         default: "false"
+      refill_forecasts:
+        description: "true なら取り込み済みの直近1年の決算短信を読み直し、会社予想の配当だけを埋める（財務と進み具合はそのまま。250日分ほどで5〜10分）"
+        default: "false"
       refetch_doe:
-        description: "true なら EDINET の新しい書類のあと、DOE に触れているのに下限・目標の数字がない保存済みの書類を取り直す（数百通。10〜20分ほど）"
+        description: "true なら EDINET の新しい書類のあと、DOE・配当性向の下限・目標の数字が欠けている保存済みの書類を取り直す（数百通。10〜20分ほど）"
+        default: "false"
+      refetch_business:
+        description: "true なら EDINET の新しい書類のあと、「事業の内容」の文をまだ持っていない保存済みの有報を取り直す（注目テーマの照合用。数千通あるので時間切れまで進め、残りは次回）"
         default: "false"
   schedule:
     # 予備（09:45 UTC = 18:45 JST、平日）。Cloudflare 側で起動済みなら should-run が止める
@@ -51,15 +57,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             target
           key: batch-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
       - run: cargo build -q -p batch-cli --release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: batch-cli
           path: target/release/batch-cli
@@ -71,7 +77,7 @@ jobs:
     if: github.event.inputs.probe == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: batch-cli
       - run: chmod +x batch-cli
@@ -91,7 +97,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ""
           D1_DATABASE_ID: ""
           CLOUDFLARE_API_TOKEN: ""
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: probe-sql
           path: |
@@ -106,7 +112,7 @@ jobs:
     outputs:
       run: ${{ steps.check.outputs.run }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: batch-cli
       - run: chmod +x batch-cli
@@ -120,7 +126,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: batch-cli
       - run: chmod +x batch-cli
@@ -134,12 +140,12 @@ jobs:
     # 初回の5年分は1時間以上。途中で止まっても次回は続きから
     timeout-minutes: 340
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: batch-cli
       - run: chmod +x batch-cli
       # 保存は基本1回（最後）。保存のたびに全銘柄の株価の履歴を書き直すので、回数を増やすと D1 の書き込みが膨らむ
-      - run: ./batch-cli sync-jq --rate 60 --max-minutes "${{ github.event.inputs.max_minutes || '300' }}" --persist-every "${{ github.event.inputs.persist_every || '1500' }}" --raw-dir raw ${{ github.event.inputs.refill_prices == 'true' && '--refill-prices' || '' }}
+      - run: ./batch-cli sync-jq --rate 60 --max-minutes "${{ github.event.inputs.max_minutes || '300' }}" --persist-every "${{ github.event.inputs.persist_every || '1500' }}" --raw-dir raw ${{ github.event.inputs.refill_prices == 'true' && '--refill-prices' || '' }} ${{ github.event.inputs.refill_forecasts == 'true' && '--refill-forecasts' || '' }}
       - run: ./batch-cli compute --label daily
       # J-Quants の応答（全項目）を日付ごとの gzip JSON で R2 に置く。取り込みが途中で失敗しても、取れた分は置く
       # （CLOUDFLARE_API_TOKEN に R2 の編集権限が要る）
@@ -163,7 +169,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: batch-cli
       - run: chmod +x batch-cli
@@ -176,11 +182,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 340
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: batch-cli
       - run: chmod +x batch-cli
-      - run: ./batch-cli sync-edinet --rate 60 --max-minutes 300 --raw-dir raw ${{ github.event.inputs.refetch_doe == 'true' && '--refetch-doe' || '' }}
+      - run: ./batch-cli sync-edinet --rate 60 --max-minutes 300 --raw-dir raw ${{ github.event.inputs.refetch_doe == 'true' && '--refetch-doe' || '' }} ${{ github.event.inputs.refetch_business == 'true' && '--refetch-business' || '' }}
       # EDINET の文章を銘柄・種類ごとの gzip JSON で R2 に置く。同じキーに上書きするので古い書類は残らない。
       # 新しい有報で古くなった半期報告書と上場廃止の銘柄は消す。途中で失敗しても、取れた分は置く
       - name: upload EDINET texts to R2

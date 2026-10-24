@@ -80,6 +80,12 @@ pub(crate) struct Row {
     no_dividend_cut: Option<i64>,
     doe_floor: Option<f64>,
     doe_goal: Option<f64>,
+    payout_floor: Option<f64>,
+    payout_goal: Option<f64>,
+    op_growth_q: Option<f64>,
+    net_growth_q: Option<f64>,
+    op_growth_ttm: Option<f64>,
+    profit_one_off: Option<i64>,
     #[serde(default)]
     reit_sector: Option<String>,
     #[serde(default)]
@@ -106,8 +112,12 @@ pub(crate) struct Row {
 
 impl From<Row> for StockRow {
     fn from(r: Row) -> Self {
-        let doe_forecast = (r.dividend_basis.as_deref() == Some("forecast"))
+        let forecast = r.dividend_basis.as_deref() == Some("forecast");
+        let doe_forecast = forecast
             .then(|| domain::indicators::doe_from_yield(r.dividend_yield, r.pbr))
+            .flatten();
+        let payout_forecast = forecast
+            .then(|| domain::indicators::payout_from_yield(r.dividend_yield, r.per))
             .flatten();
         StockRow {
             code: r.code,
@@ -146,6 +156,13 @@ impl From<Row> for StockRow {
             doe_floor: r.doe_floor,
             doe_goal: r.doe_goal,
             doe_forecast,
+            payout_floor: r.payout_floor,
+            payout_goal: r.payout_goal,
+            payout_forecast,
+            op_growth_q: r.op_growth_q,
+            net_growth_q: r.net_growth_q,
+            op_growth_ttm: r.op_growth_ttm,
+            profit_one_off: r.profit_one_off.map(|v| v != 0),
             // reit_profile の行があるときだけ（期末日は必ず入る）
             reit: r.reit_period_end.clone().map(|period_end| ReitListFields {
                 sector: r.reit_sector,
@@ -218,6 +235,9 @@ struct DisclosureDbRow {
     doe_floor: Option<f64>,
     doe_goal: Option<f64>,
     doe_phrase: Option<String>,
+    payout_floor: Option<f64>,
+    payout_goal: Option<f64>,
+    payout_phrase: Option<String>,
     phrases: String,
 }
 
@@ -236,6 +256,9 @@ impl From<DisclosureDbRow> for DisclosureRow {
             doe_floor: r.doe_floor,
             doe_goal: r.doe_goal,
             doe_phrase: r.doe_phrase,
+            payout_floor: r.payout_floor,
+            payout_goal: r.payout_goal,
+            payout_phrase: r.payout_phrase,
             phrases: serde_json::from_str(&r.phrases).unwrap_or_default(),
         }
     }

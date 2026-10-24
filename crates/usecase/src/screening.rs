@@ -1,6 +1,7 @@
 //! スクリーニング一覧（F2）とデータ鮮度（F8）の読み取りユースケース。
 
 use crate::PortError;
+use domain::dividend_policy::{dividend_upside, PolicyGap, PolicyInputs};
 use domain::screening::{ScreeningFilter, PAGE_SIZE};
 
 /// 一覧の1行（indicators_latest の1行）。比率は小数（0.035 = 3.5%）
@@ -50,8 +51,49 @@ pub struct StockRow {
     pub doe_goal: Option<f64>,
     /// 会社予想の配当で見た DOE（予想がなければ None。実績は doe）
     pub doe_forecast: Option<f64>,
+    /// 有報・半期報告書に書かれた配当性向の下限・目標（新しい書類の値。書かれていなければ None）
+    pub payout_floor: Option<f64>,
+    pub payout_goal: Option<f64>,
+    /// 会社予想の配当で見た配当性向（予想の1株配当 ÷ 直近の本決算の EPS。予想がなければ None。実績は payout_ratio）
+    pub payout_forecast: Option<f64>,
+    /// 直近の四半期単独の営業利益・純利益の前年同期比、直近4四半期合計の営業利益の伸び、利益が一過性の疑い
+    pub op_growth_q: Option<f64>,
+    pub net_growth_q: Option<f64>,
+    pub op_growth_ttm: Option<f64>,
+    pub profit_one_off: Option<bool>,
     /// REIT の金利・稼働率（reit_profile。REIT 以外や未取り込みなら None）
     pub reit: Option<ReitListFields>,
+}
+
+impl StockRow {
+    /// 比べる DOE・配当性向: 利回りが会社予想の配当なら予想で見た値、実績なら実績
+    pub fn doe_now(&self) -> Option<f64> {
+        self.forecast_or_actual(self.doe_forecast, self.doe)
+    }
+
+    pub fn payout_now(&self) -> Option<f64> {
+        self.forecast_or_actual(self.payout_forecast, self.payout_ratio)
+    }
+
+    fn forecast_or_actual(&self, forecast: Option<f64>, actual: Option<f64>) -> Option<f64> {
+        if self.dividend_basis.as_deref() == Some("forecast") {
+            forecast
+        } else {
+            actual
+        }
+    }
+
+    /// 会社の配当方針（DOE・配当性向の下限・目標）と今の配当の乖離。方針を満たしているか、方針がなければ None
+    pub fn policy_gap(&self) -> Option<PolicyGap> {
+        dividend_upside(&PolicyInputs {
+            doe_now: self.doe_now(),
+            doe_floor: self.doe_floor,
+            doe_goal: self.doe_goal,
+            payout_now: self.payout_now(),
+            payout_floor: self.payout_floor,
+            payout_goal: self.payout_goal,
+        })
+    }
 }
 
 /// 一覧に出す REIT の要約。比率は小数
@@ -136,6 +178,10 @@ pub struct DisclosureRow {
     pub doe_floor: Option<f64>,
     pub doe_goal: Option<f64>,
     pub doe_phrase: Option<String>,
+    /// 配当性向の下限・目標と、その数字を拾った文
+    pub payout_floor: Option<f64>,
+    pub payout_goal: Option<f64>,
+    pub payout_phrase: Option<String>,
     /// 手がかりの言葉を含む文
     pub phrases: Vec<String>,
 }

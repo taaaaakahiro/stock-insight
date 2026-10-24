@@ -8,7 +8,13 @@
 //!   GET /api/portfolio              登録した銘柄と売り時のサイン
 //!   PUT /api/portfolio/:code        銘柄を登録
 //!   DELETE /api/portfolio/:code     登録を外す
-//!   GET /api/recommendations        最新日の AIレコメンド（F7）
+//!   GET /api/recommendations        最新日の AIレコメンド（F7）。キャッシュしない（作り直しの直後に古い結果を見せない）
+//!   POST /api/recommendations/regenerate  AIレコメンドを作り直す（管理者。回数の上限なし）
+//!   GET /api/themes                 注目テーマ（管理者が登録。全員が読める）
+//!   GET /api/themes/:id             1テーマと、当たった銘柄
+//!   POST /api/themes                テーマを登録して照合（管理者）
+//!   PUT /api/themes/:id             テーマを書き換えて照合しなおす（管理者）
+//!   DELETE /api/themes/:id          テーマを消す（管理者）
 //!
 //! 一覧・配当方針・状態は、データの版（最新バッチと EDINET の取り込み）をキーに Cache API へ置く。
 //! D1 の無料枠（読み取り 500万行/日）を画面の操作で使い切らないため。
@@ -20,6 +26,7 @@ use adapter_cf::ai::WorkersAi;
 use adapter_cf::clerk::{ClerkDirectory, ClerkVerifier};
 use adapter_cf::d1::{D1Indicators, D1Portfolio};
 use adapter_cf::d1_recommend::D1Recommendations;
+use adapter_cf::d1_themes::D1Themes;
 use adapter_cf::users::D1Users;
 use domain::access::Access;
 use domain::screening::ScreeningFilter;
@@ -31,6 +38,7 @@ use usecase::auth::{authenticate, AuthError, AuthUser, CachedUsers, RequestMeta,
 use usecase::detail::{stock_detail, StockDetail};
 use usecase::portfolio::PortfolioError;
 use usecase::screening::{data_status, disclosures, reit_detail, screen, StockRow};
+use usecase::themes::ThemesError;
 use usecase::Clock;
 use worker::{
     event, Cache, Context, Env, Request, Response, Result, RouteContext, Router, ScheduleContext,
@@ -138,6 +146,15 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .put_async("/api/portfolio/:code", portfolio_add)
         .delete_async("/api/portfolio/:code", portfolio_remove)
         .get_async("/api/recommendations", recommendations)
+        .post_async(
+            "/api/recommendations/regenerate",
+            recommendations_regenerate,
+        )
+        .get_async("/api/themes", themes_list)
+        .get_async("/api/themes/:id", theme_detail)
+        .post_async("/api/themes", theme_create)
+        .put_async("/api/themes/:id", theme_update)
+        .delete_async("/api/themes/:id", theme_delete)
         .or_else_any_method("/api/*path", |_, _| {
             json_error(404, "not_found", "no such endpoint")
         })
@@ -248,6 +265,9 @@ async fn edinet(req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
                     "doe_floor": d.doe_floor,
                     "doe_goal": d.doe_goal,
                     "doe_phrase": d.doe_phrase,
+                    "payout_floor": d.payout_floor,
+                    "payout_goal": d.payout_goal,
+                    "payout_phrase": d.payout_phrase,
                     "phrases": d.phrases,
                 })).collect::<Vec<_>>(),
             })),
@@ -472,7 +492,7 @@ fn portfolio_result(r: std::result::Result<(), PortfolioError>) -> Result<Respon
     }
 }
 
-/// F7: その日のバッチが成功していて、まだ結果がなければ AI に上位10銘柄を選ばせて保存する
+/// F7: その日のバッチが成功していて、まだ結果がなければ上位10銘柄を選んで評価し、AI に理由を書かせて保存する
 async fn recommend_cron(env: &Env) {
     let (db, ai) = match (env.d1(DB_BINDING), env.ai(AI_BINDING)) {
         (Ok(db), Ok(ai)) => (db, ai),
@@ -484,8 +504,15 @@ async fn recommend_cron(env: &Env) {
     let repo = D1Recommendations::new(db);
     let now = WorkerClock.now_unix();
     match usecase::recommend::generate(&repo, &WorkersAi::new(ai), now).await {
-        Ok(usecase::recommend::Outcome::Saved { date, picks }) => {
-            worker::console_log!("cron {RECOMMEND_CRON}: saved {picks} recommendations for {date}")
+        Ok(usecase::recommend::Outcome::Saved {
+            date,
+            picks,
+            dropped,
+        }) => {
+            worker::console_log!("cron {RECOMMEND_CRON}: saved {picks} recommendations for {date}");
+            for d in dropped {
+                worker::console_log!("cron {RECOMMEND_CRON}: dropped ({d})");
+            }
         }
         Ok(usecase::recommend::Outcome::Skipped(why)) => {
             worker::console_log!("cron {RECOMMEND_CRON}: skipped ({why})")
@@ -497,21 +524,194 @@ async fn recommend_cron(env: &Env) {
 async fn recommendations(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
     let repo = D1Recommendations::new(ctx.env.d1(DB_BINDING)?);
     match usecase::recommend::latest(&repo).await {
-        Ok(day) => json_ok(&json!({
-            "day": day.map(|d| json!({
-                "date": d.date,
-                "model": d.model,
-                "created_at": d.created_at,
-                "rows": d.rows.iter().map(|r| {
-                    let mut v = row_json(&r.stock);
-                    v["rank"] = json!(r.rank);
-                    v["reason"] = json!(r.reason);
-                    v
-                }).collect::<Vec<_>>(),
-            })),
-        })),
+        // 作り直しの直後に古い結果を見せないよう、ブラウザに持たせない（1日数回しか読まない）
+        Ok(day) => json_response(
+            &json!({
+                "day": day.map(|d| json!({
+                    "date": d.date,
+                    "model": d.model,
+                    "created_at": d.created_at,
+                    "manual": d.manual,
+                    "rows": d.rows.iter().map(|r| {
+                        let mut v = row_json(&r.stock);
+                        v["rank"] = json!(r.rank);
+                        v["grade"] = json!(r.grade.map(|g| g.as_str()));
+                        v["reason"] = json!(r.reason);
+                        v["themes"] = json!(r.themes);
+                        v
+                    }).collect::<Vec<_>>(),
+                })),
+            }),
+            200,
+            "no-store",
+        ),
         Err(e) => internal(&e.0),
     }
+}
+
+/// 画面のボタン: 直近のバッチが成功していれば作り直す（管理者。回数の上限なし）。AI の呼び出しがあるので十数秒かかる
+async fn recommendations_regenerate(
+    _req: Request,
+    ctx: RouteContext<AuthUser>,
+) -> Result<Response> {
+    if let Err(res) = require_admin(&ctx) {
+        return res;
+    }
+    let repo = D1Recommendations::new(ctx.env.d1(DB_BINDING)?);
+    let ai = WorkersAi::new(ctx.env.ai(AI_BINDING)?);
+    match usecase::recommend::regenerate(&repo, &ai, WorkerClock.now_unix()).await {
+        Ok(usecase::recommend::Outcome::Saved {
+            date,
+            picks,
+            dropped,
+        }) => {
+            worker::console_log!(
+                "regenerate by {}: saved {picks} recommendations for {date}",
+                ctx.data.id
+            );
+            for d in &dropped {
+                worker::console_log!("regenerate: dropped ({d})");
+            }
+            json_response(
+                &json!({ "date": date, "picks": picks, "dropped": dropped }),
+                200,
+                "no-store",
+            )
+        }
+        Ok(usecase::recommend::Outcome::Skipped(why)) => json_error(409, "skipped", &why),
+        Err(e) => internal(&e.0),
+    }
+}
+
+fn theme_json(t: &usecase::themes::Theme) -> Value {
+    json!({ "id": t.id, "name": t.name, "words": t.words, "count": t.count, "updated_at": t.updated_at })
+}
+
+/// 管理者だけが使える操作。管理者でなければ 403 の応答を Err に入れる
+fn require_admin(ctx: &RouteContext<AuthUser>) -> std::result::Result<(), Result<Response>> {
+    if ctx.data.is_admin {
+        Ok(())
+    } else {
+        Err(json_error(403, "forbidden", "admin only"))
+    }
+}
+
+fn theme_id(ctx: &RouteContext<AuthUser>) -> Option<i64> {
+    ctx.param("id").and_then(|s| s.parse().ok())
+}
+
+/// 登録・書き換えの入力 { name, words: [..] }。words は配列か、読点・改行で区切った文字列でもよい
+fn theme_input(body: &Value) -> Option<(String, Vec<String>)> {
+    let name = body.get("name")?.as_str()?.to_string();
+    let words: Vec<String> = match body.get("words")? {
+        Value::Array(a) => a
+            .iter()
+            .filter_map(|w| w.as_str().map(str::to_string))
+            .collect(),
+        Value::String(s) => s
+            .split(['、', ',', '\n'])
+            .map(|w| w.trim().to_string())
+            .collect(),
+        _ => return None,
+    };
+    Some((name, words))
+}
+
+fn theme_result(r: std::result::Result<Value, ThemesError>) -> Result<Response> {
+    match r {
+        Ok(v) => json_response(&v, 200, "no-store"),
+        Err(ThemesError::Invalid(e)) => json_error(400, "bad_request", &e.to_string()),
+        Err(ThemesError::NotFound) => json_error(404, "not_found", "no such theme"),
+        Err(ThemesError::Port(e)) if e.0.contains("UNIQUE") => {
+            json_error(409, "duplicate", "a theme with that name exists")
+        }
+        Err(ThemesError::Port(e)) => internal(&e.0),
+    }
+}
+
+async fn themes_list(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let repo = D1Themes::new(ctx.env.d1(DB_BINDING)?);
+    match usecase::themes::list(&repo).await {
+        Ok(ts) => json_response(
+            &json!({ "themes": ts.iter().map(theme_json).collect::<Vec<_>>() }),
+            200,
+            "no-store",
+        ),
+        Err(e) => internal(&e.0),
+    }
+}
+
+async fn theme_detail(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let Some(id) = theme_id(&ctx) else {
+        return json_error(400, "bad_request", "bad theme id");
+    };
+    let repo = D1Themes::new(ctx.env.d1(DB_BINDING)?);
+    theme_result(usecase::themes::detail(&repo, id).await.map(|(t, stocks)| {
+        json!({
+            "theme": theme_json(&t),
+            "stocks": stocks.iter().map(|s| json!({ "code": s.code, "name": s.name, "matched_word": s.matched_word })).collect::<Vec<_>>(),
+        })
+    }))
+}
+
+async fn theme_create(mut req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    if let Err(res) = require_admin(&ctx) {
+        return res;
+    }
+    let Some((name, words)) = req
+        .json::<Value>()
+        .await
+        .ok()
+        .as_ref()
+        .and_then(theme_input)
+    else {
+        return json_error(400, "bad_request", "name and words are required");
+    };
+    let repo = D1Themes::new(ctx.env.d1(DB_BINDING)?);
+    theme_result(
+        usecase::themes::create(&repo, &name, &words, WorkerClock.now_unix())
+            .await
+            .map(|id| json!({ "id": id })),
+    )
+}
+
+async fn theme_update(mut req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    if let Err(res) = require_admin(&ctx) {
+        return res;
+    }
+    let Some(id) = theme_id(&ctx) else {
+        return json_error(400, "bad_request", "bad theme id");
+    };
+    let Some((name, words)) = req
+        .json::<Value>()
+        .await
+        .ok()
+        .as_ref()
+        .and_then(theme_input)
+    else {
+        return json_error(400, "bad_request", "name and words are required");
+    };
+    let repo = D1Themes::new(ctx.env.d1(DB_BINDING)?);
+    theme_result(
+        usecase::themes::update(&repo, id, &name, &words, WorkerClock.now_unix())
+            .await
+            .map(|()| json!({ "ok": true })),
+    )
+}
+
+async fn theme_delete(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    if let Err(res) = require_admin(&ctx) {
+        return res;
+    }
+    let Some(id) = theme_id(&ctx) else {
+        return json_error(400, "bad_request", "bad theme id");
+    };
+    let repo = D1Themes::new(ctx.env.d1(DB_BINDING)?);
+    theme_result(
+        usecase::themes::delete(&repo, id)
+            .await
+            .map(|()| json!({ "ok": true })),
+    )
 }
 
 /// 銘柄の詳細（F3）: 5年の年次、四半期単独の損益、利回りと株価の推移
@@ -613,10 +813,24 @@ fn row_json(r: &StockRow) -> Value {
             "occupancy": x.occupancy,
         })),
     });
-    // json! の再帰の上限に当たるので、DOE の方針は後から足す
+    // json! の再帰の上限に当たるので、配当方針は後から足す
     v["doe_floor"] = json!(r.doe_floor);
     v["doe_goal"] = json!(r.doe_goal);
     v["doe_forecast"] = json!(r.doe_forecast);
+    v["payout_floor"] = json!(r.payout_floor);
+    v["payout_goal"] = json!(r.payout_goal);
+    v["payout_forecast"] = json!(r.payout_forecast);
+    v["op_growth_q"] = json!(r.op_growth_q);
+    v["net_growth_q"] = json!(r.net_growth_q);
+    v["op_growth_ttm"] = json!(r.op_growth_ttm);
+    v["profit_one_off"] = json!(r.profit_one_off);
+    // 方針と今の配当の乖離（方針どおりなら配当が何 % 増えるか）。方針がないか満たしていれば null
+    v["policy_gap"] = json!(r.policy_gap().map(|g| json!({
+        "basis": g.key(),
+        "policy": g.policy,
+        "now": g.now,
+        "upside": g.upside,
+    })));
     v
 }
 

@@ -12,7 +12,7 @@
 |---|---|---|
 | Workers（API・Cron） | Workers Paid。CPU は1回30秒（設定で延ばせる） | 画面の API、日次バッチの起動、21:00 の AIレコメンド |
 | Workflows | Workers Paid に含まれる | 判定Workflow（未実装）で使う予定 |
-| Workers AI | 1日10,000 Neurons まで無料、超えた分は従量課金 | 候補50銘柄の毎日のレコメンド（`@cf/meta/llama-3.1-8b-instruct-fp8`、1日1回）なら無料の範囲に収まる |
+| Workers AI | 1日10,000 Neurons まで無料、超えた分は従量課金 | 候補50銘柄の毎日のレコメンド（`@cf/meta/llama-3.3-70b-instruct-fp8-fast`、1日1回で約400 Neurons）なら無料の範囲に収まる |
 | D1 | Workers Paid に含まれる枠（読み取り・書き込みとも月単位） | 一覧の絞り込みは全銘柄を読むので、画面の API はデータの版をキーに Cache API に置き、許可リストの確認も Worker のメモリに持つ（2026-10-22 に無料枠の読み取りを超えたため）。株価の履歴は1銘柄1行（`price_history`）なので、保存のたびに全銘柄分（約4,300行）を書き直す。量と時間を抑えるため、`sync-jq` の保存は基本1回（最後）のまま |
 | R2 | 10GB、書き込み100万回/月まで無料 | J-Quants の応答（日付ごと）と EDINET の文章（銘柄・種類ごと）の置き場 |
 | メール送信 | Cloudflare Email Service。任意の宛先に送るには有料プランが要る（要確認） | メール（未実装）は管理者だけに送る |

@@ -202,6 +202,13 @@ mod tests {
             doe_floor: None,
             doe_goal: None,
             doe_forecast: None,
+            payout_floor: None,
+            payout_goal: None,
+            payout_forecast: None,
+            op_growth_q: None,
+            net_growth_q: None,
+            op_growth_ttm: None,
+            profit_one_off: None,
             reit: None,
         }
     }

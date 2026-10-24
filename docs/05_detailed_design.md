@@ -69,12 +69,12 @@
 
 ### AIレコメンド（F7、実装済み）
 
-`usecase::recommend::generate`。API Worker の Cron Trigger（平日21:00 JST、`0 12 * * 1-5`）から呼ぶ。候補の条件・モデル・検証の詳細は [08](08_indicator_sources.md#aiレコメンドf7の候補と使うモデル)。
+`usecase::recommend::generate`。API Worker の Cron Trigger（平日21:00 JST、`0 12 * * 1-5`）から呼ぶ。候補の絞り込み・3段階の評価・順位はルールで決め、AI には理由の文章だけを書かせる。条件・モデル・検証の詳細は [08](08_indicator_sources.md#aiレコメンドf7の候補評価と使うモデル)。
 
 1. 最新の batch_runs が今日終わった `succeeded` でなければ何もしない。同じ株価の日付の結果がすでにあっても何もしない
-2. ルールで候補を50銘柄に絞る（株式・利回りあり・「バリュー株」または「5年配当かつ通期黒字」。満たす条件の多い順、同点は利回りの高い順）
+2. ルールで候補を50銘柄に絞る（株式・利回りが0より大きく8%未満・配当性向50%超・PBR1.5倍超（保有株の売りサイン）は除く・「バリュー株」または「5年配当かつ通期黒字」。満たす条件の多い順、同点は利回りの高い順）
 3. 候補の指標を Workers AI に JSON で渡し、上位10銘柄と理由（1〜2文）を JSON Schema で返させる
-4. ちょうど10件・候補の銘柄だけ・重複なし・理由200文字以内を確かめ、`recommendations` に保存する。外れたら保存せずログに出す
+4. 答えを1件ずつ確かめ、候補にない銘柄・2回目以降の重複・空か200文字を超える理由・10件を超えた分だけを捨てる。残りを AI の並び順のまま詰めて順位にし、5件以上あれば `recommendations` に保存する（捨てた分はログに出す）。5件に届かなければ保存せずログに出す
 
 未実装: AIが失敗した日にルールの候補だけを出すこと、90日より古い行の削除。
 
@@ -116,6 +116,7 @@ CloudflareのCron Trigger（`30 9 * * 1-5` = 平日18:30 JST）は呼び出し�
 | `max_minutes` | 300 | 取り込みの時間の上限（分）。過ぎたらそこまでを保存し、次回は続きから |
 | `persist_every` | 1500 | 何日分ごとに D1 へ保存するか |
 | `refill_prices` | false | 取り込み済みの過去5年分の株価も取り直して `price_history` を埋める（`sync-jq --refill-prices`）。財務と `sync_state` は変えない |
+| `refill_forecasts` | false | 取り込み済みの直近1年の決算短信を読み直し、会社予想の配当（`dividend_forecasts`）だけを埋める（`sync-jq --refill-forecasts`）。年次・四半期の財務、`sync_state`、R2 の生データは変えない |
 
 ### 日次バッチのステップ
 
@@ -133,6 +134,7 @@ CloudflareのCron Trigger（`30 9 * * 1-5` = 平日18:30 JST）は呼び出し�
    - 呼び出しは1分あたり `--rate` 回まで（Light は60）。429・5xx・通信エラーは指数バックオフで最大3回再試行し、J-Quants の 429 はさらに1分待って2回まで試す
    - 日足の `AdjFactor` が 1 でない日を株式分割・併合として `splits` に残す（取り直しの日も含む）
    - `--refill-prices` のときは、`--from`（既定は5年前）から前回の続きの前日までの株価も取り直して履歴に足す（同じ日付は上書き）。取り直した日の生データは R2 に上げ直さず、財務も取り直さない
+   - `--refill-forecasts` のときは、`--from`（既定は1年前）から財務の取り直しの前日までの決算短信を読み、予想の配当の行だけを `dividend_forecasts` に足す（同じ開示はキーで上書き）。予想を取り込み始める前（2026-10-19 より前）に開示した会社の予想を埋めるためのもの
    - 終値の履歴は直近5年＋1か月（`KEEP_DAYS`）を超えた分を捨てる
    - D1 への保存は `--persist-every` 日分ごと（既定では最後に1回）。保存のたびに全銘柄の `price_history` を書き直すので、回数は少なくする
    - 応答の全項目を `raw/bars/<日付>.json.gz`・`raw/fins/<日付>.json.gz` に書き出す
@@ -141,7 +143,7 @@ CloudflareのCron Trigger（`30 9 * * 1-5` = 平日18:30 JST）は呼び出し�
 
 `edinet`（タイムアウト340分）:
 
-6. `batch-cli sync-edinet --rate 60 --max-minutes 300 --raw-dir raw`: EDINET の書類一覧（前回の続き。初回は過去400日分）から有報・半期報告書を選び、まだ持っていない書類の CSV を取って `edinet_docs` を更新、文章を `raw/edinet/<コード>/<種類>.json.gz` に書き出す。古くなった分の R2 のキーは `raw/edinet-delete.txt` に書く（詳細は [08](08_indicator_sources.md#取得元の-api)）。ワークフローの入力 `refetch_doe=true` のときは `--refetch-doe` を付け、新しい書類のあとに、DOE に触れているのに下限・目標の数字がない保存済みの書類を取り直す（書類一覧の進み具合は変えない）
+6. `batch-cli sync-edinet --rate 60 --max-minutes 300 --raw-dir raw`: EDINET の書類一覧（前回の続き。初回は過去400日分）から有報・半期報告書を選び、まだ持っていない書類の CSV を取って `edinet_docs` を更新、文章を `raw/edinet/<コード>/<種類>.json.gz` に書き出す。古くなった分の R2 のキーは `raw/edinet-delete.txt` に書く（詳細は [08](08_indicator_sources.md#取得元の-api)）。ワークフローの入力 `refetch_doe=true` のときは `--refetch-doe` を付け、新しい書類のあとに、DOE・配当性向の下限・目標の数字が欠けている保存済みの書類を取り直す。`refetch_business=true` のときは `--refetch-business` を付け、「事業の内容」の文をまだ持っていない有報を取り直す（どちらも書類一覧の進み具合は変えない）
    - 続きの位置（`sync_state.edinet_listed_until`）は、読み終えた日・まだ取っていない最初の書類の提出日の前日・今日の前日のうち最も早い日にする。今日の一覧はバッチの後にも書類が増えうるので、翌日もう一度読む（取得済みの書類は飛ばす）
    - 株式の書類は府令が企業内容等の開示府令（`ordinanceCode` 010）のものだけ。会社が出す信託受益証券などの特定有価証券の有報（030、XBRL は jpsps）は、証券コードが会社のものでも読まない
    - 中身が読めない書類（本体の `jpcrp*.csv` がないなど）は、ログに `skip` を出して飛ばし、続ける（やり直しても読めないため）。通信の失敗などはそこで止め、次回その書類からやり直す
@@ -171,14 +173,16 @@ J-Quants を1ジョブで順に取り込むのは、J-Quants が日付指定で�
 | テーブル | 列 | 作成 |
 |---|---|---|
 | stocks | code (PK), name, kind（stock/reit/etf）, market, sector33, size_class（large/mid/small/none）, as_of, updated_at | 0003 |
-| indicators_latest | code (PK), run_id, fetched_at, price, price_date, dividend_ttm, dividend_yield, yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin, no_loss_years, profit_uptrend, valuation, fin_doc_id, fin_submitted, dividend_every_year, no_quarterly_loss, is_value, data_years, sales_growth, op_growth, dividend_basis, dividend_cut | 0001（0005・0007・0010・0012 で列を追加） |
+| indicators_latest | code (PK), run_id, fetched_at, price, price_date, dividend_ttm, dividend_yield, yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin, no_loss_years, profit_uptrend, valuation, fin_doc_id, fin_submitted, dividend_every_year, no_quarterly_loss, is_value, data_years, sales_growth, op_growth, dividend_basis, dividend_cut, op_growth_q, net_growth_q, op_growth_ttm, profit_one_off（直近の四半期の業績の質） | 0001（0005・0007・0010・0012・0015 で列を追加） |
 | financials_annual | code, period_end (PK: code+period_end), doc_id, net_sales, operating_income, ordinary_income, net_income, equity, eps, bps, dps, operating_cf, fetched_at, disclosed | 0001（0004 で disclosed を追加） |
 | financials_quarterly | code, fiscal_year_end, period_type (PK: code+fiscal_year_end+period_type), period_end, doc_id, disclosed, net_sales, operating_income, ordinary_income, net_income, fetched_at | 0005 |
 | price_history | code (PK), closes（`YYYYMMDD,終値;…`）, last_date, updated_at | 0004 |
-| edinet_docs | code, doc_kind (PK: code+doc_kind。annual/semiannual), doc_id, submitted, period_end, r2_key, progressive_dividend, no_dividend_cut, dividend_raise, doe_target, payout_target, phrases（JSON の文字列配列）, fetched_at, doe_floor, doe_goal, doe_phrase（DOE の下限・目標と、その数字を拾った文） | 0007, 0013 |
+| edinet_docs | code, doc_kind (PK: code+doc_kind。annual/semiannual), doc_id, submitted, period_end, r2_key, progressive_dividend, no_dividend_cut, dividend_raise, doe_target, payout_target, phrases（JSON の文字列配列）, fetched_at, doe_floor, doe_goal, doe_phrase（DOE の下限・目標と、その数字を拾った文）, payout_floor, payout_goal, payout_phrase（配当性向の下限・目標と、その文。payout_target は下限（なければ目標）として残す）, business_text（「事業の内容」の先頭3000文字。注目テーマの照合用。項目がなければ空文字、まだ読んでいなければ NULL） | 0007, 0013, 0014, 0017 |
+| themes | id (PK), name (UNIQUE), words（JSON の文字列配列）, created_at, updated_at。管理者が登録する注目テーマ | 0017 |
+| stock_themes | theme_id, code (PK: theme_id+code), matched_word。テーマを保存するたびに `instr(business_text, 言葉)` で作り直す | 0017 |
 | sync_state | key (PK。`jq_synced_until`・`edinet_listed_until`), value, updated_at | 0004 |
 | splits | code, date（権利落ち日）(PK: code+date), factor（`AdjFactor`。1:2 の分割なら 0.5）, fetched_at | 0009 |
-| recommendations | date（株価の日付）, rank (PK: date+rank), code, reason, model, created_at | 0008 |
+| recommendations | date（株価の日付）, rank (PK: date+rank), code, reason, model, created_at, grade（strong / recommend / watch。評価を付ける前の行は NULL）, source（cron / manual。画面のボタンで作り直した分。列を足す前の行は NULL） | 0008, 0016, 0018 |
 | batch_runs | run_id (PK), started_at, finished_at, target, succeeded, failed, status（running/succeeded/failed） | 0001 |
 
 索引: indicators_latest の dividend_yield・pbr・payout_ratio・valuation、stocks の kind。

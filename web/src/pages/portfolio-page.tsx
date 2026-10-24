@@ -221,9 +221,9 @@ export function PortfolioPage() {
               h.signals.length > 0 && "border-expensive/40 bg-expensive/5",
             )}
           >
-            <div className="mb-2 flex min-w-0 items-center gap-1">
+            <div className="mb-2 flex min-w-0 items-start gap-1">
               <PortfolioToggle code={h.code} name={h.name ?? h.code} />
-              <NameCell r={h} />
+              <NameCell r={h} wrap />
               {h.kind === "stock" && <DocPreview r={h} />}
             </div>
             <div className="mb-3">

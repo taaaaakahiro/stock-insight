@@ -35,6 +35,12 @@ pub struct Indicators {
     pub dividend_is_forecast: Option<bool>,
     /// 減配した、または減配の予想を出した（比べる配当がなければ None）
     pub dividend_cut: Option<bool>,
+    /// 直近の四半期単独の営業利益・純利益の前年同期比、直近4四半期合計の営業利益の伸び、利益が一過性の疑い
+    /// （analysis::latest_quarter）
+    pub op_growth_q: Option<f64>,
+    pub net_growth_q: Option<f64>,
+    pub op_growth_ttm: Option<f64>,
+    pub profit_one_off: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +176,15 @@ pub fn doe_from_yield(dividend_yield: Option<f64>, pbr: Option<f64>) -> Option<f
     }
 }
 
+/// 会社予想の配当で見た配当性向。配当利回り × PER（= 1株配当 ÷ 株価 × 株価 ÷ EPS）。
+/// PER は黒字（EPS > 0）のときだけ出ているので、赤字の年は None
+pub fn payout_from_yield(dividend_yield: Option<f64>, per: Option<f64>) -> Option<f64> {
+    match (dividend_yield, per) {
+        (Some(y), Some(p)) if y >= 0.0 && p > 0.0 => Some(y * p),
+        _ => None,
+    }
+}
+
 fn ratio(a: Option<f64>, b: Option<f64>) -> Option<f64> {
     match (a, b) {
         (Some(a), Some(b)) if b > 0.0 => Some(a / b),
@@ -207,6 +222,7 @@ pub fn compute(
     let pbr = ratio(Some(price), bps);
     let per = ratio(Some(price), eps);
 
+    let latest_q = crate::analysis::latest_quarter(quarters);
     let valuation = match yield_percentile {
         Some(p) if p >= CHEAP_PERCENTILE => Valuation::Cheap,
         Some(p) if p <= EXPENSIVE_PERCENTILE => Valuation::Expensive,
@@ -245,6 +261,10 @@ pub fn compute(
             &dps_series,
             current.filter(|d| d.forecast).map(|d| d.annual),
         ),
+        op_growth_q: latest_q.op_growth,
+        net_growth_q: latest_q.net_growth,
+        op_growth_ttm: latest_q.op_growth_ttm,
+        profit_one_off: latest_q.one_off,
     })
 }
 
@@ -264,6 +284,19 @@ mod tests {
             "BPS がない・債務超過"
         );
         assert_eq!(doe_from_yield(None, Some(1.0)), None);
+    }
+
+    #[test]
+    fn payout_from_yield_is_yield_times_per() {
+        // 配当 60円・株価 2,000円・EPS 200円 → 利回り 3%・PER 10倍・配当性向 30%
+        let payout = payout_from_yield(Some(0.03), Some(10.0)).unwrap();
+        assert!((payout - 0.3).abs() < 1e-12);
+        assert_eq!(
+            payout_from_yield(Some(0.03), None),
+            None,
+            "赤字なら PER がない"
+        );
+        assert_eq!(payout_from_yield(None, Some(10.0)), None);
     }
 
     fn d(s: &str) -> Date {

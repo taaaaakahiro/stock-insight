@@ -61,6 +61,8 @@ const RENDER: Record<MetricKey, (r: StockRow) => React.ReactNode> = {
   operating_margin: (r) => pct(r.operating_margin, 1),
   sales_growth: (r) => growth(r.sales_growth),
   op_growth: (r) => growth(r.op_growth),
+  op_growth_q: (r) => growth(r.op_growth_q),
+  op_growth_ttm: (r) => growth(r.op_growth_ttm),
   floating_ratio: (r) => pct(r.reit?.floating_ratio, 1),
   unknown_ratio: (r) => pct(r.reit?.unknown_ratio, 1),
   reprice_ratio: (r) => pct(r.reit?.reprice_ratio, 1),
@@ -89,33 +91,65 @@ export function DoeMargin({ r }: { r: StockRow }) {
   );
 }
 
-// 表の列の並び（株価を先頭に）
+/** 利回りの下に、その元になった1株配当を小さく添える（配当の列は別に持たない） */
+function YieldCell({ r }: { r: StockRow }) {
+  return (
+    <>
+      {pct(r.dividend_yield)}
+      {r.dividend != null && (
+        <span className="block text-xs text-muted-foreground">
+          <DividendAmount r={r} />
+        </span>
+      )}
+    </>
+  );
+}
+
+/** 1年内の金利見直しを「少なく見た値〜多く見た値」で1つの列に */
+function RepriceCell({ r }: { r: StockRow }) {
+  const min = r.reit?.reprice_ratio;
+  const max = r.reit?.reprice_max_ratio;
+  return (
+    <>
+      {pct(min, 1)}
+      {max != null && max !== min && (
+        <span className="block text-xs text-muted-foreground">最大 {pct(max, 1)}</span>
+      )}
+    </>
+  );
+}
+
+// 一覧の列の並び（株価を先頭に）。買うかを比べるのに要る値だけにし、残りは銘柄のページで見せる
+// （DOE・DOE下限・DOEの余裕は配当方針、営業利益率・伸びは主要な指標、金利の内訳・平均利率は REIT の借入）。
+// 列にない指標も条件では絞り込める
 const ORDER: MetricKey[] = [
   "price",
-  "dividend_ttm",
   "dividend_yield",
   "yield_percentile",
   "pbr",
   "per",
   "payout_ratio",
-  "doe",
-  "doe_floor",
-  "doe_margin",
   "consecutive_increases",
-  "operating_margin",
-  "sales_growth",
-  "op_growth",
   "floating_ratio",
-  "unknown_ratio",
   "reprice_ratio",
-  "reprice_max_ratio",
-  "avg_rate",
   "occupancy",
 ];
 
+// 一覧では、隣の値をまとめて1つのセルに出す列
+const LIST_RENDER: Partial<Record<MetricKey, (r: StockRow) => React.ReactNode>> = {
+  dividend_yield: (r) => <YieldCell r={r} />,
+  reprice_ratio: (r) => <RepriceCell r={r} />,
+};
+
+// 一覧の見出しだけ短くする（説明の InfoTip には元の名前を出す）
+const LIST_LABEL: Partial<Record<MetricKey, string>> = { yield_percentile: "過去5年比" };
+
 function columnsFor(kind: Kind): Column[] {
   const keys = new Set(metricsFor(kind).map((m) => m.key));
-  return ORDER.filter((k) => keys.has(k)).map((key) => ({ key, render: RENDER[key] }));
+  return ORDER.filter((k) => keys.has(k)).map((key) => ({
+    key,
+    render: LIST_RENDER[key] ?? RENDER[key],
+  }));
 }
 
 const SIZE_LABEL: Record<string, string> = { large: "大型", mid: "中型", small: "小型" };
@@ -129,13 +163,22 @@ function SizeBadge({ size }: { size: StockRow["size_class"] }) {
   );
 }
 
-/** 名称（なければコードだけ）と、コード・業種・規模 */
-export function NameCell({ r, link = true }: { r: StockRow; link?: boolean }) {
+/** 名称（なければコードだけ）と、コード・業種・規模。wrap は折り返して全部出す（スマホのカード。表は1行で省略） */
+export function NameCell({
+  r,
+  link = true,
+  wrap = false,
+}: {
+  r: StockRow;
+  link?: boolean;
+  wrap?: boolean;
+}) {
   const sector =
     r.kind === "stock" ? r.sector33 : r.kind === "reit" ? reitSectorLabel(r.reit?.sector) : null;
   const sub = [r.code, sector].filter(Boolean).join("・");
+  const nameClass = wrap ? "break-words" : "truncate";
   return (
-    <div className="flex min-w-0 flex-col">
+    <div className="flex min-w-0 flex-1 flex-col">
       {link ? (
         <a
           href={`/stocks/${r.code}`}
@@ -145,17 +188,17 @@ export function NameCell({ r, link = true }: { r: StockRow; link?: boolean }) {
             e.preventDefault();
             navigate(`/stocks/${r.code}`);
           }}
-          className="truncate font-medium underline-offset-4 hover:underline"
+          className={cn(nameClass, "font-medium underline-offset-4 hover:underline")}
           title={r.name ?? r.code}
         >
           {r.name ?? r.code}
         </a>
       ) : (
-        <span className="truncate font-medium" title={r.name ?? r.code}>
+        <span className={cn(nameClass, "font-medium")} title={r.name ?? r.code}>
           {r.name ?? r.code}
         </span>
       )}
-      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
         {r.name ? sub : sector}
         <SizeBadge size={r.size_class} />
       </span>
@@ -165,6 +208,18 @@ export function NameCell({ r, link = true }: { r: StockRow; link?: boolean }) {
 
 /** 一覧のバッジ。当てはまるものだけ出す（判定できない＝null は出さない）。色だけに意味を持たせない */
 const BADGES: { key: keyof StockRow; label: string; hint: string; className: string }[] = [
+  {
+    key: "dividend_cut",
+    label: "減配",
+    hint: "直近の配当が前期より減った、または会社予想が直近の配当を下回る（据え置きは含めない）",
+    className: "border-expensive/40 bg-expensive/10 text-expensive",
+  },
+  {
+    key: "profit_one_off",
+    label: "一過性?",
+    hint: "直近の四半期の利益が一過性の疑い: 純利益の伸びが営業利益の伸びを30pt以上上回る（特別利益）、または直近の四半期だけ増益で直近4四半期の合計は減益",
+    className: "border-expensive/40 bg-expensive/10 text-expensive",
+  },
   {
     key: "is_value",
     label: "バリュー",
@@ -191,9 +246,14 @@ const BADGES: { key: keyof StockRow; label: string; hint: string; className: str
   },
 ];
 
+const policyOf = (r: StockRow) => r.progressive_dividend === true || r.no_dividend_cut === true;
+
+/** 出すバッジがあるか（スマホのカードは、なければ行ごと出さない） */
+export const hasFlags = (r: StockRow) => BADGES.some((b) => r[b.key] === true) || policyOf(r);
+
 export function Flags({ r }: { r: StockRow }) {
   const on = BADGES.filter((b) => r[b.key] === true);
-  const policy = r.progressive_dividend === true || r.no_dividend_cut === true;
+  const policy = policyOf(r);
   if (on.length === 0 && !policy) {
     return (
       <span className="text-xs text-muted-foreground" title="判定できる財務データがまだ足りません">
@@ -288,7 +348,7 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
                       />
                     )}
                     <SortButton
-                      label={metricLabel(c.key, kind)}
+                      label={LIST_LABEL[c.key] ?? metricLabel(c.key, kind)}
                       active={sort === c.key}
                       order={order}
                       numeric
@@ -297,13 +357,13 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
                   </div>
                 </TableHead>
               ))}
-              {kind === "stock" && <TableHead>判定</TableHead>}
+              {kind === "stock" && <TableHead className="min-w-36">判定</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {rows.map((r) => (
               <TableRow key={r.code}>
-                <TableCell className="max-w-72">
+                <TableCell className="max-w-60">
                   <div className="flex items-center gap-1">
                     <PortfolioToggle code={r.code} name={r.name ?? r.code} />
                     <NameCell r={r} />
@@ -328,20 +388,23 @@ export function ResultsTable({ rows, kind, sort, order, onSort }: Props) {
 
       <ul className="flex flex-col gap-3 md:hidden">
         {rows.map((r) => (
-          <li key={r.code} className="rounded-xl border p-4">
-            <div className="mb-3 flex items-start justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-1">
-                <PortfolioToggle code={r.code} name={r.name ?? r.code} />
-                <NameCell r={r} />
-                {kind === "stock" && <DocPreview r={r} />}
-              </div>
-              {kind === "stock" && <Flags r={r} />}
+          <li key={r.code} className="rounded-xl border p-3">
+            {/* 名前に幅を全部使わせ、バッジは下の行へ（横に並べると名前が数文字で切れる） */}
+            <div className="flex items-start gap-1">
+              <PortfolioToggle code={r.code} name={r.name ?? r.code} />
+              <NameCell r={r} wrap />
+              {kind === "stock" && <DocPreview r={r} />}
             </div>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+            {kind === "stock" && hasFlags(r) && (
+              <div className="mt-2">
+                <Flags r={r} />
+              </div>
+            )}
+            <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 border-t pt-3 text-sm">
               {columns.map((c) => (
                 <div key={c.key} className="flex justify-between gap-2">
                   <dt className="text-muted-foreground">
-                    {metricLabel(c.key, kind)}
+                    {LIST_LABEL[c.key] ?? metricLabel(c.key, kind)}
                     {metricTip(c.key, kind) && (
                       <span className="ml-0.5 inline-block align-[-2px]">
                         <InfoTip

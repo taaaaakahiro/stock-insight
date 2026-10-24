@@ -12,8 +12,9 @@ import { PortfolioPage } from "@/pages/portfolio-page";
 import { RecommendPage } from "@/pages/recommend-page";
 import { ScreeningPage } from "@/pages/screening-page";
 import { StockDetailPage } from "@/pages/stock-detail-page";
+import { ThemesPage } from "@/pages/themes-page";
 
-type View = "screening" | "portfolio" | "recommend";
+type View = "screening" | "portfolio" | "recommend" | "themes";
 
 // 画面の切り替えは URL の # に残す（? はスクリーニングの条件が使う）
 const viewFromHash = (): View => {
@@ -22,6 +23,8 @@ const viewFromHash = (): View => {
       return "portfolio";
     case "#recommend":
       return "recommend";
+    case "#themes":
+      return "themes";
     default:
       return "screening";
   }
@@ -104,42 +107,50 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
 
   return (
     <div className="min-h-svh">
-      <header className="sticky top-0 z-10 border-b bg-background/90 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-1 px-4 py-3">
+      {/* スマホでは画面が狭いので、ヘッダーは固定しない */}
+      <header className="z-10 border-b bg-background/90 backdrop-blur md:sticky md:top-0">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-1 px-4 py-2 md:py-3">
           <div className="flex items-baseline gap-3">
             <h1 className="text-base font-semibold tracking-wide">Maa'un</h1>
             <span className="hidden text-xs text-muted-foreground sm:inline">
               日本株の配当と企業価値を見極める
             </span>
           </div>
-          <Freshness />
+          <div className="order-last basis-full md:order-none md:basis-auto">
+            <Freshness />
+          </div>
           <div className="ml-auto flex items-center gap-2 text-sm">
             <span className="hidden text-muted-foreground sm:inline">{me.display_name}</span>
-            <Button variant="ghost" size="sm" onClick={onSignOut}>
+            <Button variant="ghost" size="sm" onClick={onSignOut} aria-label="ログアウト">
               <LogOut aria-hidden />
-              ログアウト
+              <span className="hidden sm:inline">ログアウト</span>
             </Button>
           </div>
         </div>
       </header>
-      <main className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-6">
+      <main className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 md:gap-6 md:py-6">
         {detailCode ? (
           <StockDetailPage key={detailCode} code={detailCode} />
         ) : (
           <>
             <Tabs value={view} onValueChange={(v) => go(v as View)}>
-              <TabsList aria-label="画面">
+              <TabsList
+                aria-label="画面"
+                className="max-w-full justify-start overflow-x-auto [scrollbar-width:none]"
+              >
                 <TabsTrigger value="screening">スクリーニング</TabsTrigger>
                 <TabsTrigger value="portfolio">
                   ポートフォリオ
                   {codes.size > 0 && <span className="ml-1 tabular-nums">({codes.size})</span>}
                 </TabsTrigger>
                 <TabsTrigger value="recommend">AIレコメンド</TabsTrigger>
+                {me.is_admin && <TabsTrigger value="themes">注目テーマ</TabsTrigger>}
               </TabsList>
             </Tabs>
             {view === "screening" && <ScreeningPage />}
             {view === "portfolio" && <PortfolioPage />}
-            {view === "recommend" && <RecommendPage />}
+            {view === "recommend" && <RecommendPage isAdmin={me.is_admin} />}
+            {view === "themes" && me.is_admin && <ThemesPage isAdmin />}
           </>
         )}
       </main>

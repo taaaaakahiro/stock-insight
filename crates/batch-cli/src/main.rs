@@ -29,12 +29,18 @@
 //!   --raw-dir <dir>         J-Quants の応答を全項目そのまま gzip JSON で置く場所（既定 raw。あとで R2 に上げる）
 //!   --refill-prices         取り込み済みの期間の株価（終値）も取り直して履歴を埋める（財務と進み具合はそのまま）。
 //!                           範囲は --from から（既定: 5年前）。新しい日の生データだけを --raw-dir に書く
+//!   --refill-forecasts      取り込み済みの期間の決算短信を読み直し、会社予想の配当（dividend_forecasts）だけを
+//!                           埋める（年次・四半期の財務、進み具合、R2 の生データはそのまま）。範囲は --from から
+//!                           （既定: 1年前）
 //!
 //! sync-edinet のオプション（--from / --until / --rate / --max-minutes / --raw-dir は sync-jq と同じ）:
 //!   --dry-run <file>        D1 を読み書きせず、--from〜--until の一覧から --limit 件だけ取って SQL と文章を書く
 //!   --limit <n>             --dry-run で取る書類の数（既定 5）
-//!   --refetch-doe           新しい書類のあと、保存済みで DOE に触れているのに下限・目標の数字がない書類を
-//!                           取り直す（DOE の数字を拾う前に取り込んだ分。文章も R2 用に書き直す）
+//!   --refetch-doe           新しい書類のあと、保存済みで方針の数字が欠けている書類（DOE に触れているのに下限・
+//!                           目標がない、配当性向の目標があるのに下限・目標に分けていない）を取り直す
+//!                           （数字を拾う仕組みより前に取り込んだ分。文章も R2 用に書き直す）
+//!   --refetch-business      新しい書類のあと、保存済みで「事業の内容」の文をまだ持っていない有報を取り直す
+//!                           （注目テーマの照合を始める前に取り込んだ分。数千通あるので数回に分かれる）
 //!   R2 から消すファイルのキーは {raw-dir}/edinet-delete.txt に1行ずつ書く（ワークフローが消す）
 //!
 //! sync-reit のオプション（--from / --until / --rate / --max-minutes / --raw-dir は sync-jq と同じ）:
@@ -92,6 +98,8 @@ struct Args {
     limit: usize,
     refill_prices: bool,
     refetch_doe: bool,
+    refetch_business: bool,
+    refill_forecasts: bool,
     out: Option<String>,
 }
 
@@ -115,6 +123,8 @@ fn parse_args() -> Result<Args, String> {
         limit: 5,
         refill_prices: false,
         refetch_doe: false,
+        refetch_business: false,
+        refill_forecasts: false,
         out: None,
     };
     while let Some(flag) = it.next() {
@@ -126,6 +136,8 @@ fn parse_args() -> Result<Args, String> {
             "--force" => a.force = true,
             "--refill-prices" => a.refill_prices = true,
             "--refetch-doe" => a.refetch_doe = true,
+            "--refetch-business" => a.refetch_business = true,
+            "--refill-forecasts" => a.refill_forecasts = true,
             "--from" => a.from = Some(date(val()?)?),
             "--until" => a.until = Some(date(val()?)?),
             "--rate" => a.rate = val()?.parse().map_err(|_| "bad rate")?,
@@ -244,6 +256,26 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0013_doe_policy",
         include_str!("../../../migrations/0013_doe_policy.sql"),
     ),
+    (
+        "0014_payout_policy",
+        include_str!("../../../migrations/0014_payout_policy.sql"),
+    ),
+    (
+        "0015_quarter_quality",
+        include_str!("../../../migrations/0015_quarter_quality.sql"),
+    ),
+    (
+        "0016_recommendation_grade",
+        include_str!("../../../migrations/0016_recommendation_grade.sql"),
+    ),
+    (
+        "0017_themes",
+        include_str!("../../../migrations/0017_themes.sql"),
+    ),
+    (
+        "0018_recommendation_source",
+        include_str!("../../../migrations/0018_recommendation_source.sql"),
+    ),
 ];
 
 async fn sync_master(args: Args) -> Result<(), String> {
@@ -337,6 +369,8 @@ const CURSOR_KEY: &str = "jq_synced_until";
 const BACKFILL_DAYS: i64 = 5 * 365;
 /// 夕方以降の開示を取りこぼさないよう、財務は直近この日数を毎回取り直す
 const REFETCH_FIN_DAYS: i64 = 3;
+/// --refill-forecasts で読み直す既定の期間。決算短信は3か月ごとなので、1年あれば各社の最新の予想が入る
+const FORECAST_REFILL_DAYS: i64 = 366;
 
 /// まだ D1 に書いていない取得結果
 #[derive(Default)]
@@ -377,7 +411,21 @@ async fn sync_jq(args: Args) -> Result<(), String> {
     let refill_from = (args.refill_prices && cursor.is_some())
         .then(|| args.from.unwrap_or(today.add_days(-BACKFILL_DAYS)))
         .filter(|&r| r < start);
-    let days = usecase::fins::weekdays(fin_start.min(refill_from.unwrap_or(fin_start)), until);
+    // 予想の配当を取り始める前（dividend_forecasts を足す前）の決算短信から、予想だけを読み直す
+    let forecast_from = (args.refill_forecasts && cursor.is_some())
+        .then(|| args.from.unwrap_or(today.add_days(-FORECAST_REFILL_DAYS)))
+        .filter(|&f| f < fin_start);
+    let first = [refill_from, forecast_from]
+        .into_iter()
+        .flatten()
+        .fold(fin_start, Date::min);
+    let days = usecase::fins::weekdays(first, until);
+    if let Some(f) = forecast_from {
+        println!(
+            "sync-jq: dividend forecasts {f}..{} (refill)",
+            fin_start.add_days(-1)
+        );
+    }
     match refill_from {
         Some(r) => println!(
             "sync-jq: prices {start}..{until} (refill from {r}), financials {fin_start}..{until} ({} weekdays)",
@@ -449,6 +497,17 @@ async fn sync_jq(args: Args) -> Result<(), String> {
             }
             pending.annuals.extend(annuals);
             pending.periods.extend(periods);
+        } else if forecast_from.is_some_and(|f| day >= f) {
+            // 前に取り込んだ日なので、財務と生データはそのまま。予想の配当だけを足す
+            let rows = jq
+                .summaries_on(day)
+                .await
+                .map_err(|e| format!("{day} forecasts: {}", e.0))?;
+            let forecasts = jquants::forecast_reports(&rows);
+            if !forecasts.is_empty() {
+                println!("{day}: {} dividend forecasts (refill)", forecasts.len());
+            }
+            pending.forecasts.extend(forecasts);
         }
         if day >= start {
             done_until = Some(day);
@@ -748,32 +807,62 @@ async fn sync_edinet(args: Args) -> Result<(), String> {
         return Err(e);
     }
     if args.refetch_doe {
-        refetch_doe(&ed, &store, &raw_dir, now, started, deadline).await?;
+        let docs = store
+            .edinet_docs_without_policy_values(now)
+            .await
+            .map_err(|e| e.0)?;
+        refetch(
+            &ed,
+            &store,
+            &raw_dir,
+            now,
+            started,
+            deadline,
+            &docs,
+            "DOE / payout policy",
+        )
+        .await?;
+    }
+    if args.refetch_business {
+        let docs = store
+            .edinet_docs_without_business(now)
+            .await
+            .map_err(|e| e.0)?;
+        refetch(
+            &ed,
+            &store,
+            &raw_dir,
+            now,
+            started,
+            deadline,
+            &docs,
+            "business text",
+        )
+        .await?;
     }
     Ok(())
 }
 
-/// 保存済みで DOE に触れているのに下限・目標の数字がない書類を取り直す（この実行で取った分は除く）。
+/// 保存済みの書類を取り直す（この実行で取った分は除く。`what` はログに出す目的）。
 /// 書類一覧の進み具合（EDINET_CURSOR_KEY）は変えない。時間切れなら、次に同じオプションで続きを取る
-async fn refetch_doe(
+#[allow(clippy::too_many_arguments)]
+async fn refetch(
     ed: &EdinetClient,
     store: &d1::D1Store,
     raw_dir: &std::path::Path,
     now: i64,
     started: Instant,
     deadline: std::time::Duration,
+    docs: &[DocRef],
+    what: &str,
 ) -> Result<(), String> {
-    let docs = store
-        .edinet_docs_without_doe_values(now)
-        .await
-        .map_err(|e| e.0)?;
     println!(
-        "sync-edinet: {} stored reports to refetch for DOE",
+        "sync-edinet: {} stored reports to refetch for {what}",
         docs.len()
     );
     let mut pending = vec![];
     let mut done = 0;
-    for doc in &docs {
+    for doc in docs {
         if started.elapsed() > deadline {
             println!("sync-edinet: time limit reached; refetch the rest next time");
             break;
@@ -800,7 +889,7 @@ async fn refetch_doe(
         .save_edinet_docs(&pending, now)
         .await
         .map_err(|e| e.0)?;
-    println!("sync-edinet: {done} refetched for DOE");
+    println!("sync-edinet: {done} refetched for {what}");
     Ok(())
 }
 
@@ -836,6 +925,12 @@ async fn fetch_doc(
     let refs: Vec<(domain::disclosure::Section, &str)> =
         sections.iter().map(|(s, t)| (*s, t.as_str())).collect();
     let signals = domain::disclosure::detect(&refs);
+    // 「事業の内容」は注目テーマとの照合用に D1 にも短く持つ（項目がなければ空文字 = 読んだが無かった）
+    let business_text = sections
+        .iter()
+        .find(|(s, _)| *s == domain::disclosure::Section::Business)
+        .map(|(_, t)| domain::theme::business_excerpt(t))
+        .unwrap_or_default();
     let body = serde_json::json!({
         "source": "EDINET",
         "code": doc.code,
@@ -887,6 +982,7 @@ async fn fetch_doc(
     Ok(EdinetDoc {
         doc: doc.clone(),
         signals,
+        business_text,
     })
 }
 
