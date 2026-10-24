@@ -6,7 +6,12 @@ import { AuthProvider } from "./auth";
 const KEY = "mock-clerk-user";
 
 export function MockAuth({ baseUrl, children }: { baseUrl: string; children: ReactNode }) {
-  const [user, setUser] = useState<string | null>(() => sessionStorage.getItem(KEY));
+  const [user, setUser] = useState<string | null>(
+    () =>
+      new URLSearchParams(window.location.search).get("mock_user") ??
+      sessionStorage.getItem(KEY) ??
+      "user_member",
+  );
   return (
     <AuthProvider
       value={{

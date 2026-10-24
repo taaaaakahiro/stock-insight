@@ -11,7 +11,12 @@ applyTheme();
 dark.addEventListener("change", applyTheme);
 
 const root = createRoot(document.getElementById("root") as HTMLElement);
-const mockClerkUrl = import.meta.env.VITE_MOCK_CLERK_URL;
+// 公開キーなしのローカル開発は偽の Clerk で直接開く。
+const mockClerkUrl =
+  import.meta.env.VITE_MOCK_CLERK_URL ??
+  (import.meta.env.DEV && !import.meta.env.VITE_CLERK_PUBLISHABLE_KEY
+    ? "http://localhost:9871"
+    : undefined);
 
 if (import.meta.env.DEV && mockClerkUrl) {
   // ローカル検証だけ偽の Clerk を使う。DEV の分岐ごと本番のビルドから消える

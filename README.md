@@ -46,7 +46,7 @@ npx wrangler dev --local --port 8787 &                 # API Worker（.dev.vars 
 cd web && VITE_MOCK_CLERK_URL=http://localhost:9871 pnpm dev   # http://localhost:5173
 ```
 
-ログインボタンで `user_member` としてログインします。`?mock_user=user_outsider` を付けて開くと、許可リストにないユーザーとして試せます。`VITE_MOCK_CLERK_URL` は開発サーバーでだけ有効で、本番のビルドには入りません。本番のビルドには `VITE_CLERK_PUBLISHABLE_KEY`（Clerk の公開キー）が必要です。
+ローカルではログイン画面を経由せず、`user_member` として自動ログインします。Clerk の公開キーが未設定の開発サーバーでは、`VITE_MOCK_CLERK_URL` を省略しても `http://localhost:9871` の偽の Clerk を使います。`?mock_user=user_outsider` を付けて開くと、許可リストにないユーザーとして試せます。`VITE_MOCK_CLERK_URL` は開発サーバーでだけ有効で、本番のビルドには入りません。本番のビルドには `VITE_CLERK_PUBLISHABLE_KEY`（Clerk の公開キー）が必要です。
 
 ## コミット前のシークレット検査
 
