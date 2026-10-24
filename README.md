@@ -61,7 +61,7 @@ git config core.hooksPath .githooks
 
 ## ドキュメント
 
-仕様書は [docs/](docs/README.md) にあります（要件定義・非機能要件・システム構成図・基本設計・詳細設計・シークレット運用・デプロイ手順・指標の取得元）。
+仕様書は [docs/](docs/README.md) にあります（機能・権限・画面・API・データモデル・計算式・AI・運用・開発手順）。
 
 版は `Cargo.toml` の `workspace.package.version` が元で、GitHub のタグ `v<version>` と一致させます（画面のフッターと `/api/status` に出ます）。
 
@@ -129,7 +129,7 @@ curl -H "Authorization: Bearer $(curl -s localhost:9871/token/user_member)" loca
 | `D1_DATABASE_ID` | GitHub Actions Secrets | 書き込み先の D1 |
 | `CLOUDFLARE_API_TOKEN` | GitHub Actions Secrets | D1 への書き込み（権限は D1 編集のみ） |
 
-D1・R2 などのリソースは wrangler コマンドで作成します（一覧は [docs/03](docs/03_system_architecture.md#作成済みのリソース)）。シークレットは `gh secret set` / `wrangler secret put` で設定します（手順は [docs/06](docs/06_secrets_and_repository.md)）。
+D1・R2 などのリソースは wrangler コマンドで作成します（一覧は [docs/03](docs/03_system_architecture.md#配置とバインディング)）。シークレットは `gh secret set` / `wrangler secret put` で設定します（手順は [docs/06](docs/06_secrets_and_repository.md)）。
 
 ## 既知の制約（PoC時点）
 
