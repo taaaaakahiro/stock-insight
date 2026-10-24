@@ -121,6 +121,9 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
           </div>
           <div className="ml-auto flex items-center gap-2 text-sm">
             <span className="hidden text-muted-foreground sm:inline">{me.display_name}</span>
+            <span className="text-xs text-muted-foreground">
+              {me.role === "superuser" ? "スーパーユーザー" : "一般"}
+            </span>
             <Button variant="ghost" size="sm" onClick={onSignOut} aria-label="ログアウト">
               <LogOut aria-hidden />
               <span className="hidden sm:inline">ログアウト</span>
@@ -144,13 +147,19 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
                   {codes.size > 0 && <span className="ml-1 tabular-nums">({codes.size})</span>}
                 </TabsTrigger>
                 <TabsTrigger value="recommend">AIレコメンド</TabsTrigger>
-                {me.is_admin && <TabsTrigger value="themes">注目テーマ</TabsTrigger>}
+                {me.permissions.manage_themes && (
+                  <TabsTrigger value="themes">注目テーマ</TabsTrigger>
+                )}
               </TabsList>
             </Tabs>
             {view === "screening" && <ScreeningPage />}
             {view === "portfolio" && <PortfolioPage />}
-            {view === "recommend" && <RecommendPage isAdmin={me.is_admin} />}
-            {view === "themes" && me.is_admin && <ThemesPage isAdmin />}
+            {view === "recommend" && (
+              <RecommendPage canRegenerate={me.permissions.regenerate_recommendations} />
+            )}
+            {view === "themes" && me.permissions.manage_themes && (
+              <ThemesPage canManage={me.permissions.manage_themes} />
+            )}
           </>
         )}
       </main>

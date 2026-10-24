@@ -1,6 +1,12 @@
 // API Worker との通信。トークンは Authorization ヘッダーで渡す（Cookie は使わない）
 
-export type Me = { id: string; email: string; display_name: string; is_admin: boolean };
+export type Me = {
+  id: string;
+  email: string;
+  display_name: string;
+  role: "superuser" | "general";
+  permissions: { manage_themes: boolean; regenerate_recommendations: boolean };
+};
 
 export type StockRow = {
   code: string;

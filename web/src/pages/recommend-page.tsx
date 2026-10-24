@@ -257,7 +257,7 @@ function Item({ r }: { r: Recommendation }) {
   );
 }
 
-export function RecommendPage({ isAdmin }: { isAdmin: boolean }) {
+export function RecommendPage({ canRegenerate }: { canRegenerate: boolean }) {
   const { getToken } = useAuthState();
   const [load, setLoad] = useState<Load>({ state: "loading" });
 
@@ -299,7 +299,7 @@ export function RecommendPage({ isAdmin }: { isAdmin: boolean }) {
               {day.manual ? "作り直し" : "作成"}（{day.model}）
             </p>
           )}
-          {isAdmin && <RegenerateButton onDone={reload} />}
+          {canRegenerate && <RegenerateButton onDone={reload} />}
         </div>
       </div>
 

@@ -22,7 +22,7 @@ const splitWords = (s: string) =>
  * 管理者の「注目テーマ」。テーマ名と言葉を登録すると、有価証券報告書の「事業の内容」の文と突き合わせて
  * テーマ株を決める。AIレコメンドでは同じ評価の中でテーマ株を先に出し、テーマ名をタグで示す
  */
-export function ThemesPage({ isAdmin }: { isAdmin: boolean }) {
+export function ThemesPage({ canManage }: { canManage: boolean }) {
   const { getToken } = useAuthState();
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const [editing, setEditing] = useState<Theme | null>(null);
@@ -58,7 +58,7 @@ export function ThemesPage({ isAdmin }: { isAdmin: boolean }) {
         </p>
       </div>
 
-      {isAdmin && (
+      {canManage && (
         <ThemeForm
           key={editing?.id ?? "new"}
           theme={editing}
@@ -72,7 +72,7 @@ export function ThemesPage({ isAdmin }: { isAdmin: boolean }) {
 
       {load.themes.length === 0 ? (
         <p className="rounded-lg border p-6 text-center text-sm text-muted-foreground">
-          まだテーマがありません。{isAdmin ? "上の欄から登録してください。" : ""}
+          まだテーマがありません。{canManage ? "上の欄から登録してください。" : ""}
         </p>
       ) : (
         <ul className="flex flex-col gap-2">
@@ -97,7 +97,7 @@ export function ThemesPage({ isAdmin }: { isAdmin: boolean }) {
                     </Badge>
                   ))}
                 </span>
-                {isAdmin && (
+                {canManage && (
                   <span className="ml-auto flex gap-1">
                     <Button
                       variant="ghost"
