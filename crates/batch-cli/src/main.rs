@@ -194,6 +194,7 @@ async fn main() {
         "reit-probe" => reit_probe(args).await,
         "reit-dump" => reit_dump(args),
         "compute" => compute(args).await,
+        "evaluate-recommendations" => evaluate_recommendations().await,
         "should-run" => should_run(args).await,
         other => Err(format!("unknown command: {other}")),
     };
@@ -275,6 +276,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0018_recommendation_source",
         include_str!("../../../migrations/0018_recommendation_source.sql"),
+    ),
+    (
+        "0021_recommendation_tracking",
+        include_str!("../../../migrations/0021_recommendation_tracking.sql"),
     ),
 ];
 
@@ -1569,5 +1574,25 @@ async fn compute(args: Args) -> Result<(), String> {
     if run.status == "failed" {
         return Err("no indicators computed".into());
     }
+    Ok(())
+}
+
+/// 価格取得・計算の後に実行する。推薦を新しく作らない日も追跡を継続する。
+async fn evaluate_recommendations() -> Result<(), String> {
+    let now = SystemClock.now_unix();
+    let client = http::client();
+    let csv = http::get_bytes(&client, HOLIDAYS_URL)
+        .await
+        .map_err(|e| e.0)?;
+    let holidays = domain::calendar::parse_holiday_csv(&csv);
+    // 引け前の手動実行では前日まで。日次バッチは18:30以降。
+    let today = Date::from_unix_jst(now);
+    let hour = (now + 9 * 3600).rem_euclid(86400) / 3600;
+    let as_of = if hour < 16 { today.add_days(-1) } else { today };
+    let count =
+        adapter_batch::recommendation_evaluation::run(&d1_store(client)?, &holidays, as_of, now)
+            .await
+            .map_err(|e| e.0)?;
+    println!("recommendation evaluation: {count} new results through {as_of}");
     Ok(())
 }

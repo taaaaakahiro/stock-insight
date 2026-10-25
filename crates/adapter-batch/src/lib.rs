@@ -8,3 +8,7 @@ pub mod jpx;
 pub mod jquants;
 pub mod raw;
 pub mod sql;
+
+pub mod recommendation_evaluation;
+
+pub mod recommendation_report;

@@ -17,6 +17,8 @@ import { count, growth, jstDateTime, pct, times, yen, ymd } from "@/lib/format";
 import { navigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
+import { RecommendHistory } from "./recommend-history";
+
 type Load = { state: "loading" } | { state: "ok"; data: Recommendations } | { state: "error" };
 
 const DISCLAIMER =
@@ -261,8 +263,12 @@ export function RecommendPage({ canRegenerate }: { canRegenerate: boolean }) {
   const { getToken } = useAuthState();
   const [load, setLoad] = useState<Load>({ state: "loading" });
 
+  const [historyVisible, setHistoryVisible] = useState(false);
+  const [historyRefresh, setHistoryRefresh] = useState(0);
+
   // 初回と、ボタンで作り直したあとに読む
   const reload = useCallback(() => {
+    setHistoryRefresh((n) => n + 1);
     const ctrl = new AbortController();
     apiGet<Recommendations>("/api/recommendations", getToken, ctrl.signal)
       .then((data) => setLoad({ state: "ok", data }))
@@ -299,6 +305,9 @@ export function RecommendPage({ canRegenerate }: { canRegenerate: boolean }) {
               {day.manual ? "作り直し" : "作成"}（{day.model}）
             </p>
           )}
+          <Button variant="outline" size="sm" onClick={() => setHistoryVisible((v) => !v)}>
+            {historyVisible ? "最新の推薦" : "履歴・成績"}
+          </Button>
           {canRegenerate && <RegenerateButton onDone={reload} />}
         </div>
       </div>
@@ -307,7 +316,9 @@ export function RecommendPage({ canRegenerate }: { canRegenerate: boolean }) {
         {DISCLAIMER}
       </p>
 
-      {day ? (
+      {historyVisible ? (
+        <RecommendHistory refreshKey={historyRefresh} />
+      ) : day ? (
         <>
           <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
             {(Object.keys(GRADES) as Grade[]).map((g) => (

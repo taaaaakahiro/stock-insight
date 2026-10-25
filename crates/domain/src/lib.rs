@@ -19,3 +19,5 @@ pub mod theme;
 
 pub use indicators::*;
 pub use model::*;
+
+pub mod recommendation_evaluation;

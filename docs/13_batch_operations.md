@@ -13,7 +13,7 @@
 | build | CLIをビルドし、後続へ渡す |
 | probe（指定時） | J-Quantsの直近日付とEDINET少数書類を取得してSQL成果物へ出力。D1へ保存しない |
 | prepare | 実行判定、マイグレーション、JPX銘柄マスタ同期 |
-| jquants | 株価・分割・財務・予想の同期、`compute --label daily`、原本をR2へ保存 |
+| jquants | 株価・分割・財務・予想の同期、`compute --label daily`、`evaluate-recommendations`、原本をR2へ保存 |
 | edinet | 配当方針・事業内容を同期、原本をR2へ保存し不要キーを削除 |
 | reit | 有報から借入・物件を同期。D1へ保存 |
 
@@ -65,3 +65,5 @@ EDINETの原本は種類ごとに上書きし、削除対象キーをmanifestへ
 オプション: `--dry-run <file>`, `--from-file <file>`, `--label <英数字>`, `--force`, `--from <YYYY-MM-DD>`, `--until <YYYY-MM-DD>`, `--rate <回/分>`, `--max-minutes`, `--persist-every`, `--raw-dir`, `--limit`, `--out`, `--refill-prices`, `--refill-forecasts`, `--refetch-doe`, `--refetch-business`。各コマンドで使用するオプションはmain.rsの該当処理を参照する。すべてのオプションがすべてのコマンドに作用するわけではない。
 
 停止する場合はWorker CronとGitHub側の予備scheduleの両方を対象にする。アプリの管理者権限だけではバッチ・基盤を操作できない。
+
+推薦追跡はcompute成功後に実行する。株価・財務の変更を追記し、既存の公開推薦の成績と比較レポートを更新する。価格基準日・欠損・再実行の扱いは[成績仕様](16_recommendation_evaluation.md)を参照。

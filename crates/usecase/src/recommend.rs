@@ -75,26 +75,42 @@ pub trait RecommendRepository {
     async fn themes(&self) -> Result<Vec<(String, String)>, PortError>;
     /// その日の結果がすでにあるか
     async fn exists(&self, date: &str) -> Result<bool, PortError>;
-    /// 1日分をまとめて保存する（MIN_PICKS〜PICK_COUNT 行）。`replace` ならその日の行を消してから入れる
-    /// （消すのと入れるのは1回の batch で、途中で切れて空にならないように）
-    async fn save(
-        &self,
-        date: &str,
-        model: &str,
-        picks: &[Pick],
-        now: i64,
-        source: Source,
-        replace: bool,
-    ) -> Result<(), PortError>;
+    /// AI を呼ぶ前に全入力を固定保存する。
+    async fn begin(&self, attempt: &Attempt<'_>) -> Result<i64, PortError>;
+    /// 検証済みの結果を公開する。入力と旧runは変更しない。
+    async fn publish(&self, id: i64, response: &str, picks: &[Pick]) -> Result<(), PortError>;
+    async fn fail(&self, id: i64, response: Option<&str>, error: &str) -> Result<(), PortError>;
     /// 最新日の結果（銘柄名と最新の指標つき）
     async fn latest(&self) -> Result<Option<Recommendations>, PortError>;
 }
 
+pub struct Attempt<'a> {
+    pub date: &'a str,
+    pub batch_id: &'a str,
+    pub model: &'a str,
+    pub prompt_version: &'a str,
+    pub request: &'a str,
+    pub candidates: &'a [StockRow],
+    pub themes: &'a [(String, String)],
+    pub now: i64,
+    pub manual: bool,
+}
+
+pub const RULE_VERSION: &str = "graded-dividend-theme-v2";
+
 /// AI（Workers AI）。こちらで選んだ銘柄と根拠を渡して、各銘柄の理由の文章を受け取る
 pub trait Recommender {
     fn model(&self) -> &str;
-    /// 答えの JSON を解釈できなければ Err。中身の検証（空でないか等）は呼び出し側で行う
-    async fn explain(&self, picks: &[Explain]) -> Result<Vec<RawPick>, PortError>;
+    fn prompt_version(&self) -> &str {
+        "explain-grade-v1"
+    }
+    fn request(&self, picks: &[Explain]) -> String;
+    /// 保存済みの入力を使い、解析に失敗しても応答本文を返す。
+    async fn explain_recorded(
+        &self,
+        picks: &[Explain],
+        request: &str,
+    ) -> Result<(String, Result<Vec<RawPick>, PortError>), PortError>;
 }
 
 /// 一覧の1行から、候補の判定に使う値だけを取り出す。`themed` は注目テーマに当たっているか
@@ -183,7 +199,7 @@ pub async fn generate<R: RecommendRepository, A: Recommender>(
     if repo.exists(&date).await? {
         return Ok(Outcome::Skipped(format!("already generated for {date}")));
     }
-    build_and_save(repo, ai, &date, now, Source::Cron, false).await
+    build_and_save(repo, ai, &date, &run.run_id, now, Source::Cron).await
 }
 
 /// 画面のボタン: 直近のバッチが成功していれば（今日でなくてもよい）、その株価の日付の結果を作り直す。
@@ -205,7 +221,7 @@ pub async fn regenerate<R: RecommendRepository, A: Recommender>(
     let Some(date) = run.latest_price_date else {
         return Ok(Outcome::Skipped("no prices yet".into()));
     };
-    build_and_save(repo, ai, &date, now, Source::Manual, true).await
+    build_and_save(repo, ai, &date, &run.run_id, now, Source::Manual).await
 }
 
 /// 候補を絞って順位と評価を決め、AI に理由を書かせて保存する（generate と regenerate の共通部分）
@@ -213,9 +229,9 @@ async fn build_and_save<R: RecommendRepository, A: Recommender>(
     repo: &R,
     ai: &A,
     date: &str,
+    batch_id: &str,
     now: i64,
     source: Source,
-    replace: bool,
 ) -> Result<Outcome, PortError> {
     let rows = repo.candidates().await?;
     let themes = repo.themes().await?;
@@ -223,6 +239,12 @@ async fn build_and_save<R: RecommendRepository, A: Recommender>(
     if picks.is_empty() {
         return Ok(Outcome::Skipped("no candidates".into()));
     }
+    // 比較に使う上位50候補を、ルール順位と当日の指標ごと固定する。
+    let snapshots: Vec<StockRow> = picks
+        .iter()
+        .take(50)
+        .filter_map(|c| rows.iter().find(|r| r.code == c.code).cloned())
+        .collect();
     picks.truncate(PICK_COUNT);
     let codes: Vec<String> = picks.iter().map(|c| c.code.clone()).collect();
     let phrases = repo.policy_phrases(&codes).await?;
@@ -245,10 +267,40 @@ async fn build_and_save<R: RecommendRepository, A: Recommender>(
             })
         })
         .collect();
-    let raw = ai.explain(&explains).await?;
-    let v = validate_picks(&raw, &picks).map_err(|e| PortError(format!("ai: {e}")))?;
-    repo.save(date, ai.model(), &v.picks, now, source, replace)
+    let request = ai.request(&explains);
+    let id = repo
+        .begin(&Attempt {
+            date,
+            batch_id,
+            model: ai.model(),
+            prompt_version: ai.prompt_version(),
+            request: &request,
+            candidates: &snapshots,
+            themes: &themes,
+            now,
+            manual: source == Source::Manual,
+        })
         .await?;
+    let (response, raw) = match ai.explain_recorded(&explains, &request).await {
+        Ok(value) => value,
+        Err(e) => {
+            repo.fail(id, None, &e.0).await?;
+            return Err(e);
+        }
+    };
+    let v = match raw
+        .and_then(|raw| validate_picks(&raw, &picks).map_err(|e| PortError(format!("ai: {e}"))))
+    {
+        Ok(value) => value,
+        Err(e) => {
+            repo.fail(id, Some(&response), &e.0).await?;
+            return Err(e);
+        }
+    };
+    if let Err(e) = repo.publish(id, &response, &v.picks).await {
+        repo.fail(id, Some(&response), &e.0).await?;
+        return Err(e);
+    }
     Ok(Outcome::Saved {
         date: date.to_string(),
         picks: v.picks.len(),
@@ -276,6 +328,8 @@ mod tests {
         asked_phrases: RefCell<Vec<String>>,
         themes: Vec<(String, String)>,
         saved_how: RefCell<Vec<(Source, bool)>>,
+        attempts: RefCell<Vec<(String, String, bool)>>,
+        failures: RefCell<Vec<Option<String>>>,
     }
 
     impl RecommendRepository for Fake {
@@ -300,19 +354,27 @@ mod tests {
         async fn exists(&self, date: &str) -> Result<bool, PortError> {
             Ok(self.existing.iter().any(|d| d == date))
         }
-        async fn save(
-            &self,
-            date: &str,
-            model: &str,
-            picks: &[Pick],
-            _now: i64,
-            source: Source,
-            replace: bool,
-        ) -> Result<(), PortError> {
-            self.saved
+        async fn begin(&self, a: &Attempt<'_>) -> Result<i64, PortError> {
+            self.attempts
                 .borrow_mut()
-                .push((date.into(), model.into(), picks.to_vec()));
-            self.saved_how.borrow_mut().push((source, replace));
+                .push((a.date.into(), a.model.into(), a.manual));
+            Ok(self.attempts.borrow().len() as i64)
+        }
+        async fn publish(&self, id: i64, _response: &str, picks: &[Pick]) -> Result<(), PortError> {
+            let a = self.attempts.borrow()[id as usize - 1].clone();
+            self.saved.borrow_mut().push((a.0, a.1, picks.to_vec()));
+            self.saved_how
+                .borrow_mut()
+                .push((if a.2 { Source::Manual } else { Source::Cron }, a.2));
+            Ok(())
+        }
+        async fn fail(
+            &self,
+            _id: i64,
+            response: Option<&str>,
+            _error: &str,
+        ) -> Result<(), PortError> {
+            self.failures.borrow_mut().push(response.map(str::to_owned));
             Ok(())
         }
         async fn latest(&self) -> Result<Option<Recommendations>, PortError> {
@@ -340,8 +402,16 @@ mod tests {
         fn model(&self) -> &str {
             "fake-model"
         }
-        async fn explain(&self, _picks: &[Explain]) -> Result<Vec<RawPick>, PortError> {
-            Ok(self.0.clone())
+        fn request(&self, _picks: &[Explain]) -> String {
+            "fixed-input".into()
+        }
+        async fn explain_recorded(
+            &self,
+            _picks: &[Explain],
+            request: &str,
+        ) -> Result<(String, Result<Vec<RawPick>, PortError>), PortError> {
+            assert_eq!(request, "fixed-input");
+            Ok(("fixed-response".into(), Ok(self.0.clone())))
         }
     }
 
@@ -349,18 +419,36 @@ mod tests {
         fn model(&self) -> &str {
             "fake-model"
         }
-        async fn explain(&self, picks: &[Explain]) -> Result<Vec<RawPick>, PortError> {
+        fn request(&self, picks: &[Explain]) -> String {
+            picks
+                .iter()
+                .map(|p| p.stock.code.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+        async fn explain_recorded(
+            &self,
+            picks: &[Explain],
+            request: &str,
+        ) -> Result<(String, Result<Vec<RawPick>, PortError>), PortError> {
+            assert_eq!(request, self.request(picks));
             if self.broken {
-                return Err(PortError("ai: bad json".into()));
+                return Ok((
+                    "broken-response".into(),
+                    Err(PortError("ai: bad json".into())),
+                ));
             }
             self.seen.borrow_mut().extend(picks.iter().cloned());
-            Ok(picks
-                .iter()
-                .map(|p| RawPick {
-                    code: p.stock.code.clone(),
-                    reason: format!("{} は割安", p.stock.code),
-                })
-                .collect())
+            Ok((
+                "echo-response".into(),
+                Ok(picks
+                    .iter()
+                    .map(|p| RawPick {
+                        code: p.stock.code.clone(),
+                        reason: format!("{} は割安", p.stock.code),
+                    })
+                    .collect()),
+            ))
         }
     }
 
@@ -436,6 +524,8 @@ mod tests {
             asked_phrases: RefCell::new(vec![]),
             themes: vec![],
             saved_how: RefCell::new(vec![]),
+            attempts: RefCell::new(vec![]),
+            failures: RefCell::new(vec![]),
         }
     }
 
@@ -601,5 +691,15 @@ mod tests {
             vec!["半導体".to_string(), "データセンター".to_string()]
         );
         assert!(seen[1].themes.is_empty());
+    }
+    #[test]
+    fn invalid_answer_is_retained_without_publishing() {
+        let repo = fake(run("succeeded", NOW - 3600), 30);
+        let mut ai = echo();
+        ai.broken = true;
+        assert!(block_on(generate(&repo, &ai, NOW)).is_err());
+        assert_eq!(repo.attempts.borrow().len(), 1);
+        assert_eq!(&*repo.failures.borrow(), &[Some("broken-response".into())]);
+        assert!(repo.saved.borrow().is_empty());
     }
 }

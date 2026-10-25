@@ -35,13 +35,23 @@ impl Recommender for WorkersAi {
         MODEL
     }
 
-    async fn explain(&self, picks: &[Explain]) -> Result<Vec<RawPick>, PortError> {
-        let input = Input(to_js_object(&request_body(picks))?);
+    fn request(&self, picks: &[Explain]) -> String {
+        request_body(picks).to_string()
+    }
+
+    async fn explain_recorded(
+        &self,
+        _picks: &[Explain],
+        request: &str,
+    ) -> Result<(String, Result<Vec<RawPick>, PortError>), PortError> {
+        let body: Value =
+            serde_json::from_str(request).map_err(|e| PortError(format!("ai: input: {e}")))?;
+        let input = Input(to_js_object(&body)?);
         let output: Value = self
             .ai
             .run(MODEL, input)
             .await
             .map_err(|e| PortError(format!("ai: {e}")))?;
-        parse_response(&output)
+        Ok((output.to_string(), parse_response(&output)))
     }
 }
