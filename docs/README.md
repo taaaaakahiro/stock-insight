@@ -19,6 +19,7 @@
 | [バッチ運用](13_batch_operations.md) | 起動条件、ジョブ、再取得、障害対応 |
 | [開発・検証](14_development_and_testing.md) | ローカル起動、モック認証、CI |
 | [未実装要件](15_unimplemented_requirements.md) | 現行仕様に含まれない機能と未確定事項 |
+| [推薦履歴・成績比較](16_recommendation_evaluation.md) | 蓄積頻度、成績計算、比較と改善の運用 |
 | [権限仕様](user-permissions.md) | ユーザー区分と機能ごとの操作可否 |
 
 計算式は指標仕様、認可は権限仕様、通信契約はAPI仕様、物理スキーマはデータモデルを正本とする。変更時は対応する文書と参照先を更新する。

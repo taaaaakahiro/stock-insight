@@ -16,6 +16,9 @@
 | `PUT /api/portfolio/:code` | 銘柄コード、本文不要 | `ok: true` | 不正コード400、上限409 `too_many` |
 | `DELETE /api/portfolio/:code` | 銘柄コード、本文不要 | `ok: true` | 不正コード400 |
 | `GET /api/recommendations` | なし | `day`（未生成はnull） | — |
+| `GET /api/recommendations/history` | 任意のbefore（正の安全整数） | runs（最大20件）, next_before | 不正cursorは400 |
+| `GET /api/recommendations/history/:id` | 正の安全整数ID | run, candidates（当時のstock）, outcomes | 不正ID400、未公開・存在なし404 |
+| `GET /api/recommendations/comparison` | なし | report（未評価はnull）, as_of, evaluated_at, version | — |
 | `POST /api/recommendations/regenerate` | 本文不要、管理者のみ | `date, picks, dropped` | 前提不成立409 `skipped` |
 | `GET /api/themes` | なし | `themes` | — |
 | `GET /api/themes/:id` | 整数ID | `theme, stocks` | 不正ID400、存在しない404 |
@@ -77,3 +80,5 @@ metricは22種類:
 - テーマ: `id, name, words, count, updated_at`。詳細の `stocks` は `code, name, matched_word`（名称はnull可）。
 
 テーマ入力の `words` は文字列配列またはカンマ・読点・改行区切りの文字列。配列の文字列以外の要素は除かれる。正規化・上限・再照合の仕様は[AI・テーマ](12_recommendations_and_themes.md)を参照。
+
+推薦履歴の3APIは利用許可済みユーザー向け、Cache-Controlはno-store。履歴はpublishedとlegacy_incompleteのみ。入力・応答全文や失敗詳細は返さない。成績は完了バッチの最新結果のみ。価格収益率は小数、horizonは営業日数（0は最新）。状態・集計の意味は[成績仕様](16_recommendation_evaluation.md)を参照。

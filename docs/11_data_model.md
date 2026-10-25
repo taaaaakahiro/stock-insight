@@ -10,7 +10,7 @@
 - `themes.words`、`edinet_docs.phrases`、REITの `checks` と `body` はJSON文字列。
 - 金額は円、通常の比率は小数。REITの保存上の平均利率・稼働率は%値で、一覧APIで小数へ変換する。
 - 個人データの分離は `portfolio_items.user_id` と認証済みIDを使うクエリで行う。
-- EDINETは種類ごとに最新を置換。REIT最新値は古い期で上書きせず、期別要約を履歴へ保存。レコメンド再生成は対象日の結果を置換する。
+- EDINETは種類ごとに最新を置換。REIT最新値は古い期で上書きせず、期別要約を履歴へ保存。レコメンド再生成は最新表示キャッシュのみ置換し、生成試行と公開履歴を追記する。
 - 履歴の一律削除期限を設ける定期処理はない。株価履歴は最後の株価日から1861日（5×366+31日）の範囲に切り詰める。EDINETの整理も取得処理が行う。
 
 ## `batch_runs`
@@ -419,3 +419,19 @@ Clerkユーザーの許可判定キャッシュ。
 ## 原本保存
 
 R2の `jquants/bars/<日付>.json.gz` と `jquants/fins/<日付>.json.gz` に取得原本、`edinet/<コード>/annual.json.gz`・`semiannual.json.gz` に抽出文章を保存する。REIT詳細はD1のJSONから配信する。R2はAPI Workerから直接参照しない。
+
+## 推薦追跡（0021）
+
+DDLの正本は [0021_recommendation_tracking.sql](../migrations/0021_recommendation_tracking.sql)。
+
+| テーブル | キー・保存内容 |
+|---|---|
+| recommendation_runs | 自動採番id、legacy_key一意。基準日・バッチ・版・入力・応答・状態・生成元・生成/公開時刻・エラー。is_primary=1はprice_dateごとに一意 |
+| recommendation_candidates | (run_id,code)主キー、(run_id,rank)一意。rule_rank、snapshot_json、公開rank/grade/reason |
+| recommendation_tracking_meta | key主キー。旧キャッシュ移行済みマーカー。繰り返しmigrateしても再移行しない |
+| evaluation_market_data | id、code、trade_date、close、split_factor、observed_at。観測値の組に一意制約。訂正は追記 |
+| evaluation_batches | id、created_at、as_of、source_revision、calendar_json、report_json、version、status。completeのみ閲覧対象 |
+| recommendation_outcomes | (run_id,code,horizon,batch_id)主キー、result_json。codeは銘柄または集計キー__ai10（公開推薦）、__rule10、__candidates |
+| recommendation_fundamentals | id、code、source、observed_at、payload。直前から内容が変わった観測を追記 |
+
+外部キーは候補→run、成績→run/batch。自動削除なし。raw JSONはDB内の監査情報であり、履歴APIは候補指標と計算結果だけを返す。現在の選定はルール方式で、内部キー__ai10は互換名として公開推薦を表す。

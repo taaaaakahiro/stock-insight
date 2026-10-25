@@ -147,6 +147,7 @@ jobs:
       # 保存は基本1回（最後）。保存のたびに全銘柄の株価の履歴を書き直すので、回数を増やすと D1 の書き込みが膨らむ
       - run: ./batch-cli sync-jq --rate 60 --max-minutes "${{ github.event.inputs.max_minutes || '300' }}" --persist-every "${{ github.event.inputs.persist_every || '1500' }}" --raw-dir raw ${{ github.event.inputs.refill_prices == 'true' && '--refill-prices' || '' }} ${{ github.event.inputs.refill_forecasts == 'true' && '--refill-forecasts' || '' }}
       - run: ./batch-cli compute --label daily
+      - run: ./batch-cli evaluate-recommendations
       # J-Quants の応答（全項目）を日付ごとの gzip JSON で R2 に置く。取り込みが途中で失敗しても、取れた分は置く
       # （CLOUDFLARE_API_TOKEN に R2 の編集権限が要る）
       - name: upload J-Quants raw data to R2

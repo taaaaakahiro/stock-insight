@@ -330,3 +330,74 @@ export type Recommendations = {
     rows: Recommendation[];
   } | null;
 };
+
+export type RecommendationRun = {
+  id: number;
+  price_date: string;
+  model: string;
+  prompt_version: string | null;
+  rule_version: string | null;
+  status: "published" | "legacy_incomplete";
+  is_primary: number;
+  trigger_mode: string;
+  created_at: number;
+  published_at: number | null;
+};
+export type RecommendationHistory = { runs: RecommendationRun[]; next_before: number | null };
+export type RecommendationOutcome = {
+  code: string;
+  horizon: number;
+  evaluated_at: number;
+  result: {
+    status: "pending" | "tracking" | "complete" | "data_missing" | "entry_unavailable";
+    entry_date: string | null;
+    end_date: string | null;
+    price_return: number | null;
+    max_drawdown: number | null;
+    missing_days?: number;
+    count?: number;
+    available?: number;
+    total_return: null;
+  };
+};
+export type RecommendationHistoryDetail = {
+  run: RecommendationRun;
+  candidates: {
+    code: string;
+    rule_rank: number | null;
+    rank: number | null;
+    reason: string | null;
+    grade: Grade | null;
+    stock: StockRow | null;
+  }[];
+  outcomes: RecommendationOutcome[];
+};
+
+export type RecommendationComparison = {
+  as_of?: string;
+  evaluated_at?: number;
+  report: {
+    metric: "price_return";
+    baseline: "rule_top10";
+    adoption: "manual_review";
+    primary_horizon: number;
+    groups: {
+      model: string;
+      prompt_version: string;
+      rule_version: string;
+      horizon: number;
+      total: number;
+      paired: number;
+      pending: number;
+      missing: number;
+      mean_ai: number | null;
+      mean_rule: number | null;
+      mean_excess: number | null;
+      median_excess: number | null;
+      beat_rate: number | null;
+      ties: number;
+      unique_stocks: number;
+      months: { month: string; pairs: number; mean_excess: number | null }[];
+    }[];
+  } | null;
+};
