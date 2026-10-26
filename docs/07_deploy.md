@@ -7,11 +7,13 @@
 1. 公開するコミットを確定し、CI成功を確認する。mainの対象コミットからクリーンな作業ツリーを用意する。
 2. Worker・画面・DB・シークレット・Cronの変更範囲を確認する。
 3. `npx wrangler@4.151.3 whoami` で接続先、`npx wrangler@4.151.3 deployments list` で現在のWorkerバージョンを確認し、切り戻し先を控える。
-4. DB変更がある場合、適用済みの列・索引を確認し、D1をバックアップする。
+4. DB変更がある場合、適用済みの列・索引を確認し、D1を書き出すかTime Travelの復旧位置を記録する。復旧手段を確認してから適用する。
 
 ```bash
 mkdir -p backups
 npx wrangler@4.151.3 d1 export maaun-stock-insight --remote --output backups/before-deploy.sql
+# Time Travelの復旧位置の確認
+npx wrangler@4.151.3 d1 time-travel info maaun-stock-insight
 ```
 
 バックアップはGitへ入れない。既存ファイルを上書きしない保存名を選ぶ。マイグレーションは[データモデル](11_data_model.md)を参照し、新コードが必要とするものをWorker公開より先に適用する。`ADD COLUMN` を含むSQLを未確認で再実行しない。

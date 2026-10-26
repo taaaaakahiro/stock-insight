@@ -13,15 +13,21 @@
 | `GITHUB_DISPATCH_TOKEN` | Worker Secret | 対象リポジトリのActions起動 |
 | `CLOUDFLARE_ACCOUNT_ID` | Actions Secret / CLI環境 | D1・R2のアカウント |
 | `D1_DATABASE_ID` | Actions Secret / CLI環境 | バッチのD1接続先 |
-| `CLOUDFLARE_API_TOKEN` | Actions Secret / CLI環境 | バッチのD1編集・R2操作 |
+| `CLOUDFLARE_API_TOKEN` | Actions Secret / CLI環境 | バッチのD1編集・R2操作・Workers AI実行。意味検索使用時はVectorizeも必要 |
 | `JQUANTS_API_KEY` | Actions Secret / CLI環境 | 株価・財務取得 |
 | `EDINET_API_KEY` | Actions Secret / CLI環境 | EDINET取得 |
+| `REIT_RAG_ENABLED` | Actions Variable | `true` のとき日次REIT分析を実行 |
+| `REIT_RAG_BUCKET` | workflow / CLI環境 | 原本・AI入出力の保存先。workflowは `maaun-stock-insight-raw` |
+| `REIT_RAG_VECTOR_INDEX` | Actions Variable / CLI環境 | 任意。設定時にVectorize検索を使用 |
+| `REIT_RAG_EMBEDDING_MODEL` | Actions Variable / CLI環境 | Vectorize使用時に必須。indexの次元と一致させる |
 | `CLERK_PUBLISHABLE_KEY` | GitHub Actions Variable | フロントエンドのビルド用公開キー |
 | `VITE_CLERK_PUBLISHABLE_KEY` | webビルド環境 | 上の公開キーをViteへ渡す。本番ビルドで必須 |
 | `VITE_MOCK_CLERK_URL` | ローカルweb環境 | 開発用モック認証。詳細は開発手順 |
 | `MOCK_AZP` | モックサーバー環境 | 開発用JWTのazp。既定 `http://localhost:5173` |
 
 D1・AIのbinding、静的アセット、Cron、公開ドメインは [wrangler.jsonc](../wrangler.jsonc) で管理する。バッチの設定元は [daily-batch.yml](../.github/workflows/daily-batch.yml)。
+
+生成モデルはレコメンドとREIT分析で[共通定義](../crates/usecase/src/ai_config.rs)を使う。`REIT_RAG_MODEL` の設定は不要。埋め込みモデルは生成モデルとは別。
 
 ## 登録と管理
 
