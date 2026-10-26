@@ -65,6 +65,8 @@ pnpm --dir web dev
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+python3 scripts/test_recommendation_tracking.py
+python3 scripts/test_reit_rag.py
 cargo clippy -p api-worker -p adapter-cf --target wasm32-unknown-unknown -- -D warnings
 pnpm --dir web lint
 pnpm --dir web typecheck
@@ -74,3 +76,5 @@ pnpm --dir web test
 本番ビルドは `VITE_CLERK_PUBLISHABLE_KEY` が必要。CIではActions Variableから渡す。CIはPRとmainへのpushで動き、gitleaksで秘密情報も検査する。本番へ自動デプロイしない。
 
 権限変更時は一般・管理者・未許可・未認証を確認し、一般からの直接API呼び出しで管理操作が拒否されることも検証する。スキーマ変更時は全マイグレーションを空DBへ適用できること、既存データとの互換性、CLIのマイグレーション一覧を確認する。
+
+REITの結合テストは合成iXBRLと固定応答で数値・引用の検証を確認する。実モデルの判断品質・取得率・費用や本番バッチの成功を示すものではない。

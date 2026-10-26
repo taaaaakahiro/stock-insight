@@ -1,6 +1,6 @@
 # 08 指標の取得元と計算式
 
-一覧・詳細に出す各指標が、どの API のどの項目から、どう計算されているかの一覧。取得元は J-Quants API V2（Light プラン）、EDINET API v2（配当方針・事業内容・REIT有報）と JPX の上場銘柄一覧。Yahoo Finance は使わない。
+一覧・詳細に出す各指標が、どの API のどの項目から、どう計算されているかの一覧。取得元は J-Quants API V2、EDINET API v2（配当方針・事業内容・REIT有報）と JPX の上場銘柄一覧。Yahoo Finance は使わない。
 
 ## 取得元の API
 
@@ -9,9 +9,11 @@
 | 株価四本値 | `GET /v2/equities/bars/daily?date=YYYY-MM-DD` | 日付指定で全上場銘柄。ページ分割（`pagination_key`）をたどる | 全項目: R2 `jquants/bars/<日付>.json.gz`。終値だけ: D1 `price_history`（1銘柄1行、`YYYYMMDD,終値;…`）。株式分割・併合: D1 `splits`（`AdjFactor` が 1 でない日） |
 | 財務情報サマリー | `GET /v2/fins/summary?date=YYYY-MM-DD` | 日付指定でその日に開示された全銘柄。同上 | 全項目: R2 `jquants/fins/<日付>.json.gz`。本決算（`CurPerType=FY`）: D1 `financials_annual`。四半期（1Q/2Q/3Q）: D1 `financials_quarterly`。配当予想: D1 `dividend_forecasts`（開示1件1行） |
 | 上場銘柄一覧 | JPX `data_j.xlsx` | 日次バッチの最初に全件 | D1 `stocks`（名称・種類・市場・33業種・規模区分） |
-| 祝日 | 内閣府 `syukujitsu.csv` | バッチ起動時 | 保存しない（休場日の判定のみ） |
-| 書類一覧 | EDINET `GET /api/v2/documents.json?date=YYYY-MM-DD&type=2` | 日付指定で全社分（1日1回）。有報（`docTypeCode=120`）と半期報告書（`160`）で、CSV があり取下げでないものだけ。訂正（130・170）は使わない | 保存しない（取る書類を選ぶだけ） |
+| 祝日 | 内閣府 `syukujitsu.csv` | バッチ起動時 | 休場日判定・レコメンド成績・REITセクター期間の計算 |
+| 書類一覧 | EDINET `GET /api/v2/documents.json?date=YYYY-MM-DD&type=2` | 日付指定で全社分（1日1回）。配当方針取得では有報（`docTypeCode=120`）と半期報告書（`160`）で、CSV があり取下げでないものだけ。訂正（130・170）は使わない | 保存しない（取る書類を選ぶだけ） |
 | 書類 | EDINET `GET /api/v2/documents/<docID>?type=5` | 銘柄・種類ごとに最新の1通だけ、まだ持っていないものを取る | 文章: R2 `edinet/<コード>/annual.json.gz`・`semiannual.json.gz`（新しい書類で上書き）。手がかり: D1 `edinet_docs`（1銘柄・1種類1行） |
+
+REITの借入・物件は[REIT仕様](09_reit_debt.md)、訂正監査・分析は[REIT分析](17_reit_analysis.md)の別経路で取得する。
 
 取り込みは `batch-cli sync-jq`。初回だけ過去5年分、以後は前回の続き（`sync_state.jq_synced_until`）。財務は直近3日分を毎回取り直す。
 

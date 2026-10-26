@@ -11,9 +11,12 @@
 | `GET /api/stocks/:code` | 銘柄コード | `stock, annual, quarters, yield_series, price_series, latest_disclosed` | 不正コード400、指標なし404 |
 | `GET /api/stocks/:code/edinet` | 銘柄コード | `code, docs`（未取得は空配列） | 不正コード400 |
 | `GET /api/stocks/:code/reit` | 銘柄コード | REIT要約・詳細・履歴 | 不正コード400、未取得404 |
+| `GET /api/stocks/:code/reit-assessment` | 銘柄コード | REIT分析の公開版と `items` | 不正コード400、未生成・対象なしは空配列 |
+| `GET /api/reit/sectors` | なし | REIT分析の公開版とセクター別 `items` | 未生成は空配列 |
 | `GET /api/status` | なし | `version, latest_run`（未実行はnull） | — |
 | `GET /api/portfolio` | なし | `codes, rows` | — |
 | `PUT /api/portfolio/:code` | 銘柄コード、本文不要 | `ok: true` | 不正コード400、上限409 `too_many` |
+| `POST /api/portfolio/:code/acquisition` | `acquisition_date`: YYYY-MM-DDまたはnull | `ok: true` | 不正コード・日付・未来日400 |
 | `DELETE /api/portfolio/:code` | 銘柄コード、本文不要 | `ok: true` | 不正コード400 |
 | `GET /api/recommendations` | なし | `day`（未生成はnull） | — |
 | `GET /api/recommendations/history` | 任意のbefore（正の安全整数） | runs（最大20件）, next_before | 不正cursorは400 |
@@ -75,10 +78,16 @@ metricは22種類:
 - EDINET: `docs` の各要素に書類種類・ID・提出日・期末、配当方針フラグ、下限・目標・根拠文、`phrases` を返す。
 - REIT詳細: `code, doc_id, submitted, period_end, sector, balance, rate_mix, swap_notional, avg_rate, avg_years, reprice_1y, reprice_1y_max, property_count, leasable_m2, leased_m2, occupancy, checks, detail, history`。**このAPIの平均利率・稼働率は%値**であり、銘柄行の小数比率とは異なる。面積は㎡、金額は円。[REIT仕様](09_reit_debt.md)を参照。
 - status: `latest_run` は `run_id, started_at, finished_at, status, latest_price_date, latest_fin_date`。
-- ポートフォリオ: `codes` は登録コード、`rows` は銘柄行に `signals, reference_signals` を追加した配列。
+- ポートフォリオ: `codes` は登録コード、`rows` は銘柄行に `signals, reference_signals, acquisition_date, acquisition_price, acquisition_price_date` を追加した配列。
 - レコメンド: `day` は `date, model, created_at, manual, rows`。行は銘柄行に `rank, grade, reason, themes` を追加。gradeは旧保存データではnullになりうる。`manual` は手動生成かどうか。
 - テーマ: `id, name, words, count, updated_at`。詳細の `stocks` は `code, name, matched_word`（名称はnull可）。
 
 テーマ入力の `words` は文字列配列またはカンマ・読点・改行区切りの文字列。配列の文字列以外の要素は除かれる。正規化・上限・再照合の仕様は[AI・テーマ](12_recommendations_and_themes.md)を参照。
 
 推薦履歴の3APIは利用許可済みユーザー向け、Cache-Controlはno-store。履歴はpublishedとlegacy_incompleteのみ。入力・応答全文や失敗詳細は返さない。成績は完了バッチの最新結果のみ。価格収益率は小数、horizonは営業日数（0は最新）。状態・集計の意味は[成績仕様](16_recommendation_evaluation.md)を参照。
+
+## REIT分析の応答
+
+2つの分析APIは `private, no-store`。`status` は `ready` / `not_generated`、`update_status` は `not_started` / `running` / `ready` / `failed`、`attempted_at` は更新試行時刻。公開版がある場合は `run_id, generated_at, price_date, items` を返す。`generated_at` はrunの入力基準時刻で、処理終了時刻ではない。
+
+銘柄の `items` は最大1件で `assessment, evidence, verified_metrics, document_issue` を含む。セクターの `items` は `sector, members, periods, ai_summary` を含む。期間の値は `sessions, return, direction, count, available, up_share, series, missing_codes`。欠損の騰落率はnull。定義は[REIT分析](17_reit_analysis.md)。

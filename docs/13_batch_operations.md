@@ -16,6 +16,7 @@
 | jquants | 株価・分割・財務・予想の同期、`compute --label daily`、`evaluate-recommendations`、原本をR2へ保存 |
 | edinet | 配当方針・事業内容を同期、原本をR2へ保存し不要キーを削除 |
 | reit | 有報から借入・物件を同期。D1へ保存 |
+| reit-rag | jquants・reit成功後、`REIT_RAG_ENABLED=true` の場合にREIT分析を生成・公開 |
 
 prepare後の3取得ジョブは並列。jquants内のcomputeが書く `batch_runs` の成功は、EDINET・REIT・R2アップロードまでの成功を示すものではない。
 
@@ -60,10 +61,20 @@ EDINETの原本は種類ごとに上書きし、削除対象キーをmanifestへ
 
 ## CLI
 
-コマンド: `migrate`, `sync-master`, `sync-jq`, `sync-edinet`, `sync-reit`, `compute`, `should-run`, `reit-probe`, `reit-dump`。
+コマンド: `migrate`, `sync-master`, `sync-jq`, `sync-edinet`, `sync-reit`, `compute`, `should-run`, `reit-probe`, `reit-dump`, `evaluate-recommendations`, `reit-rag`。
 
 オプション: `--dry-run <file>`, `--from-file <file>`, `--label <英数字>`, `--force`, `--from <YYYY-MM-DD>`, `--until <YYYY-MM-DD>`, `--rate <回/分>`, `--max-minutes`, `--persist-every`, `--raw-dir`, `--limit`, `--out`, `--refill-prices`, `--refill-forecasts`, `--refetch-doe`, `--refetch-business`。各コマンドで使用するオプションはmain.rsの該当処理を参照する。すべてのオプションがすべてのコマンドに作用するわけではない。
 
 停止する場合はWorker CronとGitHub側の予備scheduleの両方を対象にする。アプリの管理者権限だけではバッチ・基盤を操作できない。
 
 推薦追跡はcompute成功後に実行する。株価・財務の変更を追記し、既存の公開推薦の成績と比較レポートを更新する。価格基準日・欠損・再実行の扱いは[成績仕様](16_recommendation_evaluation.md)を参照。
+
+## REIT分析の実行
+
+`batch-cli reit-rag --max-minutes 110` を使用する。workflowのジョブ上限は120分。CLIはdry-run、from-file、from/untilの日付指定を受け付けない。
+
+[設定一覧](06_secrets_and_repository.md)のD1・Cloudflare・EDINET接続情報と保存先バケットが必要。意味検索は任意で、Vectorize indexと埋め込みモデルを両方設定する。埋め込みモデルを変更する場合は別indexを作る。生成モデルはレコメンドと共通で追加設定不要。
+
+失敗時は公開済みの結果を維持する。再実行では保存済み文書・抽出キャッシュを再利用するが、AI評価は新しいrunで生成する。Vectorizeの索引が検索可能になる前は公開を止めるため、反映後に再実行する。処理段階ごとの完全な再開や費用上限の自動制御はない。
+
+`REIT_RAG_ENABLED` の変更は次のworkflowから適用される。停止しても既存の公開結果は残る。稼働状態はActionsの `reit-rag` ジョブと `sync_state.reit_rag_attempt_status`、公開結果は `reit_rag_publication` で確認する。初回バッチの完了とデプロイ完了は別。
