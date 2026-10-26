@@ -10,6 +10,11 @@ name: daily-batch
 on:
   workflow_dispatch:
     inputs:
+      scope:
+        description: "all: 日次全体 / reit: 保存済みデータでREIT分析のみ / diagnose: 読み取り専用の接続診断"
+        type: choice
+        options: [all, reit, diagnose]
+        default: all
       force:
         description: "true なら休場日・当日実行済みでも動かす"
         default: "false"
@@ -55,6 +60,7 @@ env:
 jobs:
   # 一度だけビルドして、後のジョブはバイナリを使い回す
   build:
+    if: github.event.inputs.scope != 'diagnose'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -74,7 +80,7 @@ jobs:
   # 取得元の確認（D1 には触れない）
   probe:
     needs: build
-    if: github.event.inputs.probe == 'true'
+    if: github.event.inputs.probe == 'true' && github.event.inputs.scope != 'reit'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
@@ -107,7 +113,7 @@ jobs:
 
   guard:
     needs: build
-    if: github.event.inputs.probe != 'true'
+    if: github.event.inputs.probe != 'true' && github.event.inputs.scope != 'reit'
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.check.outputs.run }}
@@ -215,8 +221,12 @@ jobs:
 
   # 原資料・AI結果は非公開R2へ。公開GitHub artifactには保存しない。
   reit-rag-audit:
-    needs: [jquants, reit]
-    if: vars.REIT_RAG_ENABLED == 'true'
+    needs: [build, jquants, reit]
+    if: >-
+      ${{ !cancelled() && vars.REIT_RAG_ENABLED == 'true' &&
+          needs.build.result == 'success' &&
+          (github.event.inputs.scope == 'reit' ||
+           (needs.jquants.result == 'success' && needs.reit.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 105
     env:
@@ -301,3 +311,15 @@ jobs:
       - run: chmod +x batch-cli
       - name: Validate completeness and publish REIT analysis
         run: ./batch-cli reit-rag --stage publish --run-id "$RAG_RUN_ID" --max-minutes 100
+
+  diagnose:
+    if: github.event.inputs.scope == 'diagnose'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      JQUANTS_API_KEY: ""
+      EDINET_API_KEY: ""
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read-only Cloudflare authentication probes
+        run: python3 scripts/diagnose_cloudflare.py
