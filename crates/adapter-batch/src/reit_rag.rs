@@ -510,7 +510,7 @@ async fn run_inner(store: &D1Store, now: i64, max_minutes: u64) -> Result<usize,
     let mut prices = BTreeMap::new();
     let holiday_bytes = crate::http::get_bytes(&cloud.client, crate::http::HOLIDAYS_URL)
         .await
-        .map_err(|e| err(&format!("holiday calendar: {}", e.0)))?;
+        .map_err(|e| err(format!("holiday calendar: {}", e.0)))?;
     let holidays = domain::calendar::parse_holiday_csv(&holiday_bytes);
     if !holidays.iter().any(|d| d.y == today.y) {
         return Err(err("holiday calendar does not cover current year"));
