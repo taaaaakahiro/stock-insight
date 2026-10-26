@@ -214,11 +214,46 @@ jobs:
           echo "done"
 
   # 原資料・AI結果は非公開R2へ。公開GitHub artifactには保存しない。
-  reit-rag:
+  reit-rag-audit:
     needs: [jquants, reit]
     if: vars.REIT_RAG_ENABLED == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 130
+    timeout-minutes: 105
+    env:
+      REIT_RAG_BUCKET: maaun-stock-insight-raw
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - name: Audit corrections and withdrawn filings
+        run: ./batch-cli reit-rag --stage audit --max-minutes 100
+
+  reit-rag-archive:
+    needs: reit-rag-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      REIT_RAG_BUCKET: maaun-stock-insight-raw
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - name: Archive REIT evidence
+        run: ./batch-cli reit-rag --stage archive --shard ${{ matrix.shard }} --shards 4 --max-minutes 100
+
+  reit-rag-prepare:
+    needs: reit-rag-archive
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    outputs:
+      run_id: ${{ steps.prepare.outputs.run_id }}
     env:
       REIT_RAG_BUCKET: maaun-stock-insight-raw
       REIT_RAG_VECTOR_INDEX: ${{ vars.REIT_RAG_VECTOR_INDEX }}
@@ -228,5 +263,41 @@ jobs:
         with:
           name: batch-cli
       - run: chmod +x batch-cli
-      - name: Build and publish REIT evidence and sector analysis
-        run: ./batch-cli reit-rag --max-minutes 120
+      - name: Freeze audited inputs and sector calculations
+        id: prepare
+        run: ./batch-cli reit-rag --stage prepare --max-minutes 100
+
+  reit-rag-assess:
+    needs: reit-rag-prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      REIT_RAG_BUCKET: maaun-stock-insight-raw
+      RAG_RUN_ID: ${{ needs.reit-rag-prepare.outputs.run_id }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - name: Assess REIT shard from frozen inputs
+        run: ./batch-cli reit-rag --stage assess --run-id "$RAG_RUN_ID" --shard ${{ matrix.shard }} --shards 4 --max-minutes 100
+
+  reit-rag:
+    needs: [reit-rag-prepare, reit-rag-assess]
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    env:
+      REIT_RAG_BUCKET: maaun-stock-insight-raw
+      RAG_RUN_ID: ${{ needs.reit-rag-prepare.outputs.run_id }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - name: Validate completeness and publish REIT analysis
+        run: ./batch-cli reit-rag --stage publish --run-id "$RAG_RUN_ID" --max-minutes 100
