@@ -241,6 +241,7 @@ jobs:
 
   reit-rag-archive:
     needs: reit-rag-audit
+    if: ${{ !cancelled() && needs.reit-rag-audit.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 105
     strategy:
@@ -260,6 +261,7 @@ jobs:
 
   reit-rag-prepare:
     needs: reit-rag-archive
+    if: ${{ !cancelled() && needs.reit-rag-archive.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 105
     outputs:
@@ -279,6 +281,7 @@ jobs:
 
   reit-rag-assess:
     needs: reit-rag-prepare
+    if: ${{ !cancelled() && needs.reit-rag-prepare.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 105
     strategy:
@@ -299,6 +302,7 @@ jobs:
 
   reit-rag:
     needs: [reit-rag-prepare, reit-rag-assess]
+    if: ${{ !cancelled() && needs.reit-rag-prepare.result == 'success' && needs.reit-rag-assess.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 105
     env:
