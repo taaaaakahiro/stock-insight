@@ -231,7 +231,13 @@ export type SellSignal =
   | "loss";
 
 /** signals は売る判断に使う主のサイン（配当性向・PBR・赤字配当）、reference_signals は参考 */
-export type Holding = StockRow & { signals: SellSignal[]; reference_signals: SellSignal[] };
+export type Holding = StockRow & {
+  acquisition_date: string | null;
+  acquisition_price: number | null;
+  acquisition_price_date: string | null;
+  signals: SellSignal[];
+  reference_signals: SellSignal[];
+};
 
 /** codes は登録した全銘柄。rows は指標がある銘柄だけ（主のサインの多い順） */
 export type Portfolio = { codes: string[]; rows: Holding[] };
@@ -368,6 +374,7 @@ export type RecommendationHistoryDetail = {
     rank: number | null;
     reason: string | null;
     grade: Grade | null;
+    current_name: string | null;
     stock: StockRow | null;
   }[];
   outcomes: RecommendationOutcome[];

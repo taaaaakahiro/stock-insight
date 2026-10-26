@@ -12,7 +12,7 @@ use usecase::PortError;
 
 /// JSON モード（response_format の json_schema）に対応したテキスト生成モデル。
 /// llama-3.1-8b-instruct-fp8 は JSON Schema に対応しておらず、5025 で断られる
-pub const MODEL: &str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+pub use usecase::ai_config::TEXT_MODEL as MODEL;
 
 const SYSTEM_PROMPT: &str = "\
 あなたは日本株の配当投資を手伝うアシスタントです。\

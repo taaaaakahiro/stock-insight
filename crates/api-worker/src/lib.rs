@@ -142,9 +142,12 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/api/stocks/:code", stock_detail_route)
         .get_async("/api/stocks/:code/edinet", edinet)
         .get_async("/api/stocks/:code/reit", reit)
+        .get_async("/api/stocks/:code/reit-assessment", reit_assessment)
+        .get_async("/api/reit/sectors", reit_sectors)
         .get_async("/api/status", status)
         .get_async("/api/portfolio", portfolio)
         .put_async("/api/portfolio/:code", portfolio_add)
+        .post_async("/api/portfolio/:code/acquisition", portfolio_acquisition)
         .delete_async("/api/portfolio/:code", portfolio_remove)
         .get_async("/api/recommendations/comparison", recommendation_comparison)
         .get_async("/api/recommendations/history", recommendation_history)
@@ -468,6 +471,9 @@ async fn portfolio(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Respons
                 "codes": p.codes,
                 "rows": p.rows.iter().map(|h| {
                     let mut v = row_json(&h.stock);
+                    v["acquisition_date"] = json!(h.acquisition_date);
+                    v["acquisition_price"] = json!(h.acquisition_price);
+                    v["acquisition_price_date"] = json!(h.acquisition_price_date);
                     v["signals"] = json!(h.signals.iter().map(|s| s.as_str()).collect::<Vec<_>>());
                     v["reference_signals"] =
                         json!(h.reference.iter().map(|s| s.as_str()).collect::<Vec<_>>());
@@ -488,6 +494,26 @@ async fn portfolio_add(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Res
     portfolio_result(usecase::portfolio::add(&repo, &ctx.data.id, &code, now).await)
 }
 
+async fn portfolio_acquisition(mut req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let body: serde_json::Value = match req.json().await {
+        Ok(v) => v,
+        Err(_) => return json_error(400, "bad_request", "invalid JSON"),
+    };
+    let date = body.get("acquisition_date").and_then(|v| v.as_str());
+    if body
+        .get("acquisition_date")
+        .is_some_and(|v| !v.is_null() && !v.is_string())
+    {
+        return json_error(400, "bad_request", "invalid acquisition");
+    }
+    let repo = D1Portfolio::new(ctx.env.d1(DB_BINDING)?);
+    let code = ctx.param("code").cloned().unwrap_or_default();
+    portfolio_result(
+        usecase::portfolio::acquisition(&repo, &ctx.data.id, &code, date, WorkerClock.now_unix())
+            .await,
+    )
+}
+
 async fn portfolio_remove(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
     let repo = D1Portfolio::new(ctx.env.d1(DB_BINDING)?);
     let code = ctx.param("code").cloned().unwrap_or_default();
@@ -497,6 +523,9 @@ async fn portfolio_remove(_req: Request, ctx: RouteContext<AuthUser>) -> Result<
 fn portfolio_result(r: std::result::Result<(), PortfolioError>) -> Result<Response> {
     match r {
         Ok(()) => json_response(&json!({ "ok": true }), 200, "no-store"),
+        Err(PortfolioError::BadAcquisition) => {
+            json_error(400, "bad_request", "invalid acquisition date")
+        }
         Err(PortfolioError::BadCode) => json_error(400, "bad_request", "bad stock code"),
         Err(PortfolioError::TooMany) => json_error(
             409,
@@ -861,4 +890,24 @@ fn json_error(status: u16, code: &str, message: &str) -> Result<Response> {
 fn internal(detail: &str) -> Result<Response> {
     worker::console_error!("internal error: {detail}");
     json_error(500, "internal", "internal error")
+}
+
+async fn reit_assessment(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    let code = ctx.param("code").cloned().unwrap_or_default();
+    if domain::StockCode::parse(&code).is_none() {
+        return json_error(400, "bad_request", "bad stock code");
+    }
+    reit_rag_response(&ctx.env, Some(&code)).await
+}
+async fn reit_sectors(_req: Request, ctx: RouteContext<AuthUser>) -> Result<Response> {
+    reit_rag_response(&ctx.env, None).await
+}
+async fn reit_rag_response(env: &Env, code: Option<&str>) -> Result<Response> {
+    let db = env.d1(DB_BINDING)?;
+    let value = adapter_cf::d1_reit_rag::read(&db, code).await?;
+    let mut response = json_ok(&value)?;
+    response
+        .headers_mut()
+        .set("Cache-Control", "private, no-store")?;
+    Ok(response)
 }

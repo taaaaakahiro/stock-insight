@@ -12,3 +12,6 @@ pub mod sql;
 pub mod recommendation_evaluation;
 
 pub mod recommendation_report;
+
+pub mod reit_metrics;
+pub mod reit_rag;

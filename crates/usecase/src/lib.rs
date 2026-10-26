@@ -5,6 +5,7 @@
 
 use domain::{Indicators, StockCode};
 
+pub mod ai_config;
 pub mod auth;
 pub mod daily;
 pub mod detail;

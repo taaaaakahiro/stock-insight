@@ -21,3 +21,6 @@ pub mod github;
 pub mod users;
 
 pub mod stock_json;
+
+#[cfg(target_arch = "wasm32")]
+pub mod d1_reit_rag;

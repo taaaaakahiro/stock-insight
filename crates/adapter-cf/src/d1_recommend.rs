@@ -317,7 +317,7 @@ impl D1Recommendations {
             return Ok(None);
         };
         let rows: Vec<Value> = self.db.prepare(
-            "SELECT code,rule_rank,rank,reason,grade,snapshot_json FROM recommendation_candidates WHERE run_id=? ORDER BY COALESCE(rank,1000),rule_rank,code"
+            "SELECT c.code,c.rule_rank,c.rank,c.reason,c.grade,c.snapshot_json,s.name AS current_name FROM recommendation_candidates c LEFT JOIN stocks s ON s.code=c.code WHERE c.run_id=? ORDER BY COALESCE(c.rank,1000),c.rule_rank,c.code"
         ).bind(&[JsValue::from_f64(id as f64)]).map_err(err)?.all().await.map_err(err)?.results().map_err(err)?;
         // 未完了の評価バッチは見せない。銘柄・期間ごとの最新の完了版だけを返す。
         let outcomes: Vec<Value> = self.db.prepare(

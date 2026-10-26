@@ -11,9 +11,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { apiGet, type Holding, type Portfolio, type SellSignal } from "@/lib/api";
+import { apiFetch, apiGet, type Holding, type Portfolio, type SellSignal } from "@/lib/api";
 import { useAuthState } from "@/lib/auth";
-import { pct, times, yen } from "@/lib/format";
+import { growth, pct, times, yen, ymd } from "@/lib/format";
 import { usePortfolio } from "@/lib/portfolio";
 import { cn } from "@/lib/utils";
 
@@ -103,9 +103,101 @@ function Pbr({ h }: { h: Holding }) {
   return <span className={cn(warn && "font-medium text-expensive")}>{times(h.pbr)}</span>;
 }
 
+function Acquisition({ h, onSaved }: { h: Holding; onSaved: () => void }) {
+  const { getToken } = useAuthState();
+  const [date, setDate] = useState(h.acquisition_date ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo" }).format(new Date());
+  const comparable =
+    h.acquisition_date &&
+    h.acquisition_date <= h.price_date &&
+    h.acquisition_price != null &&
+    h.acquisition_price > 0;
+  const change = comparable ? h.price / (h.acquisition_price as number) - 1 : null;
+  return (
+    <div className="min-w-48 text-sm">
+      <details>
+        <summary className="cursor-pointer">取得日 {ymd(h.acquisition_date)}・編集</summary>
+        <form
+          className="my-2 flex flex-col gap-2"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setSaving(true);
+            setError(null);
+            try {
+              await apiFetch(
+                "POST",
+                `/api/portfolio/${encodeURIComponent(h.code)}/acquisition`,
+                getToken,
+                undefined,
+                {
+                  acquisition_date: date || null,
+                },
+              );
+              onSaved();
+            } catch {
+              setError("保存できませんでした。取得日を確認して、もう一度お試しください。");
+            } finally {
+              setSaving(false);
+            }
+          }}
+        >
+          <label className="flex flex-col gap-1">
+            取得日
+            <input
+              aria-label={`${h.code}の取得日`}
+              className="rounded border bg-background p-1"
+              type="date"
+              max={today}
+              value={date}
+              disabled={saving}
+              onChange={(e) => setDate(e.target.value)}
+            />
+          </label>
+          <p className="text-xs text-muted-foreground">
+            取得日の終値を自動設定します。休場日は直前の取引日の終値を使います。
+          </p>
+          <button className="rounded border px-2 py-1" disabled={saving} type="submit">
+            {saving ? "保存中…" : "保存"}
+          </button>
+          {error && (
+            <p role="alert" className="text-expensive">
+              {error}
+            </p>
+          )}
+        </form>
+      </details>
+      {change != null ? (
+        <div className="mt-1 tabular-nums">
+          <span className={cn("font-medium", change < 0 ? "text-expensive" : "text-cheap")}>
+            {growth(change)}（{change > 0 ? "+" : ""}
+            {yen(h.price - (h.acquisition_price as number))}/株）
+          </span>
+          <p className="text-xs text-muted-foreground">
+            {yen(h.acquisition_price)} → {yen(h.price)}
+            {h.acquisition_price_date && (
+              <span className="block">基準: {ymd(h.acquisition_price_date)}の終値</span>
+            )}
+            <br />
+            {ymd(h.price_date)}時点
+          </p>
+        </div>
+      ) : (
+        <p className="mt-1 text-xs text-muted-foreground">
+          {h.acquisition_date
+            ? "取得日の終値データ待ち（取り込み後に自動設定）"
+            : "取得日を登録すると終値を自動設定して騰落を表示"}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function PortfolioPage() {
   const { getToken } = useAuthState();
   const { version, error } = usePortfolio();
+  const [revision, setRevision] = useState(0);
   const [load, setLoad] = useState<Load>({ state: "loading" });
 
   // 登録・解除のたびに取り直す（version が合図）
@@ -118,7 +210,7 @@ export function PortfolioPage() {
         if (!ctrl.signal.aborted) setLoad({ state: "error" });
       });
     return () => ctrl.abort();
-  }, [getToken, version]);
+  }, [getToken, version, revision]);
 
   if (load.state === "loading") {
     return <p className="text-sm text-muted-foreground">読み込み中…</p>;
@@ -170,6 +262,7 @@ export function PortfolioPage() {
           <TableHeader>
             <TableRow>
               <TableHead>銘柄</TableHead>
+              <TableHead>取得日・取得後の騰落</TableHead>
               <TableHead className="text-right">株価</TableHead>
               <TableHead className="text-right">1株配当</TableHead>
               <TableHead className="text-right">配当利回り</TableHead>
@@ -185,9 +278,12 @@ export function PortfolioPage() {
                 <TableCell className="max-w-72">
                   <div className="flex items-center gap-1">
                     <PortfolioToggle code={h.code} name={h.name ?? h.code} />
-                    <NameCell r={h} />
+                    <NameCell r={h} wrap />
                     {h.kind === "stock" && <DocPreview r={h} />}
                   </div>
+                </TableCell>
+                <TableCell>
+                  <Acquisition h={h} onSaved={() => setRevision((v) => v + 1)} />
                 </TableCell>
                 <TableCell className="text-right tabular-nums">{yen(h.price)}</TableCell>
                 <TableCell className="text-right tabular-nums">
@@ -228,6 +324,9 @@ export function PortfolioPage() {
             </div>
             <div className="mb-3">
               <Signals h={h} />
+            </div>
+            <div className="mb-3">
+              <Acquisition h={h} onSaved={() => setRevision((v) => v + 1)} />
             </div>
             <dl className="grid grid-cols-3 gap-x-3 gap-y-2 text-sm">
               <div>
@@ -281,6 +380,7 @@ export function PortfolioPage() {
       )}
 
       <p className="text-xs text-muted-foreground">
+        取得後の騰落は取得日の終値（休場日は直前の取引日）と最新終値の比較です。配当・手数料・税金・株式分割の調整は含みません。取得日の終値が未収録の場合はデータ待ちになります。
         売りサインは配当性向50%超・PBR1.5倍超・赤字で配当の3つで、株式だけに出します。参考のサインは判断の材料です。どれも最新の指標だけで出す目安です（取得価格は見ません）。売買の判断はご自身で行ってください。
       </p>
     </section>

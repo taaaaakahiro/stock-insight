@@ -12,6 +12,19 @@ pub trait PortfolioRepository {
     async fn rows(&self, user_id: &str) -> Result<Vec<HeldStock>, PortError>;
     /// すでにあれば何もしない
     async fn add(&self, user_id: &str, code: &str, now: i64) -> Result<(), PortError>;
+    async fn closing_price(
+        &self,
+        code: &str,
+        date: &str,
+    ) -> Result<Option<(String, f64)>, PortError>;
+    async fn acquisition(
+        &self,
+        user_id: &str,
+        code: &str,
+        date: Option<&str>,
+        price: Option<f64>,
+        price_date: Option<&str>,
+    ) -> Result<(), PortError>;
     async fn remove(&self, user_id: &str, code: &str) -> Result<(), PortError>;
 }
 
@@ -21,12 +34,18 @@ pub struct HeldStock {
     pub stock: StockRow,
     /// 最新の本決算の EPS（数字のない行は飛ばしたもの）。赤字なのに配当を出しているかを見る
     pub latest_eps: Option<f64>,
+    pub acquisition_date: Option<String>,
+    pub acquisition_price: Option<f64>,
+    pub acquisition_price_date: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HoldingRow {
     pub stock: StockRow,
     /// 売る判断に使う主のサイン（配当性向・PBR・赤字配当）
+    pub acquisition_date: Option<String>,
+    pub acquisition_price: Option<f64>,
+    pub acquisition_price_date: Option<String>,
     pub signals: Vec<SellSignal>,
     /// 参考のサイン
     pub reference: Vec<SellSignal>,
@@ -42,6 +61,7 @@ pub struct Portfolio {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PortfolioError {
     BadCode,
+    BadAcquisition,
     TooMany,
     Port(PortError),
 }
@@ -78,6 +98,9 @@ pub async fn list<R: PortfolioRepository>(repo: &R, user_id: &str) -> Result<Por
                 .into_iter()
                 .partition(|s| s.is_primary());
             HoldingRow {
+                acquisition_date: h.acquisition_date,
+                acquisition_price: h.acquisition_price,
+                acquisition_price_date: h.acquisition_price_date,
                 stock: h.stock,
                 signals,
                 reference,
@@ -111,6 +134,39 @@ pub async fn add<R: PortfolioRepository>(
     Ok(repo.add(user_id, code.as_str(), now).await?)
 }
 
+pub async fn acquisition<R: PortfolioRepository>(
+    repo: &R,
+    user_id: &str,
+    code: &str,
+    date: Option<&str>,
+    now: i64,
+) -> Result<(), PortfolioError> {
+    let code = StockCode::parse(code).ok_or(PortfolioError::BadCode)?;
+    if let Some(value) = date {
+        let d = domain::Date::parse(value).ok_or(PortfolioError::BadAcquisition)?;
+        if value.len() != 10
+            || d.to_string() != value
+            || domain::Date::from_days(d.to_days()) != d
+            || d > domain::Date::from_unix_jst(now)
+        {
+            return Err(PortfolioError::BadAcquisition);
+        }
+    }
+    let closing = match date {
+        Some(date) => repo.closing_price(code.as_str(), date).await?,
+        None => None,
+    };
+    Ok(repo
+        .acquisition(
+            user_id,
+            code.as_str(),
+            date,
+            closing.as_ref().map(|(_, price)| *price),
+            closing.as_ref().map(|(date, _)| date.as_str()),
+        )
+        .await?)
+}
+
 pub async fn remove<R: PortfolioRepository>(
     repo: &R,
     user_id: &str,
@@ -126,10 +182,13 @@ mod tests {
     use crate::tests_support::block_on;
     use std::cell::RefCell;
 
+    type SavedAcquisition = (Option<String>, Option<f64>, Option<String>);
+
     #[derive(Default)]
     struct Fake {
         items: RefCell<Vec<(String, String)>>,
         rows: Vec<HeldStock>,
+        saved: RefCell<Option<SavedAcquisition>>,
     }
 
     impl PortfolioRepository for Fake {
@@ -151,6 +210,28 @@ mod tests {
                 .push((user_id.to_string(), code.to_string()));
             Ok(())
         }
+        async fn closing_price(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Option<(String, f64)>, PortError> {
+            Ok(Some(("2026-10-23".into(), 100.0)))
+        }
+        async fn acquisition(
+            &self,
+            _: &str,
+            _: &str,
+            date: Option<&str>,
+            price: Option<f64>,
+            price_date: Option<&str>,
+        ) -> Result<(), PortError> {
+            *self.saved.borrow_mut() = Some((
+                date.map(str::to_owned),
+                price,
+                price_date.map(str::to_owned),
+            ));
+            Ok(())
+        }
         async fn remove(&self, user_id: &str, code: &str) -> Result<(), PortError> {
             self.items
                 .borrow_mut()
@@ -163,6 +244,9 @@ mod tests {
         HeldStock {
             stock: row(code, payout, valuation),
             latest_eps: Some(100.0),
+            acquisition_date: None,
+            acquisition_price: None,
+            acquisition_price_date: None,
         }
     }
 
@@ -211,6 +295,37 @@ mod tests {
             profit_one_off: None,
             reit: None,
         }
+    }
+
+    #[test]
+    fn acquisition_saves_automatic_close_and_clear_removes_it() {
+        let repo = Fake::default();
+        let now = domain::Date::parse("2026-10-24").unwrap().to_days() * 86400;
+        block_on(acquisition(&repo, "u1", "7203", Some("2026-10-24"), now)).unwrap();
+        assert_eq!(
+            *repo.saved.borrow(),
+            Some((
+                Some("2026-10-24".into()),
+                Some(100.0),
+                Some("2026-10-23".into())
+            ))
+        );
+        block_on(acquisition(&repo, "u1", "7203", None, now)).unwrap();
+        assert_eq!(*repo.saved.borrow(), Some((None, None, None)));
+    }
+
+    #[test]
+    fn acquisition_validates_dates() {
+        let repo = Fake::default();
+        let now = domain::Date::parse("2026-10-24").unwrap().to_days() * 86400;
+        for date in ["2026-02-30", "2026-10-25", "2026-10-24junk", "bad"] {
+            assert_eq!(
+                block_on(acquisition(&repo, "u1", "7203", Some(date), now)),
+                Err(PortfolioError::BadAcquisition)
+            );
+        }
+        assert!(block_on(acquisition(&repo, "u1", "7203", Some("2024-02-29"), now)).is_ok());
+        assert!(block_on(acquisition(&repo, "u1", "7203", None, now)).is_ok());
     }
 
     #[test]

@@ -10,6 +10,7 @@ import {
 import { Dialog } from "radix-ui";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FilterPanel } from "@/components/filter-panel";
+import { ReitSectors } from "@/components/reit-rag";
 import { ResultsTable } from "@/components/results-table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -118,6 +119,18 @@ export function ScreeningPage() {
           ))}
         </TabsList>
       </Tabs>
+      {filters.kind === "reit" && (
+        <ReitSectors
+          onSelect={(sector) =>
+            setFilters((f) => ({
+              ...f,
+              reitSectors: sector === "unknown" ? [] : [sector],
+              page: 1,
+            }))
+          }
+        />
+      )}
+
       <div className="grid gap-6 md:grid-cols-[18rem_1fr]">
         {/* PC は横に常に出す。欄の中のスクロールが端でページに抜けないようにする */}
         <aside className="hidden md:sticky md:top-20 md:block md:max-h-[calc(100svh-6rem)] md:self-start md:overflow-y-auto md:overscroll-contain md:pr-2 md:[scrollbar-gutter:stable]">
