@@ -71,10 +71,22 @@ EDINETの原本は種類ごとに上書きし、削除対象キーをmanifestへ
 
 ## REIT分析の実行
 
-`batch-cli reit-rag --max-minutes 120` を使用する（アプリ側の最大値）。準備・終了処理の余裕を含め、workflowのジョブ上限は130分。CLIはdry-run、from-file、from/untilの日付指定を受け付けない。
+日次workflowは次の順で処理する。各処理の上限は100分、ジョブ全体は105分。資料準備とAI評価は4分割し、同時実行は各2ジョブまで。
+
+| 段階 | コマンドの指定 | 内容 |
+|---|---|---|
+| 訂正監査 | `--stage audit` | 訂正・取下げを監査。完了日までのカーソルから再開 |
+| 資料準備 | `--stage archive --shard 0 --shards 4` | 銘柄順に4分割して資料を保存。shardは0〜3 |
+| 入力確定 | `--stage prepare` | 訂正監査・資料検索・価格計算を行い、入力をR2に固定。`run_id`を出力 |
+| AI評価 | `--stage assess --run-id <ID> --shard 0 --shards 4` | 固定した入力から担当銘柄を評価。shardは0〜3 |
+| 公開 | `--stage publish --run-id <ID>` | 全銘柄の完了を検証し、セクター解説を生成。全件を再検証して公開 |
+
+各コマンドは `batch-cli reit-rag` に上記指定と `--max-minutes 100` を付ける。段階を省略すると全工程を単一プロセスで実行する。CLIはdry-run、from-file、from/untilの日付指定を受け付けない。
 
 [設定一覧](06_secrets_and_repository.md)のD1・Cloudflare・EDINET接続情報と保存先バケットが必要。意味検索は任意で、Vectorize indexと埋め込みモデルを両方設定する。埋め込みモデルを変更する場合は別indexを作る。生成モデルはレコメンドと共通で追加設定不要。
 
-失敗時は公開済みの結果を維持する。再実行では保存済み文書・抽出キャッシュを再利用するが、AI評価は新しいrunで生成する。Vectorizeの索引が検索可能になる前は公開を止めるため、反映後に再実行する。処理段階ごとの完全な再開や費用上限の自動制御はない。
+失敗時は公開済みの結果を維持する。資料準備は保存済み文書を再利用する。AI評価・公開は同じ `run_id` を指定すると完了済みの銘柄・セクターを再利用する。入力確定からやり直す場合は新しいrunとなる（公開中の入力と同一なら既存runを再利用）。Vectorizeの索引が検索可能になる前は公開を止めるため、反映後に再実行する。失敗した段階・分割だけを再実行できる。入力確定の途中からの再開と費用上限の自動制御はない。
 
-`REIT_RAG_ENABLED` の変更は次のworkflowから適用される。停止しても既存の公開結果は残る。稼働状態はActionsの `reit-rag` ジョブと `sync_state.reit_rag_attempt_status`、公開結果は `reit_rag_publication` で確認する。初回バッチの完了とデプロイ完了は別。
+`REIT_RAG_ENABLED` の変更は次のworkflowから適用される。停止しても既存の公開結果は残る。稼働状態はActionsの `reit-rag-audit`・`reit-rag-archive`・`reit-rag-prepare`・`reit-rag-assess`・`reit-rag` ジョブと `sync_state.reit_rag_attempt_status`、公開結果は `reit_rag_publication` で確認する。初回バッチの完了とデプロイ完了は別。
+
+進捗ログには段階、銘柄コード、分割番号、経過秒を記録する。各ジョブは110分未満で停止する設定だが、全工程の所要時間や時間内の完走は保証しない。

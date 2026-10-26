@@ -101,6 +101,7 @@ struct Args {
     refetch_business: bool,
     refill_forecasts: bool,
     out: Option<String>,
+    rag: adapter_batch::reit_rag::StageOptions,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -126,6 +127,12 @@ fn parse_args() -> Result<Args, String> {
         refetch_business: false,
         refill_forecasts: false,
         out: None,
+        rag: adapter_batch::reit_rag::StageOptions {
+            stage: "all".into(),
+            run_id: None,
+            shard: 0,
+            shards: 1,
+        },
     };
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or(format!("{flag} needs a value"));
@@ -148,6 +155,10 @@ fn parse_args() -> Result<Args, String> {
             "--raw-dir" => a.raw_dir = val()?,
             "--limit" => a.limit = val()?.parse().map_err(|_| "bad limit")?,
             "--out" => a.out = Some(val()?),
+            "--stage" => a.rag.stage = val()?,
+            "--run-id" => a.rag.run_id = Some(val()?),
+            "--shard" => a.rag.shard = val()?.parse().map_err(|_| "bad shard")?,
+            "--shards" => a.rag.shards = val()?.parse().map_err(|_| "bad shards")?,
             "--label" => {
                 a.label = val()?;
                 if !a.label.chars().all(|c| c.is_ascii_alphanumeric()) {
@@ -194,10 +205,20 @@ async fn main() {
         "reit-rag" if args.dry_run.is_some() || args.from_file.is_some() || args.from.is_some() || args.until.is_some() => Err("reit-rag does not support dry-run/from-file/date overrides; use the offline RAG tests".into()),
         "reit-rag" => match d1_store(http::client()) {
             Ok(store) => {
-                adapter_batch::reit_rag::run(&store, SystemClock.now_unix(), args.max_minutes.min(120))
+                adapter_batch::reit_rag::run_stage(&store, SystemClock.now_unix(), args.max_minutes.min(120), &args.rag)
                     .await
-                    .map(|n| println!("reit-rag: {n} assessments published"))
                     .map_err(|e| e.0)
+                    .and_then(|id| {
+                        if args.rag.stage == "prepare" {
+                            if let Ok(path) = std::env::var("GITHUB_OUTPUT") {
+                                use std::io::Write;
+                                let mut f=std::fs::OpenOptions::new().append(true).open(path).map_err(|e|e.to_string())?;
+                                writeln!(f,"run_id={id}").map_err(|e|e.to_string())?;
+                            }
+                        }
+                        println!("reit-rag: stage={} completed run={id}", args.rag.stage);
+                        Ok(())
+                    })
             }
             Err(e) => Err(e),
         },
