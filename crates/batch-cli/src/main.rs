@@ -338,9 +338,6 @@ async fn migrate() -> Result<(), String> {
     Ok(())
 }
 
-/// 内閣府「国民の祝日・休日」（公式・無料）
-const HOLIDAYS_URL: &str = "https://www8.cao.go.jp/chosei/shukujitsu/syukujitsu.csv";
-
 async fn should_run(args: Args) -> Result<(), String> {
     let now = SystemClock.now_unix();
     let today = Date::from_unix_jst(now);
@@ -348,7 +345,7 @@ async fn should_run(args: Args) -> Result<(), String> {
     let (run, reason) = if args.force {
         (true, "forced".to_string())
     } else {
-        let csv = http::get_bytes(&client, HOLIDAYS_URL)
+        let csv = http::get_bytes(&client, http::HOLIDAYS_URL)
             .await
             .map_err(|e| format!("holidays: {}", e.0))?;
         let holidays = domain::calendar::parse_holiday_csv(&csv);
@@ -1599,7 +1596,7 @@ async fn compute(args: Args) -> Result<(), String> {
 async fn evaluate_recommendations() -> Result<(), String> {
     let now = SystemClock.now_unix();
     let client = http::client();
-    let csv = http::get_bytes(&client, HOLIDAYS_URL)
+    let csv = http::get_bytes(&client, http::HOLIDAYS_URL)
         .await
         .map_err(|e| e.0)?;
     let holidays = domain::calendar::parse_holiday_csv(&csv);

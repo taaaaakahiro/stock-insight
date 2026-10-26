@@ -508,17 +508,9 @@ async fn run_inner(store: &D1Store, now: i64, max_minutes: u64) -> Result<usize,
     let splits = store.load_splits().await?;
     let today = Date::from_unix_jst(now);
     let mut prices = BTreeMap::new();
-    let holiday_bytes = cloud
-        .client
-        .get("https://www8.cao.go.jp/chosei/shukujitsu.csv")
-        .send()
+    let holiday_bytes = crate::http::get_bytes(&cloud.client, crate::http::HOLIDAYS_URL)
         .await
-        .map_err(|_| err("holiday calendar unavailable"))?
-        .error_for_status()
-        .map_err(|_| err("holiday calendar HTTP error"))?
-        .bytes()
-        .await
-        .map_err(|_| err("holiday calendar read error"))?;
+        .map_err(|e| err(&format!("holiday calendar: {}", e.0)))?;
     let holidays = domain::calendar::parse_holiday_csv(&holiday_bytes);
     if !holidays.iter().any(|d| d.y == today.y) {
         return Err(err("holiday calendar does not cover current year"));
