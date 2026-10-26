@@ -69,6 +69,16 @@ EDINETの原本は種類ごとに上書きし、削除対象キーをmanifestへ
 
 推薦追跡はcompute成功後に実行する。株価・財務の変更を追記し、既存の公開推薦の成績と比較レポートを更新する。価格基準日・欠損・再実行の扱いは[成績仕様](16_recommendation_evaluation.md)を参照。
 
+## 手動実行の対象
+
+Actionsの `daily-batch` → Run workflow で `scope` を選ぶ。定期実行は従来どおり `all`。
+
+- `all`: 日次全体。J-Quants、compute、EDINET、REIT取得も実行する。
+- `reit`: 保存済みの株価・REIT情報からREIT分析だけを実行する。J-Quants、compute、マイグレーションは実行しない。`REIT_RAG_ENABLED=true` が必要。
+- `diagnose`: トークン状態とD1へのSELECTを確認する。DB更新・AI実行は行わない。ログはHTTP状態、エラーコード、リクエスト識別子、REIT保存件数のみ。
+
+REITの確認には `reit` を使う。古い実行の再試行は元のコード・入力を使うため、コード変更後は対象ブランチから新しく実行する。
+
 ## REIT分析の実行
 
 日次workflowは次の順で処理する。各処理の上限は100分、ジョブ全体は105分。資料準備とAI評価は4分割し、同時実行は各2ジョブまで。
