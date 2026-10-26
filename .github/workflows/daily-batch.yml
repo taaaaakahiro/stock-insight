@@ -218,7 +218,7 @@ jobs:
     needs: [jquants, reit]
     if: vars.REIT_RAG_ENABLED == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 130
     env:
       REIT_RAG_BUCKET: maaun-stock-insight-raw
       REIT_RAG_VECTOR_INDEX: ${{ vars.REIT_RAG_VECTOR_INDEX }}
@@ -229,4 +229,4 @@ jobs:
           name: batch-cli
       - run: chmod +x batch-cli
       - name: Build and publish REIT evidence and sector analysis
-        run: ./batch-cli reit-rag --max-minutes 110
+        run: ./batch-cli reit-rag --max-minutes 120
