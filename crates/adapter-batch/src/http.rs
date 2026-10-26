@@ -5,6 +5,9 @@ use usecase::PortError;
 
 pub use reqwest::Client;
 
+/// 内閣府「国民の祝日・休日」の公式CSV。バッチ間で取得先を共有する。
+pub const HOLIDAYS_URL: &str = "https://www8.cao.go.jp/chosei/shukujitsu/syukujitsu.csv";
+
 pub fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
