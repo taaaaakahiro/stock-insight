@@ -212,3 +212,21 @@ jobs:
             wrangler r2 object delete "maaun-stock-insight-raw/$k" --remote >/dev/null || echo "not found: $k"
           done
           echo "done"
+
+  # 原資料・AI結果は非公開R2へ。公開GitHub artifactには保存しない。
+  reit-rag:
+    needs: [jquants, reit]
+    if: vars.REIT_RAG_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      REIT_RAG_BUCKET: maaun-stock-insight-raw
+      REIT_RAG_VECTOR_INDEX: ${{ vars.REIT_RAG_VECTOR_INDEX }}
+      REIT_RAG_EMBEDDING_MODEL: ${{ vars.REIT_RAG_EMBEDDING_MODEL }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - name: Build and publish REIT evidence and sector analysis
+        run: ./batch-cli reit-rag --max-minutes 110

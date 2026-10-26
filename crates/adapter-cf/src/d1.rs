@@ -108,6 +108,12 @@ pub(crate) struct Row {
     /// 最新の本決算の EPS（ポートフォリオの SQL だけが返す）
     #[serde(default)]
     latest_eps: Option<f64>,
+    #[serde(default)]
+    acquisition_date: Option<String>,
+    #[serde(default)]
+    acquisition_price: Option<f64>,
+    #[serde(default)]
+    acquisition_price_date: Option<String>,
 }
 
 impl From<Row> for StockRow {
@@ -648,13 +654,27 @@ impl PortfolioRepository for D1Portfolio {
             .map_err(err)?
             .results()
             .map_err(err)?;
-        Ok(rows
-            .into_iter()
-            .map(|r| HeldStock {
+        let mut held = Vec::with_capacity(rows.len());
+        for mut r in rows {
+            if r.acquisition_price.is_none() {
+                if let Some(date) = r.acquisition_date.as_deref() {
+                    if let Some((price_date, price)) = self.closing_price(&r.code, date).await? {
+                        // 読み込み中に取得日が変更された場合は、新しい登録を上書きしない。
+                        self.prepare("UPDATE portfolio_items SET acquisition_price = ?, acquisition_price_date = ? WHERE user_id = ? AND code = ? AND acquisition_date = ? AND acquisition_price IS NULL", &[JsValue::from_f64(price), price_date.as_str().into(), user_id.into(), r.code.as_str().into(), date.into()])?.run().await.map_err(err)?;
+                        r.acquisition_price = Some(price);
+                        r.acquisition_price_date = Some(price_date);
+                    }
+                }
+            }
+            held.push(HeldStock {
                 latest_eps: r.latest_eps,
+                acquisition_date: r.acquisition_date.clone(),
+                acquisition_price: r.acquisition_price,
+                acquisition_price_date: r.acquisition_price_date.clone(),
                 stock: StockRow::from(r),
-            })
-            .collect())
+            });
+        }
+        Ok(held)
     }
 
     async fn add(&self, user_id: &str, code: &str, now: i64) -> Result<(), PortError> {
@@ -665,6 +685,42 @@ impl PortfolioRepository for D1Portfolio {
         .run()
         .await
         .map_err(err)?;
+        Ok(())
+    }
+
+    async fn closing_price(
+        &self,
+        code: &str,
+        date: &str,
+    ) -> Result<Option<(String, f64)>, PortError> {
+        let row = self
+            .prepare(
+                "SELECT closes FROM price_history WHERE code = ?",
+                &[code.into()],
+            )?
+            .first::<ClosesRow>(None)
+            .await
+            .map_err(err)?;
+        Ok(row
+            .and_then(|r| {
+                domain::price_history::acquisition_close(
+                    &domain::price_history::decode(&r.closes),
+                    Date::parse(date)?,
+                )
+            })
+            .map(|b| (b.date.to_string(), b.close)))
+    }
+
+    async fn acquisition(
+        &self,
+        user_id: &str,
+        code: &str,
+        date: Option<&str>,
+        price: Option<f64>,
+        price_date: Option<&str>,
+    ) -> Result<(), PortError> {
+        self.prepare("UPDATE portfolio_items SET acquisition_date = ?, acquisition_price = ?, acquisition_price_date = ? WHERE user_id = ? AND code = ?",
+            &[date.map(JsValue::from_str).unwrap_or(JsValue::NULL), price.map(JsValue::from_f64).unwrap_or(JsValue::NULL), price_date.map(JsValue::from_str).unwrap_or(JsValue::NULL), user_id.into(), code.into()])?.run().await.map_err(err)?;
         Ok(())
     }
 

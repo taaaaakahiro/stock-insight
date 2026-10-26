@@ -43,6 +43,31 @@ pub fn decode(s: &str) -> Vec<PriceBar> {
     bars
 }
 
+/// 指定日の終値。休場日は直前の終値を使うが、古い・未取得のデータで代用しない。
+/// 当日分の取り込み前も、最新の収録日より後の日付なら未取得として待つ。
+pub fn acquisition_close(bars: &[PriceBar], date: Date) -> Option<PriceBar> {
+    let latest = bars.iter().map(|b| b.date).max()?;
+    // 土日は金曜の収録があれば確定できる。平日の未収録は祝日か未取得か判別できないため待つ。
+    let weekday = (date.to_days() + 3).rem_euclid(7);
+    let required = if weekday >= 5 {
+        date.add_days(-(weekday - 4))
+    } else {
+        date
+    };
+    if latest < required {
+        return None;
+    }
+    bars.iter()
+        .filter(|b| {
+            b.date <= date
+                && date.to_days() - b.date.to_days() <= 7
+                && b.close.is_finite()
+                && b.close > 0.0
+        })
+        .max_by_key(|b| b.date)
+        .copied()
+}
+
 /// 新しい終値を足す（同じ日付は上書き）。古すぎる分は捨てる
 pub fn merge(existing: &mut Vec<PriceBar>, new: &[PriceBar]) {
     for b in new {
@@ -66,6 +91,34 @@ mod tests {
             date: Date::parse(s).unwrap(),
             close,
         }
+    }
+
+    #[test]
+    fn acquisition_uses_close_and_previous_session_without_future_or_stale_prices() {
+        let bars = vec![bar("2026-10-23", 100.0), bar("2026-10-26", 110.0)];
+        assert_eq!(
+            acquisition_close(&bars, Date::parse("2026-10-23").unwrap())
+                .unwrap()
+                .close,
+            100.0
+        );
+        assert_eq!(
+            acquisition_close(&bars, Date::parse("2026-10-24").unwrap())
+                .unwrap()
+                .date,
+            Date::parse("2026-10-23").unwrap()
+        );
+        assert!(acquisition_close(&bars, Date::parse("2026-10-22").unwrap()).is_none());
+        assert!(acquisition_close(&bars, Date::parse("2026-10-27").unwrap()).is_none());
+        assert!(acquisition_close(&[], Date::parse("2026-10-23").unwrap()).is_none());
+        assert!(acquisition_close(&bars[..1], Date::parse("2026-10-24").unwrap()).is_some());
+        let holiday = vec![bar("2026-10-09", 90.0), bar("2026-10-13", 100.0)];
+        assert_eq!(
+            acquisition_close(&holiday, Date::parse("2026-10-12").unwrap())
+                .unwrap()
+                .close,
+            90.0
+        );
     }
 
     #[test]

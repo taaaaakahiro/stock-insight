@@ -28,7 +28,7 @@ export function RecommendComparison() {
     >
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h3 id="comparison-heading" className="font-medium">
-          公開した推薦の成績を比較
+          公開したレコメンドの成績を比較
         </h3>
         {data?.as_of && (
           <p className="text-xs text-muted-foreground">{ymd(data.as_of)}までのデータ</p>
@@ -36,7 +36,7 @@ export function RecommendComparison() {
       </div>
       <p className="text-sm text-muted-foreground">
         各日の初回公開版と、同時点のルール上位10銘柄を比較します。現在の順位はルールで決まり、AIは理由を書きます。全件が公開された日は両者が一致するため、この差はAIの選別能力を示しません。
-        期間を満了し、両方のデータが揃った推薦日だけで成績差を計算します。
+        期間を満了し、両方のデータが揃ったレコメンド日だけで成績差を計算します。
       </p>
       <fieldset className="flex flex-wrap gap-2" aria-label="比較期間">
         {(
@@ -66,7 +66,7 @@ export function RecommendComparison() {
       {!data && !error && <p className="text-sm text-muted-foreground">比較を読み込み中…</p>}
       {data && groups.length === 0 && (
         <p className="text-sm text-muted-foreground">
-          まだ比較データがありません。推薦公開後の日次追跡から集計が始まります。
+          まだ比較データがありません。レコメンド公開後の日次追跡から集計が始まります。
         </p>
       )}
       {groups.map((g) => (
@@ -79,7 +79,7 @@ export function RecommendComparison() {
           </p>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             {[
-              ["公開推薦の平均成績", growth(g.mean_ai)],
+              ["公開レコメンドの平均成績", growth(g.mean_ai)],
               ["ルールの平均成績", growth(g.mean_rule)],
               ["平均の成績差", points(g.mean_excess)],
               ["ルールを上回った割合", pct(g.beat_rate, 1)],
@@ -98,7 +98,7 @@ export function RecommendComparison() {
           {g.paired === 0 && <p className="text-sm">この期間の結果はまだ揃っていません。</p>}
           {g.months.length > 0 && (
             <details className="text-sm">
-              <summary className="cursor-pointer">推薦月別の差を見る</summary>
+              <summary className="cursor-pointer">レコメンド月別の差を見る</summary>
               <ul className="mt-2 flex flex-wrap gap-x-6 gap-y-2 text-xs">
                 {g.months.map((m) => (
                   <li key={m.month}>

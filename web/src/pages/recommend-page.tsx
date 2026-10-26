@@ -306,7 +306,7 @@ export function RecommendPage({ canRegenerate }: { canRegenerate: boolean }) {
             </p>
           )}
           <Button variant="outline" size="sm" onClick={() => setHistoryVisible((v) => !v)}>
-            {historyVisible ? "最新の推薦" : "履歴・成績"}
+            {historyVisible ? "最新のレコメンド" : "履歴・成績"}
           </Button>
           {canRegenerate && <RegenerateButton onDone={reload} />}
         </div>

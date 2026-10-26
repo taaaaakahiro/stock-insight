@@ -386,6 +386,178 @@ pub fn non_numeric(html: &str, local_name: &str) -> Option<String> {
     found
 }
 
+/// Strict monetary facts for RAG. Unlike the legacy debt parser, missing/dash/nil
+/// values never become zero and context dates and currency units are mandatory.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VerifiedInstantFact {
+    pub name: String,
+    pub context: String,
+    pub value: f64,
+    pub raw: String,
+    pub location: String,
+}
+
+pub fn verified_instant_facts(
+    documents: &[(String, String)],
+    period_end: domain::Date,
+) -> Vec<VerifiedInstantFact> {
+    let mut contexts: HashMap<String, (String, bool)> = HashMap::new();
+    let mut units: HashMap<String, String> = HashMap::new();
+    for (_, html) in documents {
+        let mut context: Option<(String, String, bool)> = None;
+        let mut instant = false;
+        let mut unit: Option<(String, String, bool)> = None;
+        let mut measure = false;
+        for event in scan(html) {
+            match event {
+                Ev::Tag(t) => {
+                    let local = t.name.rsplit(':').next().unwrap_or("");
+                    match (local, t.closing) {
+                        ("context", false) => {
+                            context =
+                                Some((t.attr("id").unwrap_or("").into(), String::new(), false))
+                        }
+                        ("instant", false) => instant = true,
+                        ("instant", true) => instant = false,
+                        ("segment" | "scenario" | "explicitmember" | "typedmember", false) => {
+                            if let Some(c) = context.as_mut() {
+                                c.2 = true;
+                            }
+                        }
+                        ("context", true) => {
+                            if let Some((id, date, dimension)) = context.take() {
+                                // A contradictory resource definition invalidates the context.
+                                contexts
+                                    .entry(id)
+                                    .and_modify(|old| {
+                                        if *old != (date.clone(), dimension) {
+                                            old.1 = true;
+                                        }
+                                    })
+                                    .or_insert((date, dimension));
+                            }
+                        }
+                        ("unit", false) => {
+                            unit = Some((t.attr("id").unwrap_or("").into(), String::new(), false))
+                        }
+                        ("divide", false) => {
+                            if let Some(u) = unit.as_mut() {
+                                u.2 = true;
+                            }
+                        }
+                        ("measure", false) => measure = true,
+                        ("measure", true) => measure = false,
+                        ("unit", true) => {
+                            if let Some((id, value, divided)) = unit.take() {
+                                let value = if divided {
+                                    String::new()
+                                } else {
+                                    value.trim().to_string()
+                                };
+                                units
+                                    .entry(id)
+                                    .and_modify(|old| {
+                                        if *old != value {
+                                            old.clear();
+                                        }
+                                    })
+                                    .or_insert(value);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ev::Text(text) => {
+                    if instant {
+                        if let Some(c) = context.as_mut() {
+                            c.1.push_str(text);
+                        }
+                    }
+                    if measure {
+                        if let Some(u) = unit.as_mut() {
+                            u.1.push_str(text);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut out = vec![];
+    for (file, html) in documents {
+        // name, context, scale, negative, valid
+        let mut open: Option<(String, String, i32, bool, bool)> = None;
+        let mut raw = String::new();
+        let mut ordinal = 0;
+        for event in scan(html) {
+            match event {
+                Ev::Tag(t) if t.name == "ix:nonfraction" && !t.closing => {
+                    ordinal += 1;
+                    let name = t
+                        .attr("name")
+                        .unwrap_or("")
+                        .rsplit(':')
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
+                    let ctx = t.attr("contextref").unwrap_or("").to_string();
+                    let scale = t.attr("scale").unwrap_or("0").parse::<i32>().ok();
+                    let format = t
+                        .attr("format")
+                        .unwrap_or("")
+                        .rsplit(':')
+                        .next()
+                        .unwrap_or("");
+                    let currency = units.get(t.attr("unitref").unwrap_or(""));
+                    let valid = contexts
+                        .get(&ctx)
+                        .is_some_and(|(date, dim)| !dim && date.trim() == period_end.to_string())
+                        && currency.is_some_and(|u| u == "iso4217:JPY")
+                        && scale.is_some_and(|v| (-6..=12).contains(&v))
+                        && matches!(format, "" | "numdotdecimal" | "num-dot-decimal")
+                        && !matches!(t.attr("xsi:nil"), Some("true" | "1"));
+                    open = Some((
+                        name,
+                        ctx,
+                        scale.unwrap_or(0),
+                        t.attr("sign") == Some("-"),
+                        valid,
+                    ));
+                    raw.clear();
+                }
+                Ev::Tag(t) if t.name == "ix:nonfraction" && t.closing => {
+                    if let Some((name, context, scale, negative, true)) = open.take() {
+                        let normalized = normalize_text(&raw);
+                        let digits: String = normalized
+                            .chars()
+                            .filter(|c| !c.is_whitespace() && *c != ',')
+                            .collect();
+                        if !digits.is_empty()
+                            && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+                        {
+                            if let Ok(number) = digits.parse::<f64>() {
+                                let value =
+                                    number * 10f64.powi(scale) * if negative { -1.0 } else { 1.0 };
+                                if value.is_finite() {
+                                    out.push(VerifiedInstantFact {
+                                        name,
+                                        context,
+                                        value,
+                                        raw: raw.clone(),
+                                        location: format!("{file}#nonFraction:{ordinal}"),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                Ev::Text(s) if open.is_some() => raw.push_str(s),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,5 +606,36 @@ mod tests {
             non_numeric(html, "SecurityCodeDEI").as_deref(),
             Some("32830")
         );
+    }
+    #[test]
+    fn strict_facts_require_date_currency_and_real_number() {
+        let html = r#"<xbrli:context id="current"><xbrli:period><xbrli:instant>2026-06-30</xbrli:instant></xbrli:period></xbrli:context>
+<xbrli:context id="prior"><xbrli:period><xbrli:instant>2025-06-30</xbrli:instant></xbrli:period></xbrli:context>
+<xbrli:unit id="JPY"><xbrli:measure>iso4217:JPY</xbrli:measure></xbrli:unit>
+<xbrli:unit id="USD"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>
+<ix:nonFraction name="x:Assets" contextRef="current" unitRef="JPY" scale="3">1,000</ix:nonFraction>
+<ix:nonFraction name="x:Assets" contextRef="prior" unitRef="JPY">800</ix:nonFraction>
+<ix:nonFraction name="x:Assets" contextRef="current" unitRef="USD">900</ix:nonFraction>
+<ix:nonFraction name="x:ShortTermLoansPayable" contextRef="current" unitRef="JPY">－</ix:nonFraction>
+<ix:nonFraction name="x:Liabilities" contextRef="current" unitRef="JPY" xsi:nil="true">0</ix:nonFraction>
+<ix:nonFraction name="x:Zero" contextRef="current" unitRef="JPY">0</ix:nonFraction>"#;
+        let facts = verified_instant_facts(
+            &[("report.htm".into(), html.into())],
+            domain::Date::parse("2026-06-30").unwrap(),
+        );
+        assert_eq!(facts.len(), 2);
+        assert_eq!(facts[0].name, "Assets");
+        assert_eq!(facts[0].value, 1_000_000.0);
+        assert_eq!(facts[1].name, "Zero");
+        assert_eq!(facts[1].value, 0.0);
+    }
+    #[test]
+    fn contradictory_contexts_are_rejected() {
+        let html = r#"<xbrli:context id="same"><xbrli:instant>2026-06-30</xbrli:instant></xbrli:context><xbrli:context id="same"><xbrli:instant>2025-06-30</xbrli:instant></xbrli:context><xbrli:unit id="JPY"><xbrli:measure>iso4217:JPY</xbrli:measure></xbrli:unit><ix:nonFraction name="x:Assets" contextRef="same" unitRef="JPY">100</ix:nonFraction>"#;
+        assert!(verified_instant_facts(
+            &[("report.htm".into(), html.into())],
+            domain::Date::parse("2026-06-30").unwrap()
+        )
+        .is_empty());
     }
 }

@@ -90,6 +90,15 @@ impl EdinetClient {
         parse_reit_list(&body, date)
     }
 
+    /// RAG audit retains corrections and withdrawal/metadata events, including
+    /// older reports appearing in today's list. Do not apply submitted==day here.
+    pub async fn list_reit_events(&self, date: Date) -> Result<Vec<Value>, PortError> {
+        let body = self
+            .get(&format!("{BASE}/documents.json?date={date}&type=2"))
+            .await?;
+        parse_reit_events(&body)
+    }
+
     /// 書類の iXBRL（type=1 の zip）。表を読むときに使う
     pub async fn fetch_ixbrl_zip(&self, doc_id: &str) -> Result<Vec<u8>, PortError> {
         self.get(&format!("{BASE}/documents/{doc_id}?type=1")).await
@@ -132,6 +141,32 @@ pub fn parse_document_list(body: &[u8], day: Date) -> Result<Vec<DocRef>, PortEr
             })
         })
         .filter(|d| d.submitted == day)
+        .collect())
+}
+
+pub fn parse_reit_events(body: &[u8]) -> Result<Vec<Value>, PortError> {
+    let data: Value =
+        serde_json::from_slice(body).map_err(|_| PortError("EDINET audit JSON".into()))?;
+    if data["metadata"]["status"]
+        .as_str()
+        .is_some_and(|s| s != "200")
+    {
+        return Err(PortError("EDINET audit status".into()));
+    }
+    let rows = data["results"]
+        .as_array()
+        .ok_or_else(|| PortError("EDINET audit results missing".into()))?;
+    Ok(rows
+        .iter()
+        .filter(|r| {
+            r["ordinanceCode"] == "030" && matches!(r["docTypeCode"].as_str(), Some("120" | "130"))
+        })
+        .filter(|r| {
+            r["filerName"]
+                .as_str()
+                .is_some_and(|name| name.contains("投資法人"))
+        })
+        .cloned()
         .collect())
 }
 

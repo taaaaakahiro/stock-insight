@@ -191,6 +191,16 @@ async fn main() {
         "sync-jq" => sync_jq(args).await,
         "sync-edinet" => sync_edinet(args).await,
         "sync-reit" => sync_reit(args).await,
+        "reit-rag" if args.dry_run.is_some() || args.from_file.is_some() || args.from.is_some() || args.until.is_some() => Err("reit-rag does not support dry-run/from-file/date overrides; use the offline RAG tests".into()),
+        "reit-rag" => match d1_store(http::client()) {
+            Ok(store) => {
+                adapter_batch::reit_rag::run(&store, SystemClock.now_unix(), args.max_minutes.min(120))
+                    .await
+                    .map(|n| println!("reit-rag: {n} assessments published"))
+                    .map_err(|e| e.0)
+            }
+            Err(e) => Err(e),
+        },
         "reit-probe" => reit_probe(args).await,
         "reit-dump" => reit_dump(args),
         "compute" => compute(args).await,
@@ -280,6 +290,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0021_recommendation_tracking",
         include_str!("../../../migrations/0021_recommendation_tracking.sql"),
+    ),
+    (
+        "0022_reit_rag",
+        include_str!("../../../migrations/0022_reit_rag.sql"),
+    ),
+    (
+        "0023_reit_rag_facts",
+        include_str!("../../../migrations/0023_reit_rag_facts.sql"),
     ),
 ];
 

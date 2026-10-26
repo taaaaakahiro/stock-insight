@@ -39,6 +39,7 @@ function OutcomeCell({ outcome }: { outcome: RecommendationOutcome | undefined }
 function Detail({ detail }: { detail: RecommendationHistoryDetail }) {
   const [allCandidates, setAllCandidates] = useState(false);
   const [horizon, setHorizon] = useState(0);
+  const [page, setPage] = useState(0);
   const outcomes = new Map(
     detail.outcomes.filter((o) => o.horizon === horizon).map((o) => [o.code, o]),
   );
@@ -46,6 +47,8 @@ function Detail({ detail }: { detail: RecommendationHistoryDetail }) {
   const rule = outcomes.get("__rule10")?.result.price_return;
   const evaluatedAt = Math.max(0, ...detail.outcomes.map((o) => o.evaluated_at));
   const candidates = detail.candidates.filter((c) => allCandidates || c.rank !== null);
+  const pageCount = Math.max(1, Math.ceil(candidates.length / 10));
+  const visible = candidates.slice(page * 10, page * 10 + 10);
   return (
     <div className="flex flex-col gap-4">
       <p className="text-xs text-muted-foreground">
@@ -59,7 +62,7 @@ function Detail({ detail }: { detail: RecommendationHistoryDetail }) {
       </p>
       {detail.run.status === "legacy_incomplete" ? (
         <p className="rounded-lg border p-3 text-sm">
-          追跡機能の導入前の推薦です。当時の指標と公開時刻の記録がないため、成績比較の対象外です。
+          追跡機能の導入前のレコメンドです。当時の指標と公開時刻の記録がないため、成績比較の対象外です。銘柄名は現在の名称を表示しています。
         </p>
       ) : (
         <>
@@ -83,7 +86,7 @@ function Detail({ detail }: { detail: RecommendationHistoryDetail }) {
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             {(
               [
-                ["__ai10", "公開した推薦銘柄"],
+                ["__ai10", "公開したレコメンド銘柄"],
                 ["__rule10", "ルール上位10銘柄"],
                 ["__candidates", "候補全体"],
                 ["1306", "TOPIX連動ETF（1306）"],
@@ -96,7 +99,7 @@ function Detail({ detail }: { detail: RecommendationHistoryDetail }) {
             ))}
           </div>
           <p className="text-sm">
-            公開推薦とルールの差：
+            公開レコメンドとルールの差：
             <strong>{points(ai != null && rule != null ? ai - rule : null)}</strong>
             <span className="ml-2 text-xs text-muted-foreground">
               構成銘柄のデータがすべて揃った場合に比較します。
@@ -105,9 +108,16 @@ function Detail({ detail }: { detail: RecommendationHistoryDetail }) {
         </>
       )}
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm">{allCandidates ? "当時の全候補" : "推薦した銘柄"}</p>
-        <Button size="sm" variant="outline" onClick={() => setAllCandidates((v) => !v)}>
-          {allCandidates ? "推薦銘柄だけ表示" : "選ばなかった候補も表示"}
+        <p className="text-sm">{allCandidates ? "当時の全候補" : "レコメンドした銘柄"}</p>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            setAllCandidates((v) => !v);
+            setPage(0);
+          }}
+        >
+          {allCandidates ? "レコメンド銘柄だけ表示" : "選ばなかった候補も表示"}
         </Button>
       </div>
       <div className="overflow-x-auto rounded-lg border">
@@ -129,18 +139,24 @@ function Detail({ detail }: { detail: RecommendationHistoryDetail }) {
             </tr>
           </thead>
           <tbody>
-            {candidates.map((c) => {
+            {visible.map((c) => {
               const outcome = outcomes.get(c.code);
               return (
                 <tr key={c.code} className="border-t align-top">
                   <td className="p-3">{c.rank ?? "候補"}</td>
                   <td className="max-w-sm p-3">
                     <a className="font-medium hover:underline" href={`/stocks/${c.code}`}>
-                      {c.stock?.name ?? c.code} <span className="text-xs">{c.code}</span>
+                      {c.stock?.name?.trim() || c.current_name?.trim() || "銘柄名未取得"}
+                      <span className="ml-2 text-xs text-muted-foreground">{c.code}</span>
                     </a>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {c.reason ?? "公開推薦の対象外"}
-                    </p>
+                    {c.reason ? (
+                      <details className="mt-2 text-xs text-muted-foreground">
+                        <summary className="cursor-pointer">レコメンド理由を見る</summary>
+                        <p className="mt-2 leading-relaxed">{c.reason}</p>
+                      </details>
+                    ) : (
+                      <p className="mt-1 text-xs text-muted-foreground">公開レコメンドの対象外</p>
+                    )}
                     {c.rule_rank !== null && (
                       <p className="mt-1 text-xs">ルール順位 {c.rule_rank}</p>
                     )}
@@ -167,39 +183,81 @@ function Detail({ detail }: { detail: RecommendationHistoryDetail }) {
           </tbody>
         </table>
       </div>
+      <nav
+        aria-label="銘柄のページ切り替え"
+        className="flex flex-wrap items-center justify-between gap-3"
+      >
+        <p className="text-xs text-muted-foreground" aria-live="polite">
+          全{candidates.length}銘柄 · {candidates.length ? page * 10 + 1 : 0}〜
+          {Math.min((page + 1) * 10, candidates.length)}件を表示
+        </p>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={page === 0}
+            onClick={() => setPage((n) => n - 1)}
+          >
+            前の10件
+          </Button>
+          <span className="text-xs tabular-nums">
+            {page + 1} / {pageCount}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={page + 1 >= pageCount}
+            onClick={() => setPage((n) => n + 1)}
+          >
+            次の10件
+          </Button>
+        </div>
+      </nav>
     </div>
   );
 }
 
 export function RecommendHistory({ refreshKey }: { refreshKey: number }) {
+  return <History key={refreshKey} />;
+}
+
+function History() {
   const { getToken } = useAuthState();
   const [history, setHistory] = useState<RecommendationHistory | null>(null);
+  const [cursors, setCursors] = useState<(number | null)[]>([null]);
+  const [page, setPage] = useState(0);
+  const [retry, setRetry] = useState(0);
   const [selected, setSelected] = useState<number | null>(null);
   const [detail, setDetail] = useState<RecommendationHistoryDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const [detailError, setDetailError] = useState(false);
+  const [detailRetry, setDetailRetry] = useState(0);
+  const cursor = cursors[page];
   useEffect(() => {
     const ctrl = new AbortController();
     setHistory(null);
+    setSelected(null);
+    setDetail(null);
     setError(null);
-    // 再生成後も新しい履歴一覧を取得する。
-    void refreshKey;
-    apiGet<RecommendationHistory>("/api/recommendations/history", getToken, ctrl.signal)
+    void retry;
+    const query = cursor == null ? "" : `?before=${cursor}`;
+    apiGet<RecommendationHistory>(`/api/recommendations/history${query}`, getToken, ctrl.signal)
       .then((data) => {
         if (ctrl.signal.aborted) return;
         setHistory(data);
         setSelected(data.runs[0]?.id ?? null);
       })
       .catch(() => {
-        if (!ctrl.signal.aborted) setError("推薦履歴を読み込めませんでした。");
+        if (!ctrl.signal.aborted) setError("レコメンド履歴を読み込めませんでした。");
       });
     return () => ctrl.abort();
-  }, [getToken, refreshKey]);
+  }, [getToken, cursor, retry]);
   useEffect(() => {
     setDetail(null);
+    setDetailError(false);
+    void detailRetry;
     if (selected === null) return;
     const ctrl = new AbortController();
-    setError(null);
     apiGet<RecommendationHistoryDetail>(
       `/api/recommendations/history/${selected}`,
       getToken,
@@ -209,57 +267,94 @@ export function RecommendHistory({ refreshKey }: { refreshKey: number }) {
         if (!ctrl.signal.aborted) setDetail(data);
       })
       .catch(() => {
-        if (!ctrl.signal.aborted) setError("この推薦の成績を読み込めませんでした。");
+        if (!ctrl.signal.aborted) setDetailError(true);
       });
     return () => ctrl.abort();
-  }, [getToken, selected]);
-  async function loadMore() {
-    if (history?.next_before == null || loadingMore) return;
-    setLoadingMore(true);
-    try {
-      const data = await apiGet<RecommendationHistory>(
-        `/api/recommendations/history?before=${history.next_before}`,
-        getToken,
-      );
-      setHistory(
-        (previous) =>
-          previous && { runs: [...previous.runs, ...data.runs], next_before: data.next_before },
-      );
-    } catch {
-      setError("以前の履歴を読み込めませんでした。");
-    } finally {
-      setLoadingMore(false);
-    }
+  }, [getToken, selected, detailRetry]);
+  function changePage(next: number) {
+    setHistory(null);
+    setSelected(null);
+    setDetail(null);
+    setPage(next);
   }
   return (
     <section aria-labelledby="history-heading" className="flex flex-col gap-4 border-t pt-6">
-      <RecommendComparison />
-      <h3 id="history-heading" className="font-medium">
-        過去の推薦とその後の成績
-      </h3>
+      <div>
+        <h3 id="history-heading" className="font-medium">
+          過去のレコメンドとその後の成績
+        </h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          新しい順に20回ずつ表示します。日付を選ぶと、その回の銘柄と成績を確認できます。
+        </p>
+      </div>
+      <nav
+        aria-label="履歴のページ切り替え"
+        className="flex flex-wrap items-center justify-between gap-3"
+      >
+        <span className="text-sm tabular-nums" aria-live="polite">
+          {page + 1}ページ目{history && ` · ${history.runs.length}回のレコメンド`}
+        </span>
+        <div className="flex flex-wrap gap-2">
+          {page > 1 && (
+            <Button size="sm" variant="ghost" onClick={() => changePage(0)}>
+              最新へ
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={page === 0}
+            onClick={() => changePage(page - 1)}
+          >
+            新しい20回
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!history?.next_before}
+            onClick={() => {
+              if (history?.next_before == null) return;
+              setCursors((values) => [...values.slice(0, page + 1), history.next_before]);
+              changePage(page + 1);
+            }}
+          >
+            以前の20回
+          </Button>
+        </div>
+      </nav>
       {error && (
-        <p role="alert" className="text-sm">
-          {error}
+        <div role="alert" className="flex items-center gap-3 text-sm">
+          <p>{error}</p>
+          <Button size="sm" variant="outline" onClick={() => setRetry((n) => n + 1)}>
+            再読み込み
+          </Button>
+        </div>
+      )}
+      {!history && !error && (
+        <p role="status" className="text-sm text-muted-foreground">
+          履歴を読み込み中…
         </p>
       )}
-      {!history && !error && <p className="text-sm text-muted-foreground">履歴を読み込み中…</p>}
       {history?.runs.length === 0 && (
-        <p className="text-sm text-muted-foreground">推薦が公開されると、ここに履歴が残ります。</p>
+        <p className="text-sm text-muted-foreground">このページにはレコメンドがありません。</p>
       )}
       {history && history.runs.length > 0 && (
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="text-sm" htmlFor="recommendation-run">
-            公開履歴
+        <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3 sm:flex-row sm:items-center sm:gap-3">
+          <label className="shrink-0 text-sm" htmlFor="recommendation-run">
+            表示するレコメンド
           </label>
           <select
             id="recommendation-run"
-            className="max-w-full rounded-md border bg-background p-2 text-sm"
+            className="w-full min-w-0 rounded-md border bg-background p-2 text-sm"
             value={selected ?? ""}
-            onChange={(e) => setSelected(Number(e.target.value))}
+            onChange={(e) => {
+              setDetail(null);
+              setSelected(Number(e.target.value));
+            }}
           >
             {history.runs.map((r) => (
               <option key={r.id} value={r.id}>
-                {ymd(r.price_date)}基準 · {jstDateTime(r.published_at ?? r.created_at)} · #{r.id}
+                {ymd(r.price_date)}基準 · {jstDateTime(r.published_at ?? r.created_at)}
                 {r.status === "legacy_incomplete"
                   ? "（旧データ）"
                   : r.is_primary
@@ -268,22 +363,30 @@ export function RecommendHistory({ refreshKey }: { refreshKey: number }) {
               </option>
             ))}
           </select>
-          {history.next_before !== null && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={loadingMore}
-              onClick={() => void loadMore()}
-            >
-              {loadingMore ? "読み込み中…" : "以前の履歴を追加"}
-            </Button>
-          )}
         </div>
       )}
-      {selected !== null && !detail && !error && (
-        <p className="text-sm text-muted-foreground">成績を読み込み中…</p>
+      {detailError && (
+        <div role="alert" className="flex items-center gap-3 text-sm">
+          <p>このレコメンドの成績を読み込めませんでした。</p>
+          <Button size="sm" variant="outline" onClick={() => setDetailRetry((n) => n + 1)}>
+            再読み込み
+          </Button>
+        </div>
+      )}
+      {selected !== null && !detail && !detailError && (
+        <p role="status" className="text-sm text-muted-foreground">
+          成績を読み込み中…
+        </p>
       )}
       {detail && <Detail key={detail.run.id} detail={detail} />}
+      <details className="rounded-lg border p-4">
+        <summary className="cursor-pointer text-sm font-medium">
+          レコメンド全体の成績を比較する
+        </summary>
+        <div className="mt-4">
+          <RecommendComparison />
+        </div>
+      </details>
     </section>
   );
 }

@@ -111,7 +111,7 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
       <header className="z-10 border-b bg-background/90 backdrop-blur md:sticky md:top-0">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-1 px-4 py-2 md:py-3">
           <div className="flex items-baseline gap-3">
-            <h1 className="text-base font-semibold tracking-wide">Maa'un</h1>
+            <h1 className="text-base font-semibold tracking-wide">Maa'un 配当分析</h1>
             <span className="hidden text-xs text-muted-foreground sm:inline">
               日本株の配当と企業価値を見極める
             </span>
@@ -203,7 +203,7 @@ function LoginPage() {
   const [busy, setBusy] = useState(false);
   return (
     <Centered>
-      <h1 className="mb-2 text-2xl font-semibold tracking-wide">Maa'un</h1>
+      <h1 className="mb-2 text-2xl font-semibold tracking-wide">Maa'un 配当分析</h1>
       <p className="mb-6 text-sm text-muted-foreground">配当と財務から、割安な日本株を見つける。</p>
       <Button
         size="lg"

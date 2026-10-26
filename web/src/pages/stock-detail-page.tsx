@@ -4,6 +4,7 @@ import { DividendPolicy } from "@/components/dividend-policy";
 import { DocPreview } from "@/components/doc-preview";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
 import { ReitDebt } from "@/components/reit-debt";
+import { ReitAssessment } from "@/components/reit-rag";
 import { DividendAmount, Flags } from "@/components/results-table";
 import { Button } from "@/components/ui/button";
 import {
@@ -122,7 +123,12 @@ function Detail({ d }: { d: StockDetail }) {
         </p>
       </header>
 
-      {kind === "reit" && <ReitDebt code={s.code} />}
+      {kind === "reit" && (
+        <>
+          <ReitAssessment code={s.code} />
+          <ReitDebt code={s.code} />
+        </>
+      )}
 
       {stock && (
         <section aria-label="配当方針">

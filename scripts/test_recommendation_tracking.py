@@ -43,6 +43,18 @@ class TrackingSql(unittest.TestCase):
             self.db.execute(sql("DELETE FROM recommendations WHERE date="), (run,))
             self.db.execute(sql("INSERT INTO recommendations(date,rank,code,reason,model,created_at,grade,source)"), (run,))
 
+    def test_legacy_name_uses_master_without_fabricating_historical_metrics(self):
+        self.db.execute("INSERT INTO stocks(code,name,kind,market,size_class,as_of,updated_at) VALUES ('7203','トヨタ自動車','stock','Prime','TOPIX Large70','2026-10-25',1)")
+        self.db.row_factory = sqlite3.Row
+        query = sql("SELECT c.code,c.rule_rank,c.rank,c.reason,c.grade,c.snapshot_json,s.name AS current_name")
+        row = self.db.execute(query, (1,)).fetchone()
+        self.assertEqual(row["current_name"], "トヨタ自動車")
+        self.assertIsNone(row["snapshot_json"])
+        self.db.execute("DELETE FROM stocks WHERE code='7203'")
+        row = self.db.execute(query, (1,)).fetchone()
+        self.assertEqual(row["code"], "7203")
+        self.assertIsNone(row["current_name"])
+
     def test_regeneration_keeps_input_and_first_publication(self):
         first = self.begin(100)
         self.publish(first)
