@@ -71,7 +71,7 @@ EDINETの原本は種類ごとに上書きし、削除対象キーをmanifestへ
 
 ## REIT分析の実行
 
-`batch-cli reit-rag --max-minutes 110` を使用する。workflowのジョブ上限は120分。CLIはdry-run、from-file、from/untilの日付指定を受け付けない。
+`batch-cli reit-rag --max-minutes 120` を使用する（アプリ側の最大値）。準備・終了処理の余裕を含め、workflowのジョブ上限は130分。CLIはdry-run、from-file、from/untilの日付指定を受け付けない。
 
 [設定一覧](06_secrets_and_repository.md)のD1・Cloudflare・EDINET接続情報と保存先バケットが必要。意味検索は任意で、Vectorize indexと埋め込みモデルを両方設定する。埋め込みモデルを変更する場合は別indexを作る。生成モデルはレコメンドと共通で追加設定不要。
 
