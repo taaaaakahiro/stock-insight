@@ -180,6 +180,13 @@ pub async fn generate<R: RecommendRepository, A: Recommender>(
     let Some(run) = repo.latest_run().await? else {
         return Ok(Outcome::Skipped("no batch run yet".into()));
     };
+    // GitHub の日次ジョブの上限（340分）を過ぎた記録は実行中とは表示しない。
+    // 指標が部分保存の可能性があるため、成功扱いにせず再計算を待つ。
+    if run.status == "running" && now.saturating_sub(run.started_at) > 6 * 60 * 60 {
+        return Ok(Outcome::Skipped(
+            "batch interrupted; recompute indicators".into(),
+        ));
+    }
     if run.status != "succeeded" {
         return Ok(Outcome::Skipped(format!(
             "latest batch {} is {}",
@@ -212,6 +219,13 @@ pub async fn regenerate<R: RecommendRepository, A: Recommender>(
     let Some(run) = repo.latest_run().await? else {
         return Ok(Outcome::Skipped("no batch run yet".into()));
     };
+    // GitHub の日次ジョブの上限（340分）を過ぎた記録は実行中とは表示しない。
+    // 指標が部分保存の可能性があるため、成功扱いにせず再計算を待つ。
+    if run.status == "running" && now.saturating_sub(run.started_at) > 6 * 60 * 60 {
+        return Ok(Outcome::Skipped(
+            "batch interrupted; recompute indicators".into(),
+        ));
+    }
     if run.status != "succeeded" {
         return Ok(Outcome::Skipped(format!(
             "latest batch {} is {}",
@@ -663,6 +677,21 @@ mod tests {
             .unwrap(),
             Outcome::Skipped(_)
         ));
+    }
+
+    #[test]
+    fn interrupted_batch_is_not_reported_as_running_or_used_for_recommendations() {
+        let repo = fake(run("running", NOW - 86_400), 30);
+        for outcome in [
+            block_on(regenerate(&repo, &echo(), NOW)).unwrap(),
+            block_on(generate(&repo, &echo(), NOW)).unwrap(),
+        ] {
+            assert_eq!(
+                outcome,
+                Outcome::Skipped("batch interrupted; recompute indicators".into())
+            );
+        }
+        assert!(repo.saved.borrow().is_empty());
     }
 
     #[test]

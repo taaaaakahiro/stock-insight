@@ -185,9 +185,11 @@ function RegenerateButton({ onDone }: { onDone: () => void }) {
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         setNote(
-          e.message.includes("running")
-            ? "日次バッチが走っています。終わってからお試しください。"
-            : `いまは作れません（${e.message}）。`,
+          e.message.includes("batch interrupted")
+            ? "日次バッチが途中で終了しています。指標の再計算が必要です。"
+            : e.message.includes("running")
+              ? "日次バッチが走っています。終わってからお試しください。"
+              : `いまは作れません（${e.message}）。`,
         );
       } else {
         setNote("作り直せませんでした。時間をおいて再度お試しください。");
