@@ -424,6 +424,10 @@ struct Pending {
     forecasts: Vec<ForecastReport>,
 }
 
+fn price_sync_start(cursor: Date, until: Date) -> Date {
+    cursor.add_days(1).min(until.add_days(-7))
+}
+
 async fn sync_jq(args: Args) -> Result<(), String> {
     if let Some(path) = &args.dry_run {
         return sync_jq_dry_run(&args, path).await;
@@ -443,7 +447,8 @@ async fn sync_jq(args: Args) -> Result<(), String> {
         .map_err(|e| e.0)?
         .and_then(|s| Date::parse(&s));
     let start = match (cursor, args.from) {
-        (Some(c), _) => c.add_days(1),
+        // Revisit recent days: a cursor can advance before the provider publishes closes.
+        (Some(c), _) => price_sync_start(c, until),
         (None, Some(f)) => f,
         (None, None) => today.add_days(-BACKFILL_DAYS),
     };
@@ -1711,5 +1716,26 @@ mod batch_status_tests {
             assert_eq!(saved[0].finished_at, Some(200));
             assert_eq!(saved[0].succeeded, 0);
         }
+    }
+}
+
+#[cfg(test)]
+mod price_sync_tests {
+    use super::*;
+    #[test]
+    fn revisits_recent_dates_without_skipping_unfinished_backfill() {
+        let d = |s| Date::parse(s).unwrap();
+        assert_eq!(
+            price_sync_start(d("2026-10-28"), d("2026-10-28")),
+            d("2026-10-21")
+        );
+        assert_eq!(
+            price_sync_start(d("2026-10-27"), d("2026-10-28")),
+            d("2026-10-21")
+        );
+        assert_eq!(
+            price_sync_start(d("2026-10-01"), d("2026-10-28")),
+            d("2026-10-02")
+        );
     }
 }
