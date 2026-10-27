@@ -1,10 +1,10 @@
 # 13 バッチ運用
 
-設定元: [daily-batch.yml](../.github/workflows/daily-batch.yml)、実装: [batch-cli](../crates/batch-cli/src/main.rs)。
+設定元: [daily-batch.yml](../.github/workflows/daily-batch.yml)・[reit-batch.yml](../.github/workflows/reit-batch.yml)、実装: [batch-cli](../crates/batch-cli/src/main.rs)。
 
 ## 起動とジョブ
 
-通常はWorker Cronの平日18:30 JST、予備はGitHub scheduleの18:45 JST。同一ワークフローはconcurrencyで直列化し、実行中の処理を取り消さない。
+日次workflowはWorker Cronの平日18:30 JST、予備はGitHub scheduleの18:45 JST。同一ワークフローはconcurrencyで直列化し、実行中の処理を取り消さない。
 
 `should-run` はJSTの日付、土日・祝日・休場日、当日の `daily` 成功記録を確認する。祝日データを取得・解釈できなければ失敗する。`force=true` は休場日・実行済み判定を省略する。
 
@@ -15,10 +15,8 @@
 | prepare | 実行判定、マイグレーション、JPX銘柄マスタ同期 |
 | jquants | 株価・分割・財務・予想の同期、`compute --label daily`、`evaluate-recommendations`、原本をR2へ保存 |
 | edinet | 配当方針・事業内容を同期、原本をR2へ保存し不要キーを削除 |
-| reit | 有報から借入・物件を同期。D1へ保存 |
-| reit-rag | jquants・reit成功後、`REIT_RAG_ENABLED=true` の場合にREIT分析を生成・公開 |
 
-prepare後の3取得ジョブは並列。jquants内のcomputeが書く `batch_runs` の成功は、EDINET・REIT・R2アップロードまでの成功を示すものではない。
+prepare後のJ-Quants・EDINET取得は並列。computeが書く `batch_runs` の成功は、EDINET取得・R2アップロードや別workflowのREIT処理の成功を示すものではない。
 
 ## 手動実行
 
@@ -69,9 +67,36 @@ EDINETの原本は種類ごとに上書きし、削除対象キーをmanifestへ
 
 推薦追跡はcompute成功後に実行する。株価・財務の変更を追記し、既存の公開推薦の成績と比較レポートを更新する。価格基準日・欠損・再実行の扱いは[成績仕様](16_recommendation_evaluation.md)を参照。
 
+## REIT専用workflow
+
+REIT取得・分析・診断は `reit-batch` で実行する。`daily-batch` にREITジョブは含めない。専用の実行履歴・同時実行制御を持ち、REIT側の失敗で日次workflowの結果は変わらない。D1・R2の保存先は共通。
+
+通常はmainの日次workflow成功後に別実行として起動する。その実行の `jquants` が成功していることを確認し、休場日・当日処理済み・probeによるスキップ時は起動しない。REIT専用workflow内で `sync-reit` を実行してから分析へ進む。AIが無効でもREIT取得は行う。
+
+手動ではActionsの `reit-batch` → Run workflow で `mode` を選ぶ。
+
+| mode | 対象 |
+|---|---|
+| `full` | REIT取得と分析（既定） |
+| `analyze` | 保存済みの株価・REIT情報から分析のみ |
+| `resume` | `rag_run_id` に指定した固定入力からAI評価・公開を再開 |
+| `diagnose` | トークン状態とD1への読み取り診断。DB更新・AI実行なし |
+| `ai-diagnose` | D1へのSELECTと共通モデルへの最小推論でAI認証を確認 |
+
+どのmodeもJ-Quants、compute、銘柄マスタ更新、マイグレーションは実行しない。分析には `REIT_RAG_ENABLED=true` が必要。`resume` は保存済み入力のハッシュ・モデル・バージョンを検証して再利用する。
+
+```bash
+# REIT分析だけを実行
+gh workflow run reit-batch.yml --ref main -f mode=analyze
+# AI評価から再開
+gh workflow run reit-batch.yml --ref main -f mode=resume -f rag_run_id="入力確定済みのID"
+```
+
+AI分析は最初にD1とWorkers AIの接続を検証し、失敗した場合は資料の保存・検索へ進まない。接続診断のログはHTTP状態、エラーコード、リクエスト識別子、REIT保存件数のみ。古い実行の再試行は元のコード・入力を使うため、コード変更後は新しく実行する。
+
 ## REIT分析の実行
 
-日次workflowは次の順で処理する。各処理の上限は100分、ジョブ全体は105分。資料準備とAI評価は4分割し、同時実行は各2ジョブまで。
+REIT専用workflowは次の順で分析する。各処理の上限は100分、ジョブ全体は105分。資料準備とAI評価は4分割し、同時実行は各2ジョブまで。
 
 | 段階 | コマンドの指定 | 内容 |
 |---|---|---|
