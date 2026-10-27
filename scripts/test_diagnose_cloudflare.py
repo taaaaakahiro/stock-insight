@@ -65,6 +65,26 @@ class DiagnosticTest(unittest.TestCase):
         self.assertEqual(calls[-1][1]["max_tokens"], 1)
         self.assertEqual(calls[1][1]["sql"], "SELECT 1 AS ok")
 
+    def test_ai_token_is_used_only_for_ai_requests(self):
+        env = {"CLOUDFLARE_API_TOKEN": "storage-token", "CLOUDFLARE_AI_API_TOKEN": "ai-token"}
+        paths = [("/accounts/a/ai/run/model", "ai-token"),
+                 ("/accounts/a/d1/database/db/query", "storage-token"),
+                 ("/accounts/a/tokens/verify", "storage-token"),
+                 ("/accounts/a/r2/buckets/b/objects/ai/output", "storage-token")]
+        for path, expected in paths:
+            response = Response(b'{"success":true}')
+            with patch.dict(diagnostic.os.environ, env), \
+                 patch.object(diagnostic.urllib.request, "urlopen", return_value=response) as send, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                diagnostic.request("test", path)
+            self.assertEqual(send.call_args.args[0].get_header("Authorization"), "Bearer " + expected)
+        env["CLOUDFLARE_AI_API_TOKEN"] = " "
+        with patch.dict(diagnostic.os.environ, env), \
+             patch.object(diagnostic.urllib.request, "urlopen", return_value=Response(b'{"success":true}')) as send, \
+             contextlib.redirect_stdout(io.StringIO()):
+            diagnostic.request("test", "/accounts/a/ai/run/model")
+        self.assertEqual(send.call_args.args[0].get_header("Authorization"), "Bearer storage-token")
+
 
 if __name__ == "__main__":
     unittest.main()

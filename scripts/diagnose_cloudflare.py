@@ -1,4 +1,4 @@
-"""Read-only Cloudflare auth probes. Never log credentials, URLs, or raw bodies."""
+"""Cloudflare auth probes (read-only unless --ai). Never log credentials, URLs, or raw bodies."""
 import datetime
 import json
 import os
@@ -13,10 +13,13 @@ BASE = "https://api.cloudflare.com/client/v4"
 
 
 def request(label, path, payload=None):
+    token = os.environ["CLOUDFLARE_API_TOKEN"]
+    if re.match(r"^/accounts/[A-Za-z0-9]+/ai/", path):
+        token = os.environ.get("CLOUDFLARE_AI_API_TOKEN", "").strip() or token
     req = urllib.request.Request(
         BASE + path,
         data=None if payload is None else json.dumps(payload).encode(),
-        headers={"Authorization": "Bearer " + os.environ["CLOUDFLARE_API_TOKEN"],
+        headers={"Authorization": "Bearer " + token,
                  "Content-Type": "application/json", "User-Agent": "stock-insight-diagnostics/1"},
     )
     started = time.monotonic()
@@ -51,23 +54,12 @@ def main(ai=False):
             raise SystemExit(f"missing {key}")
     account = os.environ["CLOUDFLARE_ACCOUNT_ID"]
     database = os.environ["D1_DATABASE_ID"]
-    account_owned = False
     verified = request("user-token-verify", "/user/tokens/verify")
     if not verified or not verified.get("success"):
-        account_owned = True
         verified = request("account-token-verify", f"/accounts/{account}/tokens/verify")
     if verified and isinstance(verified.get("result"), dict):
         result = verified["result"]
         print(json.dumps({"token_status": result.get("status"), "expires_on": result.get("expires_on")}), flush=True)
-    if ai and account_owned and verified and verified.get("success"):
-        token_id = (verified.get("result") or {}).get("id")
-        if token_id and re.fullmatch(r"[a-fA-F0-9]{32}", token_id):
-            policy = request("account-token-permissions", f"/accounts/{account}/tokens/{token_id}")
-            if policy and policy.get("success"):
-                permissions = sorted({g.get("name", "")
-                    for p in (policy.get("result") or {}).get("policies", [])
-                    for g in p.get("permission_groups", []) if p.get("effect") == "allow"})
-                print(json.dumps({"allowed_permission_names": permissions}), flush=True)
     path = f"/accounts/{account}/d1/database/{database}/query"
     if ai:
         model = re.search(r'pub const TEXT_MODEL: &str = "([^"]+)"',

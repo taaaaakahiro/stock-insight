@@ -92,6 +92,8 @@ gh workflow run reit-batch.yml --ref main -f mode=analyze
 gh workflow run reit-batch.yml --ref main -f mode=resume -f rag_run_id="入力確定済みのID"
 ```
 
+AIの401・403は、対象アカウントのWorkers AI Read/Edit権限を確認する。日次用トークンを変更せず対応する場合は、AI専用の `CLOUDFLARE_AI_API_TOKEN` をActions Secretに設定する。
+
 AI分析は最初にD1とWorkers AIの接続を検証し、失敗した場合は資料の保存・検索へ進まない。接続診断のログはHTTP状態、エラーコード、リクエスト識別子、REIT保存件数のみ。古い実行の再試行は元のコード・入力を使うため、コード変更後は新しく実行する。
 
 ## REIT分析の実行

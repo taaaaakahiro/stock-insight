@@ -273,6 +273,7 @@ pub struct Cloud {
     client: reqwest::Client,
     base: String,
     token: String,
+    ai_token: String,
     bucket: String,
     model: String,
     deadline: std::time::Instant,
@@ -298,6 +299,12 @@ impl Cloud {
         {
             return Err(err("invalid RAG configuration"));
         }
+        let token = env("CLOUDFLARE_API_TOKEN")?;
+        let ai_token = std::env::var("CLOUDFLARE_AI_API_TOKEN")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| token.clone());
         Ok(Self {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(max_minutes * 60),
             client: reqwest::Client::builder()
@@ -305,10 +312,18 @@ impl Cloud {
                 .build()
                 .map_err(|_| err("HTTP client"))?,
             base: format!("https://api.cloudflare.com/client/v4/accounts/{account}"),
-            token: env("CLOUDFLARE_API_TOKEN")?,
+            token,
+            ai_token,
             bucket,
             model,
         })
+    }
+    fn token_for(&self, path: &str) -> &str {
+        if path.starts_with("/ai/") {
+            &self.ai_token
+        } else {
+            &self.token
+        }
     }
     fn check_deadline(&self) -> Result<(), PortError> {
         if std::time::Instant::now() >= self.deadline {
@@ -329,7 +344,7 @@ impl Cloud {
             let response = self
                 .client
                 .request(method.clone(), format!("{}{path}", self.base))
-                .bearer_auth(&self.token)
+                .bearer_auth(self.token_for(path))
                 .header("Content-Type", content_type)
                 .body(body.clone())
                 .send()
@@ -362,12 +377,13 @@ impl Cloud {
                         .get("cf-ray")
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or("unavailable");
-                    let hint =
-                        if service == "Workers AI" && matches!(r.status().as_u16(), 401 | 403) {
-                            "; check Workers AI Read/Edit permissions for this account"
-                        } else {
-                            ""
-                        };
+                    let hint = if service == "Workers AI"
+                        && matches!(r.status().as_u16(), 401 | 403)
+                    {
+                        "; configure CLOUDFLARE_AI_API_TOKEN with Workers AI Read/Edit for this account"
+                    } else {
+                        ""
+                    };
                     return Err(err(format!(
                         "RAG {service} HTTP {} (cf-ray={ray}){hint}",
                         r.status().as_u16()
@@ -1510,6 +1526,31 @@ mod tests {
         (snapshot, rows)
     }
 
+    #[test]
+    fn ai_credentials_never_replace_storage_credentials() {
+        let cloud = Cloud {
+            client: reqwest::Client::new(),
+            base: "https://example.invalid".into(),
+            token: "storage-token".into(),
+            ai_token: "ai-token".into(),
+            bucket: "bucket".into(),
+            model: "model".into(),
+            deadline: std::time::Instant::now(),
+        };
+        assert_eq!(cloud.token_for("/ai/run/@cf/model"), "ai-token");
+        assert_eq!(
+            cloud.token_for("/r2/buckets/bucket/objects/input.json"),
+            "storage-token"
+        );
+        assert_eq!(
+            cloud.token_for("/vectorize/v2/indexes/test/query"),
+            "storage-token"
+        );
+        assert_eq!(
+            cloud.token_for("/r2/buckets/bucket/objects/ai/result.json"),
+            "storage-token"
+        );
+    }
     #[test]
     fn staged_publication_requires_exact_complete_set() {
         let (snapshot, rows) = staged_fixture();
