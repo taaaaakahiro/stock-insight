@@ -224,11 +224,12 @@ impl D1Store {
         Ok(())
     }
 
-    /// 今日（日本時間）の、指定ラベルのバッチで成功したものがあるか
+    /// 今日（日本時間）の指定ラベルの最新バッチが成功しているか。
+    /// 成功後の再計算が中断していれば、部分保存を直すため再実行する。
     pub async fn succeeded_since(&self, label: &str, since: i64) -> Result<bool, PortError> {
         let rows = self
             .query(&Stmt {
-                sql: "SELECT COUNT(*) AS n FROM batch_runs WHERE status = 'succeeded' AND run_id LIKE ? AND started_at >= ?"
+                sql: "SELECT COUNT(*) AS n FROM (SELECT status FROM batch_runs WHERE run_id LIKE ? AND started_at >= ? ORDER BY started_at DESC, rowid DESC LIMIT 1) WHERE status = 'succeeded'"
                     .into(),
                 params: vec![
                     Val::Text(format!("{label}-%")),

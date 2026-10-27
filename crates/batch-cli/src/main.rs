@@ -1548,6 +1548,28 @@ fn reit_dump(args: Args) -> Result<(), String> {
     Ok(())
 }
 
+async fn save_computed_snapshots<S: SnapshotStore, C: Clock>(
+    store: &S,
+    clock: &C,
+    run: &mut BatchRun,
+    snaps: &[usecase::Snapshot],
+) -> Result<(), String> {
+    if let Err(error) = store.save_snapshots(snaps).await {
+        // 保存途中で失敗しても running を残さない。部分保存を成功扱いにはしない。
+        run.status = "failed";
+        run.finished_at = Some(clock.now_unix());
+        run.failed = run.target;
+        if let Err(finalize_error) = store.save_run(run).await {
+            return Err(format!(
+                "{}; recording failed batch: {}",
+                error.0, finalize_error.0
+            ));
+        }
+        return Err(error.0);
+    }
+    Ok(())
+}
+
 async fn compute(args: Args) -> Result<(), String> {
     let store = d1_store(http::client())?;
     let started = SystemClock.now_unix();
@@ -1588,7 +1610,7 @@ async fn compute(args: Args) -> Result<(), String> {
     store.save_run(&run).await.map_err(|e| e.0)?;
     let (snaps, skipped) =
         usecase::daily::compute_all(&codes, histories, &stored, &run_id, started);
-    store.save_snapshots(&snaps).await.map_err(|e| e.0)?;
+    save_computed_snapshots(&store, &SystemClock, &mut run, &snaps).await?;
     run.succeeded = snaps.len();
     run.failed = skipped;
     run.finished_at = Some(SystemClock.now_unix());
@@ -1631,4 +1653,63 @@ async fn evaluate_recommendations() -> Result<(), String> {
             .map_err(|e| e.0)?;
     println!("recommendation evaluation: {count} new results through {as_of}");
     Ok(())
+}
+
+#[cfg(test)]
+mod batch_status_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct FailingStore {
+        finalization_fails: bool,
+        runs: RefCell<Vec<BatchRun>>,
+    }
+    impl SnapshotStore for FailingStore {
+        async fn save_snapshots(&self, _: &[usecase::Snapshot]) -> Result<(), usecase::PortError> {
+            Err(usecase::PortError("snapshot save failed".into()))
+        }
+        async fn save_run(&self, run: &BatchRun) -> Result<(), usecase::PortError> {
+            self.runs.borrow_mut().push(run.clone());
+            if self.finalization_fails {
+                Err(usecase::PortError("status save failed".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    struct FixedClock;
+    impl Clock for FixedClock {
+        fn now_unix(&self) -> i64 {
+            200
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_snapshot_write_records_failure_and_preserves_both_errors() {
+        for finalization_fails in [false, true] {
+            let store = FailingStore {
+                finalization_fails,
+                runs: RefCell::new(vec![]),
+            };
+            let mut run = BatchRun {
+                run_id: "daily-test".into(),
+                started_at: 100,
+                finished_at: None,
+                target: 10,
+                succeeded: 0,
+                failed: 0,
+                status: "running",
+            };
+            let error = save_computed_snapshots(&store, &FixedClock, &mut run, &[])
+                .await
+                .unwrap_err();
+            assert!(error.contains("snapshot save failed"));
+            assert_eq!(error.contains("status save failed"), finalization_fails);
+            let saved = store.runs.borrow();
+            assert_eq!(saved.len(), 1);
+            assert_eq!(saved[0].status, "failed");
+            assert_eq!(saved[0].finished_at, Some(200));
+            assert_eq!(saved[0].succeeded, 0);
+        }
+    }
 }
