@@ -350,7 +350,28 @@ impl Cloud {
                     return Ok(bytes);
                 }
                 Ok(r) if r.status().as_u16() != 429 && !r.status().is_server_error() => {
-                    return Err(err(format!("RAG HTTP {}", r.status().as_u16())))
+                    let service = if path.starts_with("/ai/") {
+                        "Workers AI"
+                    } else if path.starts_with("/r2/") {
+                        "R2"
+                    } else {
+                        "Cloudflare"
+                    };
+                    let ray = r
+                        .headers()
+                        .get("cf-ray")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("unavailable");
+                    let hint =
+                        if service == "Workers AI" && matches!(r.status().as_u16(), 401 | 403) {
+                            "; check Workers AI Read/Edit permissions for this account"
+                        } else {
+                            ""
+                        };
+                    return Err(err(format!(
+                        "RAG {service} HTTP {} (cf-ray={ray}){hint}",
+                        r.status().as_u16()
+                    )));
                 }
                 _ if attempt < 2 => {
                     tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt + 1))).await

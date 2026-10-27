@@ -75,9 +75,10 @@ Actionsの `daily-batch` → Run workflow で `scope` を選ぶ。定期実行�
 
 - `all`: 日次全体。J-Quants、compute、EDINET、REIT取得も実行する。
 - `reit`: 保存済みの株価・REIT情報からREIT分析だけを実行する。J-Quants、compute、マイグレーションは実行しない。`REIT_RAG_ENABLED=true` が必要。
+- `ai-diagnose`: D1へのSELECTと共通モデルへの最小推論でAI認証を確認する。DB更新は行わない。
 - `diagnose`: トークン状態とD1へのSELECTを確認する。DB更新・AI実行は行わない。ログはHTTP状態、エラーコード、リクエスト識別子、REIT保存件数のみ。
 
-REITの確認には `reit` を使う。古い実行の再試行は元のコード・入力を使うため、コード変更後は対象ブランチから新しく実行する。
+REITの確認には `reit` を使う。AI評価から再開する場合は `rag_run_id` に入力確定時のIDを指定する。保存済み入力のハッシュ・モデル・バージョンを検証して再利用する。REIT処理は最初にD1とWorkers AIの接続を検証し、失敗した場合は資料保存へ進まない。古い実行の再試行は元のコード・入力を使うため、コード変更後は対象ブランチから新しく実行する。
 
 ## REIT分析の実行
 

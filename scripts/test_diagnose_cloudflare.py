@@ -49,6 +49,22 @@ class DiagnosticTest(unittest.TestCase):
             self.assertNotIn(";", query["sql"])
             self.assertEqual(query["params"], [])
 
+    def test_ai_preflight_fails_before_document_processing(self):
+        calls = []
+        def request(label, path, payload=None):
+            calls.append((label, payload))
+            if label == "workers-ai-inference":
+                return {"success": False, "errors": [{"code": 10000}]}
+            return {"success": True, "result": {"status": "active"}}
+        env = {"CLOUDFLARE_API_TOKEN": "token", "CLOUDFLARE_ACCOUNT_ID": "account", "D1_DATABASE_ID": "db"}
+        with patch.dict(diagnostic.os.environ, env), patch.object(diagnostic, "request", side_effect=request), \
+             contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as error:
+            diagnostic.main(ai=True)
+        self.assertEqual(error.exception.code, 1)
+        self.assertEqual([label for label, _ in calls], ["user-token-verify", "d1-select", "workers-ai-inference"])
+        self.assertEqual(calls[-1][1]["max_tokens"], 1)
+        self.assertEqual(calls[1][1]["sql"], "SELECT 1 AS ok")
+
 
 if __name__ == "__main__":
     unittest.main()

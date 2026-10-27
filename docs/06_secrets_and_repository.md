@@ -13,7 +13,7 @@
 | `GITHUB_DISPATCH_TOKEN` | Worker Secret | 対象リポジトリのActions起動 |
 | `CLOUDFLARE_ACCOUNT_ID` | Actions Secret / CLI環境 | D1・R2のアカウント |
 | `D1_DATABASE_ID` | Actions Secret / CLI環境 | バッチのD1接続先 |
-| `CLOUDFLARE_API_TOKEN` | Actions Secret / CLI環境 | バッチのD1編集・R2操作・Workers AI実行。意味検索使用時はVectorizeも必要 |
+| `CLOUDFLARE_API_TOKEN` | Actions Secret / CLI環境 | バッチのD1編集・R2操作・Workers AI Read/Edit（両方）。意味検索使用時はVectorizeも必要 |
 | `JQUANTS_API_KEY` | Actions Secret / CLI環境 | 株価・財務取得 |
 | `EDINET_API_KEY` | Actions Secret / CLI環境 | EDINET取得 |
 | `REIT_RAG_ENABLED` | Actions Variable | `true` のとき日次REIT分析を実行 |
