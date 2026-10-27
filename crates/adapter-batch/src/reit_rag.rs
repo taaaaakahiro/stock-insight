@@ -990,6 +990,50 @@ fn validate_results(
     Ok(output)
 }
 
+/// Use only closed sessions; allow one session of publication delay and label its real date.
+fn closed_session(now: i64, holidays: &[Date]) -> Date {
+    let today = Date::from_unix_jst(now);
+    let jst_seconds = (now + 9 * 3600).rem_euclid(86400);
+    let mut end = if jst_seconds < 15 * 3600 + 30 * 60 {
+        today.add_days(-1)
+    } else {
+        today
+    };
+    while !domain::calendar::is_trading_day(end, holidays) {
+        end = end.add_days(-1);
+    }
+    end
+}
+
+fn available_price_session(
+    prices: &BTreeMap<String, Vec<PriceBar>>,
+    expected: Date,
+    holidays: &[Date],
+) -> Result<Date, PortError> {
+    let latest = prices
+        .values()
+        .flatten()
+        .filter(|b| {
+            b.date <= expected
+                && b.close.is_finite()
+                && b.close > 0.0
+                && domain::calendar::is_trading_day(b.date, holidays)
+        })
+        .map(|b| b.date)
+        .max();
+    let mut previous = expected.add_days(-1);
+    while !domain::calendar::is_trading_day(previous, holidays) {
+        previous = previous.add_days(-1);
+    }
+    match latest {
+        Some(date) if date >= previous => Ok(date),
+        _ => Err(err(format!(
+            "REIT prices unavailable or stale: expected={expected}, latest={}; rerun sync-jq before prepare",
+            latest.map(|d| d.to_string()).unwrap_or_else(|| "none".into())
+        ))),
+    }
+}
+
 async fn prepare(store: &D1Store, now: i64, max_minutes: u64) -> Result<String, PortError> {
     let cloud = Cloud::from_env(max_minutes)?;
     let ed = edinet::EdinetClient::new(
@@ -1014,41 +1058,30 @@ async fn prepare(store: &D1Store, now: i64, max_minutes: u64) -> Result<String, 
     if !holidays.iter().any(|d| d.y == today.y) {
         return Err(err("holiday calendar does not cover current year"));
     }
-    // The batch runs after market close. A manual invocation before close uses the previous session.
-    let jst_seconds = (now + 9 * 3600).rem_euclid(86400);
-    let mut end = if jst_seconds < 15 * 3600 + 30 * 60 {
-        today.add_days(-1)
-    } else {
-        today
-    };
-    while !domain::calendar::is_trading_day(end, &holidays) {
-        end = end.add_days(-1);
+    let expected = closed_session(now, &holidays);
+    for row in histories {
+        let code = string(&row, "code")?.to_string();
+        let bars = domain::price_history::decode(string(&row, "closes")?);
+        prices.insert(code, bars);
     }
+    let end = available_price_session(&prices, expected, &holidays)?;
+    eprintln!("reit-rag prepare: expected_session={expected} price_date={end}");
     let sessions: Vec<_> = (-220..=0)
         .map(|n| end.add_days(n))
         .filter(|d| domain::calendar::is_trading_day(*d, &holidays))
         .collect();
-    for row in histories {
-        let code = string(&row, "code")?.to_string();
-        let mut bars = domain::price_history::decode(string(&row, "closes")?);
+    for (code, bars) in &mut prices {
         bars.retain(|b| b.date <= end);
         let ss: Vec<_> = splits
-            .get(&code)
+            .get(code)
             .into_iter()
             .flatten()
             .copied()
             .filter(|s| s.date <= end)
             .collect();
-        domain::split::adjust_bars(&mut bars, &ss);
-        prices.insert(code, bars);
+        domain::split::adjust_bars(bars, &ss);
     }
     let date = &end;
-    if !prices
-        .values()
-        .any(|bars| bars.last().is_some_and(|b| b.date == end))
-    {
-        return Err(err("current session prices not available"));
-    }
     let mut sector_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut inputs = vec![];
     for p in &profiles {
@@ -2030,5 +2063,65 @@ assert c.execute("SELECT COUNT(*) FROM reit_rag_fts WHERE reit_rag_fts MATCH 'é‡
             &json!({"ltv":0.4,"assessment_ready":true,"positive_allowed":true})
         )
         .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod price_session_tests {
+    use super::*;
+    fn date(s: &str) -> Date {
+        Date::parse(s).unwrap()
+    }
+    fn prices(d: &str) -> BTreeMap<String, Vec<PriceBar>> {
+        BTreeMap::from([(
+            "test".into(),
+            vec![PriceBar {
+                date: date(d),
+                close: 100.0,
+            }],
+        )])
+    }
+    fn at(d: &str, hour: i64, minute: i64) -> i64 {
+        date(d).to_days() * 86400 + hour * 3600 + minute * 60 - 9 * 3600
+    }
+    #[test]
+    fn cutoff_handles_midnight_close_weekends_and_holidays() {
+        let holidays = [date("2026-10-12")];
+        for (d, h, m, want) in [
+            ("2026-10-28", 0, 10, "2026-10-27"),
+            ("2026-10-28", 15, 29, "2026-10-27"),
+            ("2026-10-28", 15, 30, "2026-10-28"),
+            ("2026-10-25", 18, 0, "2026-10-23"),
+            ("2026-10-13", 9, 0, "2026-10-09"),
+        ] {
+            assert_eq!(closed_session(at(d, h, m), &holidays), date(want));
+        }
+    }
+    #[test]
+    fn selects_actual_date_with_only_one_session_of_delay() {
+        let expected = date("2026-10-27");
+        assert_eq!(
+            available_price_session(&prices("2026-10-27"), expected, &[]).unwrap(),
+            expected
+        );
+        assert_eq!(
+            available_price_session(&prices("2026-10-26"), expected, &[]).unwrap(),
+            date("2026-10-26")
+        );
+        assert!(available_price_session(&prices("2026-10-23"), expected, &[]).is_err());
+        assert!(available_price_session(&prices("2026-10-28"), expected, &[]).is_err());
+        assert!(available_price_session(&BTreeMap::new(), expected, &[]).is_err());
+        assert_eq!(
+            available_price_session(
+                &prices("2026-10-09"),
+                date("2026-10-13"),
+                &[date("2026-10-12")]
+            )
+            .unwrap(),
+            date("2026-10-09")
+        );
+        let mut invalid = prices("2026-10-27");
+        invalid.get_mut("test").unwrap()[0].close = 0.0;
+        assert!(available_price_session(&invalid, expected, &[]).is_err());
     }
 }

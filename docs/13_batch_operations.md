@@ -47,7 +47,7 @@ gh workflow run daily-batch --repo taaaaakahiro/stock-insight -f force=true
 
 | 系統 | 続きの位置・初回 |
 |---|---|
-| J-Quants | `sync_state.jq_synced_until`。初回は5×365日前から。財務は直近3日を再取得 |
+| J-Quants | `sync_state.jq_synced_until`。初回は5×365日前から。株価は配信前に進んだカーソルによる取り逃しを防ぐため直近7日を再取得。財務もこの範囲以上を再取得 |
 | EDINET | `sync_state.edinet_listed_until`。初回400日。日付カーソルは前日までとし、当日を再確認 |
 | REIT | `sync_state.reit_listed_until`。初回400日。古い書類から処理し、最新期を古い期で上書きしない |
 
