@@ -277,6 +277,103 @@ pub struct Cloud {
     model: String,
     deadline: std::time::Instant,
 }
+fn ai_request(system: &str, input: &Value, schema: &Value, attempt: usize) -> Value {
+    json!({"messages":[{"role":"system","content":system},{"role":"user","content":input.to_string()}],
+        "response_format":{"type":"json_schema","json_schema":schema},
+        "temperature":0,"max_tokens":if attempt == 0 { 8192 } else { 16384 }})
+}
+
+fn parse_ai_response(bytes: &[u8]) -> Result<Value, PortError> {
+    let envelope: Value = serde_json::from_slice(bytes).map_err(|_| err("invalid AI envelope"))?;
+    if envelope["success"] != true {
+        return Err(err("AI execution failed"));
+    }
+    let result = &envelope["result"]["response"];
+    if result.is_object() {
+        return Ok(result.clone());
+    }
+    let text = result
+        .as_str()
+        .ok_or_else(|| err("AI response missing"))?
+        .trim();
+    let text = text
+        .strip_prefix("```json")
+        .or_else(|| text.strip_prefix("```"))
+        .and_then(|s| s.strip_suffix("```"))
+        .unwrap_or(text)
+        .trim();
+    let value: Value = serde_json::from_str(text).map_err(|e| {
+        err(format!(
+            "invalid AI JSON: category={:?} line={} column={} bytes={}",
+            e.classify(),
+            e.line(),
+            e.column(),
+            text.len()
+        ))
+    })?;
+    if !value.is_object() {
+        return Err(err("AI response must be an object"));
+    }
+    Ok(value)
+}
+
+fn extraction_schema(evidence: &[Value]) -> Value {
+    json!({"type":"object","required":["facts"],"properties":{"facts":{
+        "type":"array","maxItems":12,"items":{"type":"object","required":["topic","chunk_id","quote"],
+        "properties":{"topic":{"type":"string","enum":["income","debt","value"]},
+        "chunk_id":{"type":"string","enum":evidence.iter().map(|e|e["id"].clone()).collect::<Vec<_>>()},
+        "quote":{"type":"string","minLength":8,"maxLength":600}}}}}})
+}
+
+fn assessment_schema(facts: &Value, metrics: &Value) -> Value {
+    let mut axes = serde_json::Map::new();
+    for (axis, _) in TOPICS {
+        let mut statuses = vec!["caution", "unavailable"];
+        let mut ids: Vec<Value> = facts
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|f| f["topic"] == *axis)
+            .map(|f| f["chunk_id"].clone())
+            .collect();
+        if *axis == "debt" {
+            if metrics["assessment_ready"] == true {
+                statuses.push("neutral");
+                if metrics["positive_allowed"] == true {
+                    statuses.push("positive");
+                }
+            }
+            for name in ["ltv", "maturing_ratio", "reprice_ratio"] {
+                if metrics[name].is_number() {
+                    ids.push(json!(format!("metric:{name}")));
+                }
+            }
+        }
+        let evidence = if ids.is_empty() {
+            statuses = vec!["unavailable"];
+            json!({"type":"array","maxItems":0,"items":{"type":"string"}})
+        } else {
+            json!({"type":"array","items":{"type":"string","enum":ids}})
+        };
+        axes.insert(
+            (*axis).into(),
+            json!({"type":"object","required":["status","reason","evidence_ids"],
+            "properties":{"status":{"type":"string","enum":statuses},
+            "reason":{"type":"string","minLength":1,"maxLength":300},"evidence_ids":evidence}}),
+        );
+    }
+    json!({"type":"object","required":["axes"],"properties":{"axes":{"type":"object",
+        "required":["income","debt","value"],"properties":axes}}})
+}
+
+fn sector_schema() -> Value {
+    json!({"type":"object","required":["summary","directions"],"properties":{
+        "summary":{"type":"string","minLength":1,"maxLength":200},
+        "directions":{"type":"array","minItems":3,"maxItems":3,"items":{"type":"object",
+        "required":["sessions","direction"],"properties":{"sessions":{"type":"integer","enum":[21,63,126]},
+        "direction":{"type":"string","enum":["up","down","flat","unavailable"]}}}}}})
+}
+
 impl Cloud {
     pub fn from_env(max_minutes: u64) -> Result<Self, PortError> {
         let env = |key: &str| {
@@ -391,36 +488,33 @@ impl Cloud {
         .await?;
         Ok(())
     }
-    async fn generate(&self, system: &str, input: &Value) -> Result<Value, PortError> {
-        let request = json!({"messages":[{"role":"system","content":system},{"role":"user","content":input.to_string()}],"temperature":0,"max_tokens":2500});
-        let bytes = self
-            .request(
-                reqwest::Method::POST,
-                &format!("/ai/run/{}", self.model),
-                request.to_string().into_bytes(),
-                "application/json",
-            )
-            .await?;
-        let envelope: Value =
-            serde_json::from_slice(&bytes).map_err(|_| err("invalid AI envelope"))?;
-        if envelope["success"] != true {
-            return Err(err("AI execution failed"));
+    async fn generate(
+        &self,
+        system: &str,
+        input: &Value,
+        schema: Value,
+    ) -> Result<Value, PortError> {
+        let mut last_error = err("invalid AI JSON");
+        for attempt in 0..2 {
+            self.check_deadline()?;
+            let request = ai_request(system, input, &schema, attempt);
+            let bytes = self
+                .request(
+                    reqwest::Method::POST,
+                    &format!("/ai/run/{}", self.model),
+                    request.to_string().into_bytes(),
+                    "application/json",
+                )
+                .await?;
+            match parse_ai_response(&bytes) {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    eprintln!("reit-rag AI: attempt={} {}", attempt + 1, error.0);
+                    last_error = error;
+                }
+            }
         }
-        let result = &envelope["result"]["response"];
-        if result.is_object() {
-            return Ok(result.clone());
-        }
-        let text = result
-            .as_str()
-            .ok_or_else(|| err("AI response missing"))?
-            .trim();
-        let text = text
-            .strip_prefix("```json")
-            .or_else(|| text.strip_prefix("```"))
-            .and_then(|s| s.strip_suffix("```"))
-            .unwrap_or(text)
-            .trim();
-        serde_json::from_str(text).map_err(|_| err("invalid AI JSON"))
+        Err(last_error)
     }
 }
 
@@ -1056,23 +1150,39 @@ async fn assess(
         } else {
             let facts = extract_cached(store, cloud, code, evidence, run_id, now).await?;
             let sector = sectors.iter().find(|s| s["sector"] == input["sector"]);
-            let assessment_input = json!({"code":code,"profile":input["profile"],"facts":facts,"sector":sector,"verified_metrics":input["verified_metrics"]});
+            let mut assessment_input = json!({"code":code,"profile":input["profile"],"facts":facts,"sector":sector,"verified_metrics":input["verified_metrics"]});
             let mut checked = None;
             for attempt in 0..2 {
-                let assessment = cloud.generate(ASSESS_PROMPT, &assessment_input).await?;
+                let assessment = cloud
+                    .generate(
+                        ASSESS_PROMPT,
+                        &assessment_input,
+                        assessment_schema(&facts, &input["verified_metrics"]),
+                    )
+                    .await?;
                 cloud
                     .put(
                         &format!("rag/runs/{run_id}/{code}-assessment-{attempt}.json"),
                         assessment.to_string().into_bytes(),
                     )
                     .await?;
-                if let Ok(value) = validate_assessment_with_metrics(
+                match validate_assessment_with_metrics(
                     &assessment,
                     &facts,
                     &input["verified_metrics"],
                 ) {
-                    checked = Some(value);
-                    break;
+                    Ok(value) => {
+                        checked = Some(value);
+                        break;
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "reit-rag assessment: code={code} attempt={} {}",
+                            attempt + 1,
+                            error.0
+                        );
+                        assessment_input["validation_feedback"] = json!({"error":error.0,"instruction":"前回の検証エラーを修正し、指定された根拠IDと判定条件だけを使用してください。"});
+                    }
                 }
             }
             checked.ok_or_else(|| err("assessment validation failed"))?
@@ -1107,7 +1217,7 @@ async fn publish(
             continue;
         }
         let prompt="REITセクターの価格動向を日本語で短く解説してください。入力は検証済みの計算値です。価格のみ・分配金なし。原因や将来を推測せず短期と中期の違い、上昇銘柄の広がりを解説。3銘柄未満や欠損は判定保留と伝える。JSONのみ: {\"summary\":\"200文字以内\",\"directions\":[{\"sessions\":21,\"direction\":\"入力と同じ値\"},{\"sessions\":63,\"direction\":\"入力と同じ値\"},{\"sessions\":126,\"direction\":\"入力と同じ値\"}]}";
-        let summary = cloud.generate(prompt, s).await?;
+        let summary = cloud.generate(prompt, s, sector_schema()).await?;
         cloud
             .put(
                 &format!("rag/runs/{run_id}/sector-{}.json", string(s, "sector")?),
@@ -1332,7 +1442,9 @@ async fn extract_cached(
         return validate_extraction(&raw, evidence);
     }
     for attempt in 0..2 {
-        let raw = cloud.generate(EXTRACT_PROMPT, &input).await?;
+        let raw = cloud
+            .generate(EXTRACT_PROMPT, &input, extraction_schema(evidence))
+            .await?;
         cloud
             .put(
                 &format!("rag/runs/{run}/{code}-extract-{attempt}.json"),
@@ -1489,6 +1601,76 @@ async fn audit_documents(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ai_json_accepts_objects_and_rejects_incomplete_or_non_object_output() {
+        let value = json!({"facts":[]});
+        for response in [
+            value.clone(),
+            json!(value.to_string()),
+            json!(format!("```json\n{}\n```", value)),
+        ] {
+            assert_eq!(
+                parse_ai_response(
+                    json!({"success":true,"result":{"response":response}})
+                        .to_string()
+                        .as_bytes()
+                )
+                .unwrap(),
+                value
+            );
+        }
+        for response in [
+            json!("{\"facts\":["),
+            json!("[]"),
+            json!("Here is JSON: {}"),
+            Value::Null,
+        ] {
+            assert!(parse_ai_response(
+                json!({"success":true,"result":{"response":response}})
+                    .to_string()
+                    .as_bytes()
+            )
+            .is_err());
+        }
+        assert!(parse_ai_response(br#"{"success":false,"result":{"response":{}}}"#).is_err());
+    }
+
+    #[test]
+    fn ai_schema_limits_evidence_and_unverified_assessments() {
+        let facts = json!([{"topic":"income","chunk_id":"source-income"}]);
+        let schema = assessment_schema(&facts, &json!({}));
+        let axes = &schema["properties"]["axes"]["properties"];
+        assert_eq!(
+            axes["income"]["properties"]["status"]["enum"],
+            json!(["caution", "unavailable"])
+        );
+        assert_eq!(
+            axes["income"]["properties"]["evidence_ids"]["items"]["enum"],
+            json!(["source-income"])
+        );
+        assert_eq!(
+            axes["debt"]["properties"]["status"]["enum"],
+            json!(["unavailable"])
+        );
+        let ready = assessment_schema(
+            &facts,
+            &json!({"assessment_ready":true,"positive_allowed":false,"ltv":40}),
+        );
+        assert_eq!(
+            ready["properties"]["axes"]["properties"]["debt"]["properties"]["status"]["enum"],
+            json!(["caution", "unavailable", "neutral"])
+        );
+        let request = ai_request("system", &json!({}), &schema, 0);
+        assert_eq!(request["response_format"]["type"], "json_schema");
+        assert_eq!(request["response_format"]["json_schema"], schema);
+        assert!(
+            ai_request("system", &json!({}), &schema, 1)["max_tokens"]
+                .as_u64()
+                .unwrap()
+                > request["max_tokens"].as_u64().unwrap()
+        );
+    }
+
     fn staged_fixture() -> (Value, Vec<Value>) {
         let sectors = json!([{"sector":"office","price_date":"2026-10-26","periods":[{"sessions":21,"direction":"flat"},{"sessions":63,"direction":"up"},{"sessions":126,"direction":"down"}]}]);
         let stocks = json!([{"code":"8951","sector":"office","evidence":[],"verified_metrics":{},"document_issue":null},{"code":"8952","sector":"office","evidence":[],"verified_metrics":{},"document_issue":null}]);
