@@ -2,6 +2,9 @@
 import datetime
 import json
 import os
+import re
+import sys
+from pathlib import Path
 import time
 import urllib.error
 import urllib.request
@@ -42,7 +45,7 @@ def request(label, path, payload=None):
         return body
 
 
-def main():
+def main(ai=False):
     for key in ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "D1_DATABASE_ID"]:
         if not os.environ.get(key):
             raise SystemExit(f"missing {key}")
@@ -55,6 +58,15 @@ def main():
         result = verified["result"]
         print(json.dumps({"token_status": result.get("status"), "expires_on": result.get("expires_on")}), flush=True)
     path = f"/accounts/{account}/d1/database/{database}/query"
+    if ai:
+        model = re.search(r'pub const TEXT_MODEL: &str = "([^"]+)"',
+                          (Path(__file__).resolve().parents[1] / "crates/usecase/src/ai_config.rs").read_text()).group(1)
+        db = request("d1-select", path, {"sql": "SELECT 1 AS ok", "params": []})
+        result = request("workers-ai-inference", f"/accounts/{account}/ai/run/{model}",
+                         {"messages": [{"role": "user", "content": "Reply OK."}], "max_tokens": 1})
+        if not db or not db.get("success") or not result or not result.get("success"):
+            raise SystemExit(1)
+        return
     successes = 0
     for i in range(8):
         if i:
@@ -73,4 +85,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(ai="--ai" in sys.argv[1:])

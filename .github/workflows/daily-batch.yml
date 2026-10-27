@@ -13,7 +13,7 @@ on:
       scope:
         description: "all: 日次全体 / reit: 保存済みデータでREIT分析のみ / diagnose: 読み取り専用の接続診断"
         type: choice
-        options: [all, reit, diagnose]
+        options: [all, reit, diagnose, ai-diagnose]
         default: all
       force:
         description: "true なら休場日・当日実行済みでも動かす"
@@ -60,7 +60,7 @@ env:
 jobs:
   # 一度だけビルドして、後のジョブはバイナリを使い回す
   build:
-    if: github.event.inputs.scope != 'diagnose'
+    if: github.event.inputs.scope != 'diagnose' && github.event.inputs.scope != 'ai-diagnose'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -317,7 +317,7 @@ jobs:
         run: ./batch-cli reit-rag --stage publish --run-id "$RAG_RUN_ID" --max-minutes 100
 
   diagnose:
-    if: github.event.inputs.scope == 'diagnose'
+    if: github.event.inputs.scope == 'diagnose' || github.event.inputs.scope == 'ai-diagnose'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -326,4 +326,4 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Read-only Cloudflare authentication probes
-        run: python3 scripts/diagnose_cloudflare.py
+        run: python3 scripts/diagnose_cloudflare.py ${{ github.event.inputs.scope == 'ai-diagnose' && '--ai' || '' }}
