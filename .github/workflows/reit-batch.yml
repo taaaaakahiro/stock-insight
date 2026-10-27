@@ -1,0 +1,215 @@
+name: reit-batch
+
+# Independent run: REIT failures never change daily-batch's conclusion.
+on:
+  workflow_run:
+    workflows: [daily-batch]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "full: REIT取得と分析 / analyze: 保存済みデータから分析 / resume: AI評価から再開 / diagnose: 読取診断 / ai-diagnose: AI認証診断"
+        type: choice
+        options: [full, analyze, resume, diagnose, ai-diagnose]
+        default: full
+      rag_run_id:
+        description: "resumeのみ: 入力確定済みのrun_id"
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: reit-batch
+  cancel-in-progress: false
+
+env:
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+      mode: ${{ steps.check.outputs.mode }}
+      run_id: ${{ steps.check.outputs.run_id }}
+    steps:
+      # workflow_run uses trusted default-branch code, not upstream artifacts or PR code.
+      - uses: actions/checkout@v7
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REIT_RAG_ENABLED: ${{ vars.REIT_RAG_ENABLED }}
+        run: python3 scripts/reit_workflow_gate.py
+
+  build:
+    needs: gate
+    if: needs.gate.outputs.run == 'true' && !contains(needs.gate.outputs.mode, 'diagnose')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: batch-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - run: cargo build -q -p batch-cli --release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: batch-cli
+          path: target/release/batch-cli
+          retention-days: 1
+
+  sync-reit:
+    needs: [gate, build]
+    if: needs.gate.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - run: ./batch-cli sync-reit --rate 30 --max-minutes 100 --raw-dir raw
+
+  preflight:
+    needs: gate
+    if: needs.gate.outputs.run == 'true' && !contains(needs.gate.outputs.mode, 'diagnose') && vars.REIT_RAG_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check D1 and Workers AI before archiving documents
+        run: python3 scripts/diagnose_cloudflare.py --ai
+
+  reit-rag-audit:
+    needs: [gate, build, preflight, sync-reit]
+    if: >-
+      ${{ !cancelled() && needs.build.result == 'success' && needs.preflight.result == 'success' &&
+          ((needs.gate.outputs.mode == 'full' && needs.sync-reit.result == 'success') ||
+           needs.gate.outputs.mode == 'analyze') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    env:
+      REIT_RAG_BUCKET: maaun-stock-insight-raw
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - name: Audit corrections and withdrawn filings
+        run: ./batch-cli reit-rag --stage audit --max-minutes 100
+
+  reit-rag-archive:
+    needs: reit-rag-audit
+    if: ${{ !cancelled() && needs.reit-rag-audit.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      REIT_RAG_BUCKET: maaun-stock-insight-raw
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - name: Archive REIT evidence
+        run: ./batch-cli reit-rag --stage archive --shard ${{ matrix.shard }} --shards 4 --max-minutes 100
+
+  reit-rag-prepare:
+    needs: [gate, build, preflight, reit-rag-archive]
+    if: >-
+      ${{ !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' &&
+          (needs.reit-rag-archive.result == 'success' ||
+           needs.gate.outputs.mode == 'resume') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    outputs:
+      run_id: ${{ steps.prepare.outputs.run_id || steps.resume.outputs.run_id }}
+    env:
+      REIT_RAG_BUCKET: maaun-stock-insight-raw
+      REIT_RAG_VECTOR_INDEX: ${{ vars.REIT_RAG_VECTOR_INDEX }}
+      REIT_RAG_EMBEDDING_MODEL: ${{ vars.REIT_RAG_EMBEDDING_MODEL }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - name: Resume an existing frozen input
+        if: needs.gate.outputs.mode == 'resume'
+        id: resume
+        env:
+          RAG_RESUME_ID: ${{ needs.gate.outputs.run_id }}
+        run: |
+          python3 - <<'PY_RESUME'
+          import os, re
+          run_id = os.environ["RAG_RESUME_ID"]
+          if not re.fullmatch(r"[A-Za-z0-9-]{1,128}", run_id):
+              raise SystemExit("invalid RAG run-id")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"run_id={run_id}\n")
+          PY_RESUME
+      - name: Freeze audited inputs and sector calculations
+        if: needs.gate.outputs.mode != 'resume'
+        id: prepare
+        run: ./batch-cli reit-rag --stage prepare --max-minutes 100
+
+  reit-rag-assess:
+    needs: reit-rag-prepare
+    if: ${{ !cancelled() && needs.reit-rag-prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      REIT_RAG_BUCKET: maaun-stock-insight-raw
+      RAG_RUN_ID: ${{ needs.reit-rag-prepare.outputs.run_id }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - name: Assess REIT shard from frozen inputs
+        run: ./batch-cli reit-rag --stage assess --run-id "$RAG_RUN_ID" --shard ${{ matrix.shard }} --shards 4 --max-minutes 100
+
+  reit-rag:
+    needs: [reit-rag-prepare, reit-rag-assess]
+    if: ${{ !cancelled() && needs.reit-rag-prepare.result == 'success' && needs.reit-rag-assess.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    env:
+      REIT_RAG_BUCKET: maaun-stock-insight-raw
+      RAG_RUN_ID: ${{ needs.reit-rag-prepare.outputs.run_id }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - name: Validate completeness and publish REIT analysis
+        run: ./batch-cli reit-rag --stage publish --run-id "$RAG_RUN_ID" --max-minutes 100
+
+  diagnose:
+    needs: gate
+    if: needs.gate.outputs.run == 'true' && contains(needs.gate.outputs.mode, 'diagnose')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EDINET_API_KEY: ""
+    steps:
+      - uses: actions/checkout@v7
+      - name: Cloudflare authentication diagnostics
+        run: python3 scripts/diagnose_cloudflare.py ${{ needs.gate.outputs.mode == 'ai-diagnose' && '--ai' || '' }}

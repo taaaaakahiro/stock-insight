@@ -10,14 +10,6 @@ name: daily-batch
 on:
   workflow_dispatch:
     inputs:
-      scope:
-        description: "all: 日次全体 / reit: 保存済みデータでREIT分析のみ / diagnose: 読み取り専用の接続診断"
-        type: choice
-        options: [all, reit, diagnose, ai-diagnose]
-        default: all
-      rag_run_id:
-        description: "reitのみ: 保存済みrun_idを指定するとAI評価から再開。通常は空欄"
-        default: ""
       force:
         description: "true なら休場日・当日実行済みでも動かす"
         default: "false"
@@ -63,7 +55,6 @@ env:
 jobs:
   # 一度だけビルドして、後のジョブはバイナリを使い回す
   build:
-    if: github.event.inputs.scope != 'diagnose' && github.event.inputs.scope != 'ai-diagnose'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -83,7 +74,7 @@ jobs:
   # 取得元の確認（D1 には触れない）
   probe:
     needs: build
-    if: github.event.inputs.probe == 'true' && github.event.inputs.scope != 'reit'
+    if: github.event.inputs.probe == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
@@ -116,7 +107,7 @@ jobs:
 
   guard:
     needs: build
-    if: github.event.inputs.probe != 'true' && github.event.inputs.scope != 'reit'
+    if: github.event.inputs.probe != 'true'
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.check.outputs.run }}
@@ -172,19 +163,6 @@ jobs:
           done
           echo "done"
 
-  # REIT の有報から借入金（固定・変動）と物件の稼働率を読み、D1 の reit_profile / reit_detail / reit_history に保存する。
-  # EDINET の書類一覧を sync-edinet とは別に読む（並列に動くので、呼び出しの間隔は控えめに）。初回は過去400日分
-  reit:
-    needs: prepare
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: batch-cli
-      - run: chmod +x batch-cli
-      - run: ./batch-cli sync-reit --rate 30 --max-minutes 100 --raw-dir raw
-
   # EDINET の有報・半期報告書（銘柄・種類ごとに最新の1通）。J-Quants とは並列に動く。
   # 初回は過去400日分の一覧から（数千通。時間切れなら次回は続きから）。今日の一覧は翌日にもう一度読む
   edinet:
@@ -221,140 +199,3 @@ jobs:
             wrangler r2 object delete "maaun-stock-insight-raw/$k" --remote >/dev/null || echo "not found: $k"
           done
           echo "done"
-
-  # 原資料・AI結果は非公開R2へ。公開GitHub artifactには保存しない。
-  reit-rag-preflight:
-    needs: build
-    if: vars.REIT_RAG_ENABLED == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v7
-      - name: Check D1 and Workers AI before processing documents
-        run: python3 scripts/diagnose_cloudflare.py --ai
-
-  reit-rag-audit:
-    needs: [reit-rag-preflight, jquants, reit]
-    if: >-
-      ${{ !cancelled() && vars.REIT_RAG_ENABLED == 'true' &&
-          needs.reit-rag-preflight.result == 'success' && github.event.inputs.rag_run_id == '' &&
-          (github.event.inputs.scope == 'reit' ||
-           (needs.jquants.result == 'success' && needs.reit.result == 'success')) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 105
-    env:
-      REIT_RAG_BUCKET: maaun-stock-insight-raw
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: batch-cli
-      - run: chmod +x batch-cli
-      - name: Audit corrections and withdrawn filings
-        run: ./batch-cli reit-rag --stage audit --max-minutes 100
-
-  reit-rag-archive:
-    needs: reit-rag-audit
-    if: ${{ !cancelled() && needs.reit-rag-audit.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 105
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        shard: [0, 1, 2, 3]
-    env:
-      REIT_RAG_BUCKET: maaun-stock-insight-raw
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: batch-cli
-      - run: chmod +x batch-cli
-      - name: Archive REIT evidence
-        run: ./batch-cli reit-rag --stage archive --shard ${{ matrix.shard }} --shards 4 --max-minutes 100
-
-  reit-rag-prepare:
-    needs: [reit-rag-preflight, reit-rag-archive]
-    if: >-
-      ${{ !cancelled() && needs.reit-rag-preflight.result == 'success' &&
-          (needs.reit-rag-archive.result == 'success' ||
-           (github.event.inputs.scope == 'reit' && github.event.inputs.rag_run_id != '')) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 105
-    outputs:
-      run_id: ${{ steps.prepare.outputs.run_id || steps.resume.outputs.run_id }}
-    env:
-      REIT_RAG_BUCKET: maaun-stock-insight-raw
-      REIT_RAG_VECTOR_INDEX: ${{ vars.REIT_RAG_VECTOR_INDEX }}
-      REIT_RAG_EMBEDDING_MODEL: ${{ vars.REIT_RAG_EMBEDDING_MODEL }}
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: batch-cli
-      - run: chmod +x batch-cli
-      - name: Resume an existing frozen input
-        if: github.event.inputs.scope == 'reit' && github.event.inputs.rag_run_id != ''
-        id: resume
-        env:
-          RAG_RESUME_ID: ${{ github.event.inputs.rag_run_id }}
-        run: |
-          python3 - <<'PY_RESUME'
-          import os, re
-          run_id = os.environ["RAG_RESUME_ID"]
-          if not re.fullmatch(r"[A-Za-z0-9-]{1,128}", run_id):
-              raise SystemExit("invalid RAG run-id")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"run_id={run_id}\n")
-          PY_RESUME
-      - name: Freeze audited inputs and sector calculations
-        if: github.event.inputs.rag_run_id == ''
-        id: prepare
-        run: ./batch-cli reit-rag --stage prepare --max-minutes 100
-
-  reit-rag-assess:
-    needs: reit-rag-prepare
-    if: ${{ !cancelled() && needs.reit-rag-prepare.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 105
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        shard: [0, 1, 2, 3]
-    env:
-      REIT_RAG_BUCKET: maaun-stock-insight-raw
-      RAG_RUN_ID: ${{ needs.reit-rag-prepare.outputs.run_id }}
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: batch-cli
-      - run: chmod +x batch-cli
-      - name: Assess REIT shard from frozen inputs
-        run: ./batch-cli reit-rag --stage assess --run-id "$RAG_RUN_ID" --shard ${{ matrix.shard }} --shards 4 --max-minutes 100
-
-  reit-rag:
-    needs: [reit-rag-prepare, reit-rag-assess]
-    if: ${{ !cancelled() && needs.reit-rag-prepare.result == 'success' && needs.reit-rag-assess.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 105
-    env:
-      REIT_RAG_BUCKET: maaun-stock-insight-raw
-      RAG_RUN_ID: ${{ needs.reit-rag-prepare.outputs.run_id }}
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: batch-cli
-      - run: chmod +x batch-cli
-      - name: Validate completeness and publish REIT analysis
-        run: ./batch-cli reit-rag --stage publish --run-id "$RAG_RUN_ID" --max-minutes 100
-
-  diagnose:
-    if: github.event.inputs.scope == 'diagnose' || github.event.inputs.scope == 'ai-diagnose'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      JQUANTS_API_KEY: ""
-      EDINET_API_KEY: ""
-    steps:
-      - uses: actions/checkout@v7
-      - name: Cloudflare authentication diagnostics
-        run: python3 scripts/diagnose_cloudflare.py ${{ github.event.inputs.scope == 'ai-diagnose' && '--ai' || '' }}

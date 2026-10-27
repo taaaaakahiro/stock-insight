@@ -45,6 +45,7 @@ jobs:
       - run: python3 scripts/test_recommendation_tracking.py
       - run: python3 scripts/test_reit_rag.py
       - run: python3 scripts/test_diagnose_cloudflare.py
+      - run: python3 scripts/test_reit_workflow_gate.py
       - name: clippy (wasm32 / Worker)
         run: cargo clippy -p api-worker -p adapter-cf --target wasm32-unknown-unknown -- -D warnings
 

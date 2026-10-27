@@ -54,6 +54,6 @@ flowchart LR
 
 祝日・実行済みの判定は日次バッチ側で行う。AI側は最新バッチの状態・終了日・既存結果を確認する。[バッチ運用](13_batch_operations.md)と[AI仕様](12_recommendations_and_themes.md)を参照。
 
-REIT分析は株価・REIT取得の成功後にバッチ内で実行し、専用の定刻Cronは持たない。詳細は[REIT分析](17_reit_analysis.md)。
+REIT取得・分析は独立した `reit-batch` workflowで実行する。mainの日次workflow成功後に別実行として起動し、REIT側の失敗は日次の成否に影響しない。専用の定刻Cronは持たない。詳細は[REIT分析](17_reit_analysis.md)。
 
 Cloudflare Workflows、メール送信、Clerk Webhookは構成に含まれない。CIとタグのRelease処理から本番への自動デプロイは行わない。

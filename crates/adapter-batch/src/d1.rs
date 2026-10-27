@@ -98,20 +98,6 @@ impl D1Store {
             .await
             .map_err(|e| D1Error::Retryable(format!("d1: {e}")))?;
         let status = res.status();
-        // Keep support correlation data, never the token or SQL parameters.
-        let ray = res
-            .headers()
-            .get("cf-ray")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unavailable")
-            .to_string();
-        let operation = body["sql"]
-            .as_str()
-            .unwrap_or("")
-            .split_whitespace()
-            .next()
-            .unwrap_or("unknown");
-        let parameter_count = body["params"].as_array().map_or(0, Vec::len);
         let v: Result<serde_json::Value, _> = res.json().await;
         let retryable = is_retryable_status(status.as_u16());
         let v = match v {
@@ -122,7 +108,7 @@ impl D1Store {
             Err(e) => return Err(D1Error::Fatal(format!("d1: {e}"))),
         };
         if !status.is_success() || v["success"].as_bool() != Some(true) {
-            let msg = format!("d1 HTTP {status}: {} (operation={operation}, parameters={parameter_count}, cf-ray={ray})", v["errors"]);
+            let msg = format!("d1 HTTP {status}: {}", v["errors"]);
             return Err(if retryable {
                 D1Error::Retryable(msg)
             } else {

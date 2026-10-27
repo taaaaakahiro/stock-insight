@@ -25,7 +25,7 @@
 | `VITE_MOCK_CLERK_URL` | ローカルweb環境 | 開発用モック認証。詳細は開発手順 |
 | `MOCK_AZP` | モックサーバー環境 | 開発用JWTのazp。既定 `http://localhost:5173` |
 
-D1・AIのbinding、静的アセット、Cron、公開ドメインは [wrangler.jsonc](../wrangler.jsonc) で管理する。バッチの設定元は [daily-batch.yml](../.github/workflows/daily-batch.yml)。
+D1・AIのbinding、静的アセット、Cron、公開ドメインは [wrangler.jsonc](../wrangler.jsonc) で管理する。日次は [daily-batch.yml](../.github/workflows/daily-batch.yml)、REITは [reit-batch.yml](../.github/workflows/reit-batch.yml) で管理する。
 
 生成モデルはレコメンドとREIT分析で[共通定義](../crates/usecase/src/ai_config.rs)を使う。`REIT_RAG_MODEL` の設定は不要。埋め込みモデルは生成モデルとは別。
 
