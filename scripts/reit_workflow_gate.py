@@ -1,4 +1,5 @@
 """Gate the independent REIT workflow without running or modifying the daily batch."""
+import datetime
 import json
 import os
 import re
@@ -11,6 +12,11 @@ def select_run(event_name, event, repository, enabled, fetch_jobs):
         inputs = event.get("inputs") or {}
         mode = inputs.get("mode", "full")
         run_id = inputs.get("rag_run_id", "")
+        refill_date = inputs.get("refill_price_date", "")
+        if refill_date:
+            if mode != "full" or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", refill_date):
+                raise ValueError("refill_price_date requires full mode and YYYY-MM-DD")
+            datetime.date.fromisoformat(refill_date)
         if mode not in ("full", "analyze", "resume", "diagnose", "ai-diagnose"):
             raise ValueError("invalid REIT mode")
         if mode == "resume":

@@ -13,6 +13,9 @@ on:
         type: choice
         options: [full, analyze, resume, diagnose, ai-diagnose]
         default: full
+      refill_price_date:
+        description: "fullのみ: 指定日のREIT株価だけを補完（YYYY-MM-DD、通常は空欄）"
+        default: ""
       rag_run_id:
         description: "resumeのみ: 入力確定済みのrun_id"
         default: ""
@@ -77,6 +80,12 @@ jobs:
         with:
           name: batch-cli
       - run: chmod +x batch-cli
+      - name: Refill REIT prices for the requested date
+        if: github.event_name == 'workflow_dispatch' && inputs.refill_price_date != ''
+        env:
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+          REFILL_PRICE_DATE: ${{ inputs.refill_price_date }}
+        run: ./batch-cli refill-reit-prices --from "$REFILL_PRICE_DATE" --until "$REFILL_PRICE_DATE"
       - run: ./batch-cli sync-reit --rate 30 --max-minutes 100 --raw-dir raw
 
   preflight:

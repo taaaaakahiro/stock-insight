@@ -13,6 +13,13 @@ class ReitGateTest(unittest.TestCase):
                       "id": 123, "run_attempt": 2}}
         self.jobs = Mock(return_value=[{"name": "jquants", "conclusion": "success"}])
 
+    def test_price_refill_requires_full_mode_and_valid_date(self):
+        event = {"inputs": {"mode": "full", "refill_price_date": "2026-10-27"}}
+        self.assertEqual(select_run("workflow_dispatch", event, REPO, True, self.jobs), (True, "full", ""))
+        for mode, date in [("resume", "2026-10-27"), ("full", "2026-02-30"), ("full", "$(echo bad)")]:
+            with self.assertRaises(ValueError):
+                select_run("workflow_dispatch", {"inputs": {"mode": mode, "refill_price_date": date}}, REPO, True, self.jobs)
+
     def test_successful_daily_starts_separate_full_run(self):
         self.assertEqual(select_run("workflow_run", self.event, REPO, True, self.jobs), (True, "full", ""))
         self.jobs.assert_called_once_with(123, 2)
