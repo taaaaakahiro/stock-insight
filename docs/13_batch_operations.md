@@ -6,7 +6,7 @@
 
 日次workflowはWorker Cronの平日18:30 JST、予備はGitHub scheduleの18:45 JST。同一ワークフローはconcurrencyで直列化し、実行中の処理を取り消さない。
 
-`should-run` はJSTの日付、土日・祝日・休場日、当日の `daily` 成功記録を確認する。祝日データを取得・解釈できなければ失敗する。`force=true` は休場日・実行済み判定を省略する。
+`should-run` はJSTの日付、土日・祝日・休場日を確認する。祝日データを取得・解釈できなければ失敗する。手動起動と `force=true` は休場日判定を省略する。
 
 | ジョブ | 内容 |
 |---|---|
@@ -32,7 +32,7 @@ gh workflow run daily-batch --repo taaaaakahiro/stock-insight -f force=true
 
 | workflow入力 | 既定値・意味 |
 |---|---|
-| `force` | false。休場日・実行済みでも実行 |
+| `force` | false。休場日でも実行 |
 | `probe` | false。取得確認とSQL成果物のみ |
 | `max_minutes` | 300。取得時間の制限 |
 | `persist_every` | 1500。J-Quantsの途中保存間隔 |
@@ -115,3 +115,7 @@ REIT専用workflowは次の順で分析する。各処理の上限は100分、�
 `REIT_RAG_ENABLED` の変更は次のworkflowから適用される。停止しても既存の公開結果は残る。稼働状態はActionsの `reit-rag-audit`・`reit-rag-archive`・`reit-rag-prepare`・`reit-rag-assess`・`reit-rag` ジョブと `sync_state.reit_rag_attempt_status`、公開結果は `reit_rag_publication` で確認する。初回バッチの完了とデプロイ完了は別。
 
 進捗ログには段階、銘柄コード、分割番号、経過秒を記録する。各ジョブは110分未満で停止する設定だが、全工程の所要時間や時間内の完走は保証しない。
+
+## 同日の再実行
+
+同日に成功済みでも毎回取り込みを実行します。株価は未取得期間と直近7日分を再取得し、同じ日付を更新します。朝に未配信の終値は夕方の再実行で取得できます。手動起動は休場日も実行します。定期取得は18:30 JST、予備は18:45、AIレコメンドは19:30（当日のバッチ成功が条件）です。

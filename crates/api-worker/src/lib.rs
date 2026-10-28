@@ -20,7 +20,7 @@
 //! D1 の無料枠（読み取り 500万行/日）を画面の操作で使い切らないため。
 //!
 //! Cron Trigger（平日18:30 JST）では、GitHub Actions の日次バッチ（daily-batch.yml）を起動する。
-//! もう1つの Cron（平日21:00 JST）では、その日のバッチが成功していれば Workers AI でレコメンドを作って保存する。
+//! もう1つの Cron（平日19:30 JST）では、その日のバッチが成功していれば Workers AI でレコメンドを作って保存する。
 
 use adapter_cf::ai::WorkersAi;
 use adapter_cf::clerk::{ClerkDirectory, ClerkVerifier};
@@ -49,7 +49,7 @@ use worker::{
 const DB_BINDING: &str = "DB";
 const AI_BINDING: &str = "AI";
 /// wrangler.jsonc の triggers.crons のうち、AIレコメンドを作るほう
-const RECOMMEND_CRON: &str = "0 12 * * 1-5";
+const RECOMMEND_CRON: &str = "30 10 * * 1-5";
 
 /// ブラウザに持たせる時間（一覧・配当方針・状態）
 const BROWSER_CACHE: &str = "private, max-age=300";

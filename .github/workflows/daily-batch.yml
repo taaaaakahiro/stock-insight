@@ -5,13 +5,13 @@ name: daily-batch
 # 流れ: build → guard（should-run）→ prepare（migrate・sync-master）→ jquants と edinet を並列に
 # 初回だけ過去5年分をまとめて取り込み、2回目以降は前回の続き（毎日なら当日分）だけを取る。
 # 起動は Cloudflare の Cron Trigger（平日 18:30 JST）からの workflow_dispatch。schedule は予備で、
-# 同じ日に2回動いても should-run が2回目を止める（休場日も止める）。
+# 同日も毎回最新データを再取得する（定期実行は休場日だけ止める）。
 # シークレットは gh secret set で登録する（値はここに書かない。docs/06_secrets_and_repository.md）。
 on:
   workflow_dispatch:
     inputs:
       force:
-        description: "true なら休場日・当日実行済みでも動かす"
+        description: "true なら休場日でも動かす"
         default: "false"
       probe:
         description: "true なら D1 に触れず、直近の数日分を J-Quants から取って SQL を成果物に保存する（取得元の確認用）"
@@ -35,7 +35,7 @@ on:
         description: "true なら EDINET の新しい書類のあと、「事業の内容」の文をまだ持っていない保存済みの有報を取り直す（注目テーマの照合用。数千通あるので時間切れまで進め、残りは次回）"
         default: "false"
   schedule:
-    # 予備（09:45 UTC = 18:45 JST、平日）。Cloudflare 側で起動済みなら should-run が止める
+    # 予備（09:45 UTC = 18:45 JST、平日）。起動済みでも最新データを再取得する
     - cron: "45 9 * * 1-5"
 
 permissions:
@@ -117,7 +117,7 @@ jobs:
           name: batch-cli
       - run: chmod +x batch-cli
       - id: check
-        run: ./batch-cli should-run --label daily ${{ github.event.inputs.force == 'true' && '--force' || '' }}
+        run: ./batch-cli should-run --label daily ${{ (github.event_name == 'workflow_dispatch' || github.event.inputs.force == 'true') && '--force' || '' }}
 
   # 銘柄マスタまで。J-Quants と EDINET の両方がこれを使う
   prepare:

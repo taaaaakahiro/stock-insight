@@ -377,20 +377,10 @@ async fn should_run(args: Args) -> Result<(), String> {
         if !domain::calendar::is_trading_day(today, &holidays) {
             (false, format!("{today} is not a trading day"))
         } else {
-            // 今日の 0:00（日本時間）以降に、同じラベルで成功した実行があれば重ねて動かさない
-            let since = today.to_days() * 86_400 - 9 * 3600;
-            let done = d1_store(client)?
-                .succeeded_since(&args.label, since)
-                .await
-                .map_err(|e| e.0)?;
-            if done {
-                (
-                    false,
-                    format!("{} batch already succeeded on {today}", args.label),
-                )
-            } else {
-                (true, format!("{today} is a trading day"))
-            }
+            (
+                true,
+                format!("{today} is a trading day; refresh latest data"),
+            )
         }
     };
     println!("should-run: {run} ({reason})");
