@@ -200,6 +200,7 @@ async fn main() {
         "migrate" => migrate().await,
         "sync-master" => sync_master(args).await,
         "sync-jq" => sync_jq(args).await,
+        "refill-reit-prices" => refill_reit_prices(args).await,
         "sync-edinet" => sync_edinet(args).await,
         "sync-reit" => sync_reit(args).await,
         "reit-rag" if args.dry_run.is_some() || args.from_file.is_some() || args.from.is_some() || args.until.is_some() => Err("reit-rag does not support dry-run/from-file/date overrides; use the offline RAG tests".into()),
@@ -426,6 +427,95 @@ struct Pending {
 
 fn price_sync_start(cursor: Date, until: Date) -> Date {
     cursor.add_days(1).min(until.add_days(-7))
+}
+
+/// One-day REIT repair; never advances the daily sync cursor or writes stock financials.
+async fn refill_reit_prices(args: Args) -> Result<(), String> {
+    let day = args
+        .from
+        .ok_or("refill-reit-prices requires --from and --until for one date")?;
+    if args.until != Some(day) || args.dry_run.is_some() {
+        return Err(
+            "refill-reit-prices requires matching --from/--until and does not support --dry-run"
+                .into(),
+        );
+    }
+    let now = SystemClock.now_unix();
+    if day >= Date::from_unix_jst(now) {
+        return Err("REIT price repair requires a past date".into());
+    }
+    let client = http::client();
+    let store = d1_store(client.clone())?;
+    let codes: HashSet<String> = store
+        .current_codes(&["reit"])
+        .await
+        .map_err(|e| e.0)?
+        .into_iter()
+        .collect();
+    if codes.is_empty() {
+        return Err("no REIT codes".into());
+    }
+    let jq = JQuantsClient::new(client, env("JQUANTS_API_KEY")?, args.rate);
+    let raw = jq.bars_on(day).await.map_err(|e| e.0)?;
+    let closes = reit_closes_on(&raw, &codes, day);
+    if closes.is_empty() {
+        return Err(format!("no REIT prices returned for {day}"));
+    }
+    let mut histories = store.load_price_histories().await.map_err(|e| e.0)?;
+    let mut rows = vec![];
+    for (code, bar) in &closes {
+        let bars = histories.entry(code.clone()).or_default();
+        domain::price_history::merge(bars, &[*bar]);
+        rows.push((
+            code.clone(),
+            domain::price_history::encode(bars),
+            bars.last().unwrap().date.to_string(),
+        ));
+    }
+    let splits: Vec<_> = jquants::splits(&raw)
+        .into_iter()
+        .filter(|(code, split)| codes.contains(code.as_str()) && split.date == day)
+        .map(|(code, split)| (code.as_str().to_string(), split))
+        .collect();
+    store
+        .save_price_histories(&rows, now)
+        .await
+        .map_err(|e| e.0)?;
+    store.save_splits(&splits, now).await.map_err(|e| e.0)?;
+    let saved = store.load_price_histories().await.map_err(|e| e.0)?;
+    for (code, bar) in &closes {
+        let rounded = (bar.close * 10.0).round() / 10.0;
+        if !saved
+            .get(code)
+            .is_some_and(|bars| bars.iter().any(|b| b.date == day && b.close == rounded))
+        {
+            return Err(format!("REIT price verification failed: {code} {day}"));
+        }
+    }
+    println!(
+        "refill-reit-prices: date={day} saved={} listed={} splits={} verified",
+        closes.len(),
+        codes.len(),
+        splits.len()
+    );
+    Ok(())
+}
+
+fn reit_closes_on(
+    raw: &[serde_json::Value],
+    codes: &HashSet<String>,
+    day: Date,
+) -> Vec<(String, PriceBar)> {
+    jquants::closes(raw)
+        .into_iter()
+        .filter(|(code, bar)| {
+            codes.contains(code.as_str())
+                && bar.date == day
+                && bar.close.is_finite()
+                && bar.close > 0.0
+        })
+        .map(|(code, bar)| (code.as_str().to_string(), bar))
+        .collect()
 }
 
 async fn sync_jq(args: Args) -> Result<(), String> {
@@ -1737,5 +1827,41 @@ mod price_sync_tests {
             price_sync_start(d("2026-10-01"), d("2026-10-28")),
             d("2026-10-02")
         );
+    }
+}
+
+#[cfg(test)]
+mod reit_price_repair_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn repair_selects_only_requested_reit_date_and_preserves_other_history() {
+        let day = Date::new(2026, 10, 27);
+        let codes = HashSet::from(["8951".to_string()]);
+        let raw = vec![
+            json!({"Code":"89510","Date":"2026-10-27","C":123400.0}),
+            json!({"Code":"72030","Date":"2026-10-27","C":3000.0}),
+            json!({"Code":"89510","Date":"2026-10-26","C":120000.0}),
+            json!({"Code":"89510","Date":"2026-10-27","C":null}),
+        ];
+        let selected = reit_closes_on(&raw, &codes, day);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].0, "8951");
+        let mut history = vec![
+            PriceBar {
+                date: day.add_days(-1),
+                close: 120000.0,
+            },
+            PriceBar {
+                date: day.add_days(1),
+                close: 124000.0,
+            },
+        ];
+        domain::price_history::merge(&mut history, &[selected[0].1]);
+        domain::price_history::merge(&mut history, &[selected[0].1]);
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].close, 120000.0);
+        assert_eq!(history[1].close, 123400.0);
+        assert_eq!(history[2].close, 124000.0);
     }
 }
