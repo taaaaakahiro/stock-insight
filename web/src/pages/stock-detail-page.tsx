@@ -353,7 +353,9 @@ function QuarterTable({ rows }: { rows: QuarterRow[] }) {
 const fiscalMonth = (p: string | null | undefined) => (p ? p.slice(0, 7).replace("-", "/") : "—");
 
 const BAR_H = 240;
-const BAR_PAD = { top: 22, bottom: 40 };
+// 配当が最大値の期も、棒の上に配当・利益の2段のラベルを収める。
+// 利益ラベルは棒の上端から22px上がるため、文字の高さと余白も確保する。
+const BAR_PAD = { top: 40, bottom: 40 };
 
 /**
  * 1株配当の棒グラフ。後ろの枠は1株利益（EPS）で、枠と棒のすき間が増配の余地。
