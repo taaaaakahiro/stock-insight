@@ -85,6 +85,32 @@ function Detail({ d }: { d: StockDetail }) {
     { label: metricLabel("yield_percentile", kind), value: pct(s.yield_percentile, 0) },
     ...(stock
       ? [
+          { label: "年間配当合計（参考）", value: yen(s.dividend_total ?? null) },
+          {
+            label: "特別配当（利回りから除外）",
+            value: s.dividend_special == null ? "未確認" : yen(s.dividend_special),
+          },
+          {
+            label: "記念配当（利回りから除外）",
+            value: s.dividend_commemorative == null ? "未確認" : yen(s.dividend_commemorative),
+          },
+          ...(s.dividend_source?.startsWith("https://")
+            ? [
+                {
+                  label: "配当内訳の出典",
+                  value: (
+                    <a
+                      href={s.dividend_source}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline"
+                    >
+                      会社開示資料
+                    </a>
+                  ),
+                },
+              ]
+            : []),
           { label: "PBR", value: times(s.pbr) },
           { label: "PER", value: times(s.per) },
           { label: "配当性向", value: pct(s.payout_ratio, 1) },

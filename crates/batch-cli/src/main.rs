@@ -321,6 +321,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0023_reit_rag_facts",
         include_str!("../../../migrations/0023_reit_rag_facts.sql"),
     ),
+    (
+        "0024_dividend_breakdowns",
+        include_str!("../../../migrations/0024_dividend_breakdowns.sql"),
+    ),
 ];
 
 async fn sync_master(args: Args) -> Result<(), String> {
@@ -966,6 +970,21 @@ async fn sync_edinet(args: Args) -> Result<(), String> {
         )
         .await?;
     }
+    let docs = store
+        .edinet_docs_without_dividend_extraction()
+        .await
+        .map_err(|e| e.0)?;
+    refetch(
+        &ed,
+        &store,
+        &raw_dir,
+        now,
+        started,
+        deadline,
+        &docs,
+        "dividend breakdown",
+    )
+    .await?;
     Ok(())
 }
 
@@ -1051,6 +1070,14 @@ async fn fetch_doc(
     let refs: Vec<(domain::disclosure::Section, &str)> =
         sections.iter().map(|(s, t)| (*s, t.as_str())).collect();
     let signals = domain::disclosure::detect(&refs);
+    let dividend = if doc.kind == domain::disclosure::DocKind::Annual {
+        sections
+            .iter()
+            .find(|(s, _)| *s == domain::disclosure::Section::DividendPolicy)
+            .and_then(|(_, text)| domain::dividend_evidence::extract(text))
+    } else {
+        None
+    };
     // 「事業の内容」は注目テーマとの照合用に D1 にも短く持つ（項目がなければ空文字 = 読んだが無かった）
     let business_text = sections
         .iter()
@@ -1106,6 +1133,7 @@ async fn fetch_doc(
         }
     );
     Ok(EdinetDoc {
+        dividend,
         doc: doc.clone(),
         signals,
         business_text,

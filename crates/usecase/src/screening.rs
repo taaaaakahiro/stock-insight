@@ -13,6 +13,11 @@ pub struct StockRow {
     /// 利回りに使った1株配当（円）と、それが会社予想（forecast）か実績（actual）か。配当の開示がなければ None
     pub dividend: Option<f64>,
     pub dividend_basis: Option<String>,
+    pub dividend_total: Option<f64>,
+    pub dividend_special: Option<f64>,
+    pub dividend_commemorative: Option<f64>,
+    pub dividend_source: Option<String>,
+
     pub dividend_yield: Option<f64>,
     pub yield_percentile: Option<f64>,
     pub pbr: Option<f64>,

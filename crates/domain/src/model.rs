@@ -92,7 +92,7 @@ pub struct PriceBar {
 }
 
 /// 年間配当。開示で分かった値（会社予想、なければ実績）を、開示日から次の開示まで使う
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Dividend {
     /// この日から有効（開示日）
     pub effective: Date,
@@ -100,6 +100,49 @@ pub struct Dividend {
     pub annual: f64,
     /// 会社予想なら true、実績なら false
     pub forecast: bool,
+    /// None は内訳未確認。ゼロとは区別する。
+    pub breakdown: Option<DividendBreakdown>,
+}
+
+/// 年間配当の内訳。同じ開示・年度・株数基準の値だけを組み合わせる。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DividendBreakdown {
+    pub special: f64,
+    pub commemorative: f64,
+    pub source: String,
+    pub known_since: Option<Date>,
+}
+
+impl DividendBreakdown {
+    pub fn ordinary(&self, total: f64) -> Option<f64> {
+        let ordinary = total - self.special - self.commemorative;
+        (total.is_finite()
+            && self.special.is_finite()
+            && self.commemorative.is_finite()
+            && total >= 0.0
+            && self.special >= 0.0
+            && self.commemorative >= 0.0
+            && ordinary >= -1e-9)
+            .then_some(ordinary.max(0.0))
+    }
+
+    pub fn adjusted(&self, factor: f64) -> Self {
+        Self {
+            special: self.special * factor,
+            commemorative: self.commemorative * factor,
+            source: self.source.clone(),
+            known_since: self.known_since,
+        }
+    }
+}
+
+impl Dividend {
+    pub fn ordinary(&self) -> Option<f64> {
+        match &self.breakdown {
+            Some(b) => b.ordinary(self.annual),
+            None => (self.annual.is_finite() && self.annual >= 0.0).then_some(self.annual),
+        }
+    }
 }
 
 /// 株価（終値）と、開示された年間配当の履歴

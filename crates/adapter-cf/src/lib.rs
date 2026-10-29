@@ -1,4 +1,5 @@
 //! Worker 用のインフラ層: D1、Clerk（本人確認）、Workers AI との接続。
+#![recursion_limit = "256"]
 
 pub mod clerk_user;
 pub mod jwt;

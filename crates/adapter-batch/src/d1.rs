@@ -350,6 +350,14 @@ impl D1Store {
         Ok(out)
     }
 
+    pub async fn edinet_docs_without_dividend_extraction(&self) -> Result<Vec<DocRef>, PortError> {
+        let rows = self.query(&Stmt {
+            sql: "SELECT code, doc_kind, doc_id, submitted, period_end FROM edinet_docs WHERE doc_kind='annual' AND COALESCE(dividend_extraction_version, 0) < 1 ORDER BY submitted DESC".into(),
+            params: vec![],
+        }).await?;
+        Ok(rows.iter().filter_map(doc_ref).collect())
+    }
+
     /// 全銘柄の年次財務（rowid 順に少しずつ読む）
     pub async fn load_annuals(&self) -> Result<HashMap<String, Vec<StoredAnnual>>, PortError> {
         let mut out: HashMap<String, Vec<StoredAnnual>> = HashMap::new();
@@ -357,9 +365,16 @@ impl D1Store {
         loop {
             let rows = self
                 .query(&Stmt {
-                    sql: "SELECT rowid AS rid, code, period_end, doc_id, disclosed, net_sales, operating_income, \
-                          ordinary_income, net_income, equity, eps, bps, dps, operating_cf \
-                          FROM financials_annual WHERE rowid > ? ORDER BY rowid LIMIT 2000"
+                    sql: "SELECT a.*, a.rowid AS rid,
+ CASE WHEN s.kind IN ('reit','etf') THEN 0 ELSE b.dividend_special END AS breakdown_special,
+ CASE WHEN s.kind IN ('reit','etf') THEN 0 ELSE b.dividend_commemorative END AS breakdown_commemorative,
+ CASE WHEN b.dividend_total IS NOT NULL THEN 'https://disclosure2dl.edinet-fsa.go.jp/searchdocument/pdf/' || b.doc_id || '.pdf' END AS breakdown_source,
+ b.submitted AS breakdown_known_since
+ FROM financials_annual a LEFT JOIN stocks s ON s.code = a.code
+ LEFT JOIN edinet_docs b ON b.code = a.code AND b.doc_kind = 'annual'
+ AND b.period_end = a.period_end AND b.dividend_extraction_version = 1
+ AND ABS(b.dividend_total - a.dps) < 0.000001
+ WHERE a.rowid > ? ORDER BY a.rowid LIMIT 2000"
                         .into(),
                     params: vec![Val::Int(after)],
                 })
@@ -375,6 +390,7 @@ impl D1Store {
                 let date = |k: &str| r[k].as_str().and_then(Date::parse);
                 let f = |k: &str| r[k].as_f64();
                 out.entry(code.to_string()).or_default().push(StoredAnnual {
+                    breakdown: breakdown_from_row(r),
                     doc_id: r["doc_id"].as_str().unwrap_or_default().to_string(),
                     disclosed: date("disclosed"),
                     financial: AnnualFinancial {
@@ -450,8 +466,13 @@ impl D1Store {
         loop {
             let rows = self
                 .query(&Stmt {
-                    sql: "SELECT rowid AS rid, code, doc_id, disclosed, fiscal_year_end, dps \
-                          FROM dividend_forecasts WHERE rowid > ? ORDER BY rowid LIMIT 2000"
+                    sql: "SELECT a.*, a.rowid AS rid,
+ CASE WHEN s.kind IN ('reit','etf') THEN 0 END AS breakdown_special,
+ CASE WHEN s.kind IN ('reit','etf') THEN 0 END AS breakdown_commemorative,
+ NULL AS breakdown_source, NULL AS breakdown_known_since
+ FROM dividend_forecasts a LEFT JOIN stocks s ON s.code = a.code
+
+ WHERE a.rowid > ? ORDER BY a.rowid LIMIT 2000"
                         .into(),
                     params: vec![Val::Int(after)],
                 })
@@ -470,6 +491,7 @@ impl D1Store {
                 out.entry(code.to_string())
                     .or_default()
                     .push(StoredForecast {
+                        breakdown: breakdown_from_row(r),
                         doc_id: r["doc_id"].as_str().unwrap_or_default().to_string(),
                         disclosed,
                         fiscal_year_end: r["fiscal_year_end"].as_str().and_then(Date::parse),
@@ -641,6 +663,20 @@ fn doc_ref(r: &serde_json::Value) -> Option<DocRef> {
         submitted: Date::parse(r["submitted"].as_str()?)?,
         period_end: r["period_end"].as_str().and_then(Date::parse),
     })
+}
+
+fn breakdown_from_row(r: &serde_json::Value) -> Option<domain::DividendBreakdown> {
+    let b = domain::DividendBreakdown {
+        special: r["breakdown_special"].as_f64()?,
+        commemorative: r["breakdown_commemorative"].as_f64()?,
+        known_since: r["breakdown_known_since"].as_str().and_then(Date::parse),
+        source: r["breakdown_source"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+    };
+    b.ordinary(r["dps"].as_f64()?)?;
+    Some(b)
 }
 
 #[cfg(test)]

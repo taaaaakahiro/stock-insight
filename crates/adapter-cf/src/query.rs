@@ -50,7 +50,7 @@ macro_rules! payout_goal_sql {
 }
 /// 比べる DOE: 会社予想の配当があれば 利回り × PBR（予想の配当 ÷ BPS）、なければ実績の DOE
 const DOE_NOW: &str =
-    "(CASE WHEN i.dividend_basis = 'forecast' THEN i.dividend_yield * i.pbr ELSE i.doe END)";
+    "(CASE WHEN i.dividend_basis = 'forecast' THEN (i.dividend_total / NULLIF(i.price, 0)) * i.pbr ELSE i.doe END)";
 
 /// 指標の SQL の式。株式などは indicators_latest の列、REIT は reit_profile から計算する（比率は小数）
 pub fn metric_sql(m: Metric) -> String {
@@ -61,6 +61,9 @@ pub fn metric_sql(m: Metric) -> String {
         Metric::RepriceMaxRatio => format!("(r.reprice_1y_max * 1.0 / {REIT_DEBT})"),
         Metric::AvgRate => "(r.avg_rate / 100.0)".into(),
         Metric::Occupancy => "(r.occupancy / 100.0)".into(),
+        Metric::Dividend => {
+            "(CASE WHEN i.dividend_yield IS NOT NULL THEN i.dividend_ttm END)".into()
+        }
         Metric::DoeFloor => doe_floor_sql!().into(),
         Metric::DoeMargin => format!("({DOE_NOW} - {})", doe_floor_sql!()),
         _ => format!("i.{}", m.key()),
@@ -82,7 +85,7 @@ fn reit_columns() -> String {
 }
 
 pub const LIST_COLUMNS: &str = concat!(
-    "i.code, i.price, i.price_date, i.dividend_ttm, i.dividend_basis, i.dividend_yield, i.yield_percentile, i.pbr, i.per, \
+    "i.code, i.price, i.price_date, i.dividend_ttm, i.dividend_total, i.dividend_special, i.dividend_commemorative, i.dividend_source, i.dividend_basis, i.dividend_yield, i.yield_percentile, i.pbr, i.per, \
      i.payout_ratio, i.doe, i.consecutive_increases, i.operating_margin, i.no_loss_years, i.profit_uptrend, \
      i.valuation, i.fetched_at, s.name, COALESCE(s.kind, 'stock') AS kind, s.market, s.sector33, s.size_class, \
      i.dividend_every_year, i.no_quarterly_loss, i.is_value, i.data_years, i.sales_growth, i.op_growth, i.dividend_cut, \
@@ -271,13 +274,24 @@ pub const PRICE_HISTORY_BY_CODE: &str = "SELECT closes FROM price_history WHERE 
 /// 1銘柄の株式分割・併合（日付の古い順）
 pub const SPLITS_BY_CODE: &str = "SELECT date, factor FROM splits WHERE code = ? ORDER BY date";
 
-pub const FORECASTS_BY_CODE: &str =
-    "SELECT doc_id, disclosed, fiscal_year_end, dps FROM dividend_forecasts WHERE code = ? ORDER BY disclosed";
+pub const FORECASTS_BY_CODE: &str = "SELECT a.*, a.rowid AS rid,
+ CASE WHEN s.kind IN ('reit','etf') THEN 0 END AS breakdown_special,
+ CASE WHEN s.kind IN ('reit','etf') THEN 0 END AS breakdown_commemorative,
+ NULL AS breakdown_source, NULL AS breakdown_known_since
+ FROM dividend_forecasts a LEFT JOIN stocks s ON s.code = a.code
 
-pub const ANNUALS_BY_CODE: &str =
-    "SELECT period_end, doc_id, disclosed, net_sales, operating_income, \
-     ordinary_income, net_income, equity, eps, bps, dps, operating_cf \
-     FROM financials_annual WHERE code = ? ORDER BY period_end DESC LIMIT 10";
+ WHERE a.code = ? ORDER BY a.disclosed";
+
+pub const ANNUALS_BY_CODE: &str = "SELECT a.*, a.rowid AS rid,
+ CASE WHEN s.kind IN ('reit','etf') THEN 0 ELSE b.dividend_special END AS breakdown_special,
+ CASE WHEN s.kind IN ('reit','etf') THEN 0 ELSE b.dividend_commemorative END AS breakdown_commemorative,
+ CASE WHEN b.dividend_total IS NOT NULL THEN 'https://disclosure2dl.edinet-fsa.go.jp/searchdocument/pdf/' || b.doc_id || '.pdf' END AS breakdown_source,
+ b.submitted AS breakdown_known_since
+ FROM financials_annual a LEFT JOIN stocks s ON s.code = a.code
+ LEFT JOIN edinet_docs b ON b.code = a.code AND b.doc_kind = 'annual'
+ AND b.period_end = a.period_end AND b.dividend_extraction_version = 1
+ AND ABS(b.dividend_total - a.dps) < 0.000001
+ WHERE a.code = ? ORDER BY a.period_end DESC LIMIT 10";
 
 pub const QUARTERLIES_BY_CODE: &str =
     "SELECT fiscal_year_end, period_type, period_end, net_sales, \
@@ -447,7 +461,7 @@ mod tests {
         assert!(doe_floor_sql!().contains("ORDER BY e.submitted DESC LIMIT 1"));
         let margin = metric_sql(Metric::DoeMargin);
         assert!(margin.starts_with(
-            "((CASE WHEN i.dividend_basis = 'forecast' THEN i.dividend_yield * i.pbr"
+            "((CASE WHEN i.dividend_basis = 'forecast' THEN (i.dividend_total / NULLIF(i.price, 0)) * i.pbr"
         ));
         assert!(margin.ends_with(&format!(" - {})", doe_floor_sql!())));
         let f = ScreeningFilter {

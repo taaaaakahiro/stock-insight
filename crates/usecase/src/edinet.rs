@@ -23,6 +23,7 @@ pub type DocKey = (String, DocKind);
 pub struct EdinetDoc {
     pub doc: DocRef,
     pub signals: DividendSignals,
+    pub dividend: Option<domain::dividend_evidence::DividendEvidence>,
     /// 「事業の内容」の文（先頭 domain::theme::BUSINESS_TEXT_CHARS 文字。項目がなければ空文字。
     /// 注目テーマとの照合に使う）
     pub business_text: String,

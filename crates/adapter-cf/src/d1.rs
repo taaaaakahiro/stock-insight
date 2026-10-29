@@ -53,6 +53,11 @@ pub(crate) struct Row {
     dividend_ttm: f64,
     dividend_basis: Option<String>,
     dividend_yield: Option<f64>,
+    dividend_total: Option<f64>,
+    dividend_special: Option<f64>,
+    dividend_commemorative: Option<f64>,
+    dividend_source: Option<String>,
+
     yield_percentile: Option<f64>,
     pbr: Option<f64>,
     per: Option<f64>,
@@ -120,18 +125,35 @@ impl From<Row> for StockRow {
     fn from(r: Row) -> Self {
         let forecast = r.dividend_basis.as_deref() == Some("forecast");
         let doe_forecast = forecast
-            .then(|| domain::indicators::doe_from_yield(r.dividend_yield, r.pbr))
+            .then(|| {
+                domain::indicators::doe_from_yield(
+                    r.dividend_total
+                        .filter(|_| r.price > 0.0)
+                        .map(|d| d / r.price),
+                    r.pbr,
+                )
+            })
             .flatten();
         let payout_forecast = forecast
-            .then(|| domain::indicators::payout_from_yield(r.dividend_yield, r.per))
+            .then(|| {
+                domain::indicators::payout_from_yield(
+                    r.dividend_total
+                        .filter(|_| r.price > 0.0)
+                        .map(|d| d / r.price),
+                    r.per,
+                )
+            })
             .flatten();
         StockRow {
             code: r.code,
             price: r.price,
             price_date: r.price_date,
-            // 列を足す前の計算結果は basis が NULL なので、配当が 0 より大きければ出す
-            dividend: (r.dividend_basis.is_some() || r.dividend_ttm > 0.0)
-                .then_some(r.dividend_ttm),
+            // 利回りが計算できている場合だけ配当額を表示する
+            dividend: r.dividend_yield.map(|_| r.dividend_ttm),
+            dividend_total: r.dividend_total,
+            dividend_special: r.dividend_special,
+            dividend_commemorative: r.dividend_commemorative,
+            dividend_source: r.dividend_source,
             dividend_basis: r.dividend_basis,
             dividend_yield: r.dividend_yield,
             yield_percentile: r.yield_percentile,
@@ -309,6 +331,8 @@ impl D1Indicators {
 
 #[derive(Deserialize)]
 struct AnnualRow {
+    #[serde(flatten)]
+    breakdown: BreakdownRow,
     period_end: Option<String>,
     doc_id: String,
     disclosed: Option<String>,
@@ -341,6 +365,8 @@ struct ClosesRow {
 
 #[derive(Deserialize)]
 struct ForecastRow {
+    #[serde(flatten)]
+    breakdown: BreakdownRow,
     doc_id: String,
     disclosed: String,
     fiscal_year_end: Option<String>,
@@ -396,6 +422,7 @@ impl StockDetailQuery for D1Indicators {
             .into_iter()
             .filter_map(|r| {
                 Some(StoredForecast {
+                    breakdown: r.breakdown.validated(r.dps),
                     doc_id: r.doc_id,
                     disclosed: Date::parse(&r.disclosed)?,
                     fiscal_year_end: r.fiscal_year_end.as_deref().and_then(Date::parse),
@@ -436,6 +463,7 @@ impl StockDetailQuery for D1Indicators {
         Ok(rows
             .into_iter()
             .map(|r| StoredAnnual {
+                breakdown: r.breakdown.validated(r.dps),
                 doc_id: r.doc_id,
                 disclosed: r.disclosed.as_deref().and_then(Date::parse),
                 financial: AnnualFinancial {
@@ -730,5 +758,25 @@ impl PortfolioRepository for D1Portfolio {
             .await
             .map_err(err)?;
         Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct BreakdownRow {
+    breakdown_special: Option<f64>,
+    breakdown_commemorative: Option<f64>,
+    breakdown_source: Option<String>,
+    breakdown_known_since: Option<String>,
+}
+impl BreakdownRow {
+    fn validated(self, total: Option<f64>) -> Option<domain::DividendBreakdown> {
+        let b = domain::DividendBreakdown {
+            special: self.breakdown_special?,
+            commemorative: self.breakdown_commemorative?,
+            source: self.breakdown_source.unwrap_or_default(),
+            known_since: self.breakdown_known_since.as_deref().and_then(Date::parse),
+        };
+        b.ordinary(total?)?;
+        Some(b)
     }
 }

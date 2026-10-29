@@ -7,6 +7,10 @@ pub struct Indicators {
     pub price_date: Date,
     /// 利回りの計算に使った年間配当（会社予想、なければ実績。開示がなければ 0）
     pub dividend_ttm: f64,
+    pub dividend_total: Option<f64>,
+    pub dividend_special: Option<f64>,
+    pub dividend_commemorative: Option<f64>,
+    pub dividend_source: Option<String>,
     pub dividend_yield: Option<f64>,
     /// 配当利回りが取れる期間（最大10年）のどこにいるか（0.0〜1.0。高いほど割安）
     pub yield_percentile: Option<f64>,
@@ -83,11 +87,21 @@ pub fn dividend_at(divs: &[Dividend], date: Date) -> Option<Dividend> {
     divs.iter()
         .filter(|d| d.effective <= date)
         .max_by_key(|d| d.effective)
-        .copied()
+        .cloned()
+        .map(|mut d| {
+            if d.breakdown
+                .as_ref()
+                .and_then(|b| b.known_since)
+                .is_some_and(|known| known > date)
+            {
+                d.breakdown = None;
+            }
+            d
+        })
 }
 
 pub fn annual_dividend_at(divs: &[Dividend], date: Date) -> Option<f64> {
-    dividend_at(divs, date).map(|d| d.annual)
+    dividend_at(divs, date).and_then(|d| d.ordinary())
 }
 
 /// 週1点（5営業日ごと）の過去の配当利回りを、日付付きで新しい順に並べる（詳細ページのグラフ用）。
@@ -200,7 +214,7 @@ pub fn compute(
     let last = *market.bars.last().ok_or(IndicatorError::NoPrice)?;
     let price = last.close;
     let current = dividend_at(&market.dividends, last.date);
-    let annual = current.map(|d| d.annual);
+    let annual = current.as_ref().and_then(|d| d.ordinary());
     let ttm = annual.unwrap_or(0.0);
     let dividend_yield = annual.filter(|_| price > 0.0).map(|d| d / price);
     let yield_percentile = dividend_yield.and_then(|y| percentile_rank(&yield_history(market), y));
@@ -234,6 +248,22 @@ pub fn compute(
         price,
         price_date: last.date,
         dividend_ttm: ttm,
+        dividend_total: current.as_ref().map(|d| d.annual),
+        dividend_special: current
+            .as_ref()
+            .and_then(|d| d.breakdown.as_ref())
+            .map(|b| b.special)
+            .or_else(|| current.as_ref().filter(|d| d.annual == 0.0).map(|_| 0.0)),
+        dividend_commemorative: current
+            .as_ref()
+            .and_then(|d| d.breakdown.as_ref())
+            .map(|b| b.commemorative)
+            .or_else(|| current.as_ref().filter(|d| d.annual == 0.0).map(|_| 0.0)),
+        dividend_source: current
+            .as_ref()
+            .and_then(|d| d.breakdown.as_ref())
+            .map(|b| b.source.clone())
+            .filter(|s| !s.is_empty()),
         dividend_yield,
         yield_percentile,
         pbr,
@@ -256,7 +286,7 @@ pub fn compute(
         data_years: years.len().min(ANALYSIS_YEARS) as u32,
         sales_growth: None,
         op_growth: None,
-        dividend_is_forecast: current.map(|d| d.forecast),
+        dividend_is_forecast: current.as_ref().map(|d| d.forecast),
         dividend_cut: dividend_cut(
             &dps_series,
             current.filter(|d| d.forecast).map(|d| d.annual),
@@ -298,7 +328,6 @@ mod tests {
         );
         assert_eq!(payout_from_yield(None, Some(10.0)), None);
     }
-
     fn d(s: &str) -> Date {
         Date::parse(s).unwrap()
     }
@@ -327,11 +356,13 @@ mod tests {
     fn annual_dividend_uses_the_latest_disclosure() {
         let divs = [
             Dividend {
+                breakdown: Some(Default::default()),
                 effective: d("2025-05-10"),
                 annual: 40.0,
                 forecast: false,
             },
             Dividend {
+                breakdown: Some(Default::default()),
                 effective: d("2026-05-12"),
                 annual: 44.0,
                 forecast: false,
@@ -410,16 +441,19 @@ mod tests {
         // 年間配当: 2024年5月に32円、2025年5月に40円、2026年5月に44円と開示
         let dividends = vec![
             Dividend {
+                breakdown: Some(Default::default()),
                 effective: d("2024-05-10"),
                 annual: 32.0,
                 forecast: false,
             },
             Dividend {
+                breakdown: Some(Default::default()),
                 effective: d("2025-05-10"),
                 annual: 40.0,
                 forecast: false,
             },
             Dividend {
+                breakdown: Some(Default::default()),
                 effective: d("2026-05-12"),
                 annual: 44.0,
                 forecast: false,
