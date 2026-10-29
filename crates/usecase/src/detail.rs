@@ -107,6 +107,10 @@ mod tests {
                 price_date: "2026-10-21".into(),
                 dividend: Some(44.0),
                 dividend_basis: Some("actual".into()),
+                dividend_total: None,
+                dividend_special: None,
+                dividend_commemorative: None,
+                dividend_source: None,
                 dividend_yield: Some(0.044),
                 yield_percentile: None,
                 pbr: None,
@@ -163,6 +167,7 @@ mod tests {
         }
         async fn annuals(&self, _: &StockCode) -> Result<Vec<StoredAnnual>, PortError> {
             let mk = |pe: &str, disc: &str, dps: f64| StoredAnnual {
+                breakdown: Some(Default::default()),
                 doc_id: pe.into(),
                 disclosed: Some(d(disc)),
                 financial: AnnualFinancial {
@@ -174,6 +179,7 @@ mod tests {
             };
             // 来期の配当予想の修正が、数字のない本決算の行として残っている
             let revision = StoredAnnual {
+                breakdown: Some(Default::default()),
                 doc_id: "rev".into(),
                 disclosed: Some(d("2025-08-25")),
                 financial: AnnualFinancial {

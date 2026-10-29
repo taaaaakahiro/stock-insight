@@ -38,6 +38,23 @@ export function DividendAmount({ r }: { r: StockRow }) {
   return (
     <>
       {yen(r.dividend)}
+      {r.kind === "stock" && (r.dividend_special == null || r.dividend_commemorative == null) && (
+        <span
+          className="ml-1 text-[10px] text-muted-foreground"
+          title="特別・記念配当の内訳は未確認です。表示額をそのまま利回り計算に使用しています。"
+        >
+          内訳未確認
+        </span>
+      )}
+      {r.kind === "stock" &&
+        ((r.dividend_special ?? 0) > 0 || (r.dividend_commemorative ?? 0) > 0) && (
+          <span
+            className="ml-1 text-[10px] text-muted-foreground"
+            title={`特別配当 ${yen(r.dividend_special ?? null)}・記念配当 ${yen(r.dividend_commemorative ?? null)}を除外。年間合計 ${yen(r.dividend_total ?? null)}`}
+          >
+            臨時配当除外
+          </span>
+        )}
       {r.dividend_basis && (
         <span className="ml-1 text-[10px] text-muted-foreground">
           {r.dividend_basis === "forecast" ? "予想" : "実績"}

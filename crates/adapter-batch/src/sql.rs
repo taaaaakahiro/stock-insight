@@ -108,7 +108,7 @@ fn multi_row(
 const INDICATOR_COLUMNS: &str = "code, run_id, fetched_at, price, price_date, dividend_ttm, dividend_yield, \
      yield_percentile, pbr, per, payout_ratio, doe, consecutive_increases, operating_margin, no_loss_years, \
      profit_uptrend, valuation, fin_doc_id, fin_submitted, dividend_every_year, no_quarterly_loss, is_value, data_years, \
-     sales_growth, op_growth, dividend_basis, dividend_cut, op_growth_q, net_growth_q, op_growth_ttm, profit_one_off";
+     sales_growth, op_growth, dividend_basis, dividend_cut, dividend_total, dividend_special, dividend_commemorative, dividend_source, op_growth_q, net_growth_q, op_growth_ttm, profit_one_off";
 
 /// 一覧用の最新指標（1銘柄1行）を upsert する
 pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
@@ -148,6 +148,10 @@ pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
                     Val::Text(if f { "forecast" } else { "actual" }.into())
                 }),
                 Val::opt_b(i.dividend_cut),
+                Val::opt_f(i.dividend_total),
+                Val::opt_f(i.dividend_special),
+                Val::opt_f(i.dividend_commemorative),
+                i.dividend_source.clone().map_or(Val::Null, Val::Text),
                 Val::opt_f(i.op_growth_q),
                 Val::opt_f(i.net_growth_q),
                 Val::opt_f(i.op_growth_ttm),
@@ -157,7 +161,7 @@ pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
         .collect();
     multi_row(
         &format!("INSERT INTO indicators_latest ({INDICATOR_COLUMNS})"),
-        31,
+        35,
         "ON CONFLICT(code) DO UPDATE SET run_id = excluded.run_id, fetched_at = excluded.fetched_at, \
          price = excluded.price, price_date = excluded.price_date, dividend_ttm = excluded.dividend_ttm, \
          dividend_yield = excluded.dividend_yield, yield_percentile = excluded.yield_percentile, pbr = excluded.pbr, \
@@ -168,7 +172,8 @@ pub fn snapshots_stmts(snaps: &[Snapshot]) -> Vec<Stmt> {
          dividend_every_year = excluded.dividend_every_year, no_quarterly_loss = excluded.no_quarterly_loss, \
          is_value = excluded.is_value, data_years = excluded.data_years, \
          sales_growth = excluded.sales_growth, op_growth = excluded.op_growth, \
-         dividend_basis = excluded.dividend_basis, dividend_cut = excluded.dividend_cut, \
+         dividend_basis = excluded.dividend_basis, dividend_cut = excluded.dividend_cut, dividend_total = excluded.dividend_total, \
+         dividend_special = excluded.dividend_special, dividend_commemorative = excluded.dividend_commemorative, dividend_source = excluded.dividend_source, \
          op_growth_q = excluded.op_growth_q, net_growth_q = excluded.net_growth_q, \
          op_growth_ttm = excluded.op_growth_ttm, profit_one_off = excluded.profit_one_off",
         rows,
@@ -396,14 +401,21 @@ pub fn edinet_docs_stmts(docs: &[EdinetDoc], fetched_at: i64) -> Vec<Stmt> {
                 Val::opt_f(s.payout_goal),
                 s.payout_phrase.clone().map_or(Val::Null, Val::Text),
                 Val::Text(e.business_text.clone()),
+                Val::opt_f(e.dividend.as_ref().map(|b| b.total)),
+                Val::opt_f(e.dividend.as_ref().map(|b| b.special)),
+                Val::opt_f(e.dividend.as_ref().map(|b| b.commemorative)),
+                e.dividend
+                    .as_ref()
+                    .map_or(Val::Null, |b| Val::Text(b.phrase.clone())),
+                Val::Int(1),
             ]
         })
         .collect();
     multi_row(
         "INSERT INTO edinet_docs (code, doc_kind, doc_id, submitted, period_end, r2_key, progressive_dividend, \
          no_dividend_cut, dividend_raise, doe_target, payout_target, phrases, fetched_at, \
-         doe_floor, doe_goal, doe_phrase, payout_floor, payout_goal, payout_phrase, business_text)",
-        20,
+         doe_floor, doe_goal, doe_phrase, payout_floor, payout_goal, payout_phrase, business_text, dividend_total, dividend_special, dividend_commemorative, dividend_phrase, dividend_extraction_version)",
+        25,
         "ON CONFLICT(code, doc_kind) DO UPDATE SET doc_id = excluded.doc_id, submitted = excluded.submitted, \
          period_end = excluded.period_end, r2_key = excluded.r2_key, \
          progressive_dividend = excluded.progressive_dividend, no_dividend_cut = excluded.no_dividend_cut, \
@@ -411,7 +423,9 @@ pub fn edinet_docs_stmts(docs: &[EdinetDoc], fetched_at: i64) -> Vec<Stmt> {
          payout_target = excluded.payout_target, phrases = excluded.phrases, fetched_at = excluded.fetched_at, \
          doe_floor = excluded.doe_floor, doe_goal = excluded.doe_goal, doe_phrase = excluded.doe_phrase, \
          payout_floor = excluded.payout_floor, payout_goal = excluded.payout_goal, \
-         payout_phrase = excluded.payout_phrase, business_text = excluded.business_text",
+         payout_phrase = excluded.payout_phrase, business_text = excluded.business_text, dividend_total = excluded.dividend_total, \
+         dividend_special = excluded.dividend_special, dividend_commemorative = excluded.dividend_commemorative, \
+         dividend_phrase = excluded.dividend_phrase, dividend_extraction_version = excluded.dividend_extraction_version",
         rows,
         usize::MAX,
     )
@@ -605,6 +619,10 @@ mod tests {
                 price: 100.0,
                 price_date: Date::new(2026, 7, 1),
                 dividend_ttm: 4.0,
+                dividend_total: None,
+                dividend_special: None,
+                dividend_commemorative: None,
+                dividend_source: None,
                 dividend_yield: Some(0.04),
                 yield_percentile: None,
                 pbr: None,
@@ -634,13 +652,13 @@ mod tests {
         };
         let snaps: Vec<_> = (0..12).map(|i| snap(&format!("{}", 1300 + i))).collect();
         let stmts = snapshots_stmts(&snaps);
-        assert_eq!(stmts.len(), 4, "31列なので1文3行まで");
+        assert_eq!(stmts.len(), 6, "35列なので1文2行まで");
         assert!(stmts.iter().all(|s| s.params.len() <= 100));
-        assert_eq!(stmts[0].sql.matches("(?, ").count(), 3);
+        assert_eq!(stmts[0].sql.matches("(?, ").count(), 2);
         assert_eq!(stmts[0].params[25], Val::Text("forecast".into()));
         assert_eq!(stmts[0].params[26], Val::Int(1));
-        assert_eq!(stmts[0].params[27], Val::Real(0.2));
-        assert_eq!(stmts[0].params[30], Val::Int(0));
+        assert_eq!(stmts[0].params[31], Val::Real(0.2));
+        assert_eq!(stmts[0].params[34], Val::Int(0));
         let h = price_history_stmts(
             &vec![("7203".into(), "x".into(), "2026-07-01".into()); 25],
             1,
@@ -654,6 +672,7 @@ mod tests {
         use domain::Date;
         use usecase::edinet::DocRef;
         let doc = EdinetDoc {
+            dividend: None,
             doc: DocRef {
                 code: "7203".into(),
                 kind: DocKind::Annual,
@@ -674,7 +693,7 @@ mod tests {
             business_text: "当社グループは自動車の製造販売を…".into(),
         };
         let stmts = edinet_docs_stmts(&vec![doc; 8], 1);
-        assert_eq!(stmts.len(), 2, "20列なので1文5行まで");
+        assert_eq!(stmts.len(), 2, "25列なので1文4行まで");
         let p = &stmts[0].params;
         assert_eq!(p[5], Val::Text("edinet/7203/annual.json.gz".into()));
         assert_eq!(p[6], Val::Int(1));

@@ -5,6 +5,7 @@ pub mod access;
 pub mod analysis;
 pub mod calendar;
 pub mod disclosure;
+pub mod dividend_evidence;
 pub mod dividend_policy;
 pub mod indicators;
 pub mod model;

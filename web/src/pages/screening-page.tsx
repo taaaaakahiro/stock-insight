@@ -186,6 +186,11 @@ export function ScreeningPage() {
             </Dialog.Root>
           </div>
 
+          {filters.kind === "stock" && (
+            <p className="mb-3 text-xs text-muted-foreground">
+              利回りは確認できた特別・記念配当を除いて計算します。予想の内訳が不明なら実績を優先し、実績も内訳不明の場合は合計額を使って「内訳未確認」と表示します。
+            </p>
+          )}
           {conditions.length > 0 && (
             <ul aria-label="効いている条件" className="mb-3 flex flex-wrap gap-1.5">
               {conditions.map((c) => (

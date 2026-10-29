@@ -17,6 +17,11 @@ export type StockRow = {
   dividend_basis: "forecast" | "actual" | null;
   dividend_yield: number | null;
   yield_percentile: number | null;
+  /** 内訳未確認でも実績合計で利回りを計算する。special/commemorative が null なら未確認 */
+  dividend_total?: number | null;
+  dividend_special?: number | null;
+  dividend_commemorative?: number | null;
+  dividend_source?: string | null;
   pbr: number | null;
   per: number | null;
   payout_ratio: number | null;

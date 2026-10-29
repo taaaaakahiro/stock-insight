@@ -46,6 +46,7 @@ async fn offline_pipeline_writes_sql() {
             .entry(r.code.as_str().to_string())
             .or_default()
             .push(StoredAnnual {
+                breakdown: Some(Default::default()),
                 doc_id: r.doc_id.clone(),
                 disclosed: r.disclosed,
                 financial: r.financial.clone(),

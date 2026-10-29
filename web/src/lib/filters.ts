@@ -85,7 +85,7 @@ const DOE_TIPS: Partial<Record<MetricKey, string>> = {
   doe_floor:
     "有価証券報告書・半期報告書に「DOE ○%を下限」「○%以上」と書かれた数字です。業績が落ちても、BPS × この割合の配当は守る方針です。",
   doe_margin:
-    "今の DOE − DOE下限（ポイント）。今の DOE は会社予想の配当があればそれで（利回り × PBR）、なければ実績で出します。マイナスは、下限の方針より配当が少ないことを示します。",
+    "今の DOE − DOE下限（ポイント）。今の DOE は会社予想の配当があればそれで（特別・記念配当を含む合計配当 ÷ BPS）、なければ実績で出します。マイナスは、下限の方針より配当が少ないことを示します。",
 };
 
 /** 業績の伸びの説明（累計・四半期単独・4四半期合計の違い） */
@@ -99,6 +99,9 @@ const GROWTH_TIPS: Partial<Record<MetricKey, string>> = {
 
 /** 指標の説明（あるものだけ）。InfoTip に出す */
 export function metricTip(key: MetricKey, kind: Kind): string | undefined {
+  if (kind === "stock" && (key === "dividend_ttm" || key === "dividend_yield")) {
+    return "通常配当の予想が確認できれば予想を使い、内訳が不明なら実績を優先します。EDINETで確認できた特別・記念配当を除外し、実績の内訳も不明な場合は合計額で計算して「内訳未確認」と表示します。実績がない場合は予想合計を参考にします。";
+  }
   if (key === "yield_percentile") return yieldPercentileTip(kind);
   return REIT_TIPS[key] ?? DOE_TIPS[key] ?? GROWTH_TIPS[key];
 }
