@@ -10,6 +10,8 @@ use usecase::PortError;
 /// 混み合い（429）とサーバー側の一時的なエラー（5xx）だけをやり直す
 const AI_RETRIES: u32 = 3;
 const AI_FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// 共有クライアントの30秒では70Bモデルの生成が足りないので、この呼び出しだけ長くする
+const AI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 pub struct WorkersAiRest {
     client: reqwest::Client,
@@ -55,6 +57,7 @@ impl Recommender for WorkersAiRest {
                 .post(&self.url)
                 .bearer_auth(&self.token)
                 .json(&body)
+                .timeout(AI_TIMEOUT)
                 .send()
                 .await
                 .map_err(|e| PortError(format!("ai: {e}")))?;
