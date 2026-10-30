@@ -121,6 +121,18 @@ impl D1Store {
             .unwrap_or_default())
     }
 
+    /// query() と同じ実行を、自動リトライなしで1回だけ行う。
+    /// 再実行すると別行が増える INSERT ... RETURNING のような冪等でない文に使う
+    /// （query() のリトライは upsert・IF NOT EXISTS など再実行しても結果が変わらない文を前提にしている）
+    pub async fn query_no_retry(&self, stmt: &Stmt) -> Result<Vec<serde_json::Value>, PortError> {
+        let params: Vec<serde_json::Value> = stmt.params.iter().map(|v| v.to_json()).collect();
+        let body = serde_json::json!({ "sql": stmt.sql, "params": params });
+        match self.query_once(&body).await {
+            Ok(rows) => Ok(rows),
+            Err(D1Error::Retryable(e) | D1Error::Fatal(e)) => Err(PortError(e)),
+        }
+    }
+
     /// 銘柄マスタにある全銘柄（指定の種類だけ）のコード
     pub async fn listed_codes(&self, kinds: &[&str]) -> Result<Vec<String>, PortError> {
         let placeholders = vec!["?"; kinds.len()].join(", ");

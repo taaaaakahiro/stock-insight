@@ -206,6 +206,70 @@ struct RecoRow {
     source: Option<String>,
 }
 
+/// publish の1回分の文列（trait 外に置くために inherent impl にする）。
+/// 各文は冪等（候補の UPDATE は条件一致、run の UPDATE は status='pending' のときだけ、
+/// DELETE と INSERT ... SELECT は同じ結果に収束）なので、途中失敗しても全体を
+/// 再試行すれば復旧する
+impl D1Recommendations<'_> {
+    async fn publish_once(&self, id: i64, response: &str, picks: &[Pick]) -> Result<(), PortError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        for p in picks {
+            self.store
+                .exec(&Stmt {
+                    sql: "UPDATE recommendation_candidates SET rank=?,reason=?,grade=? WHERE run_id=? AND code=? \
+                          AND EXISTS (SELECT 1 FROM recommendation_runs WHERE id=? AND status='pending')"
+                        .to_string(),
+                    params: vec![
+                        int(p.rank as i64),
+                        text(&p.reason),
+                        text(p.grade.as_str()),
+                        int(id),
+                        text(&p.code),
+                        int(id),
+                    ],
+                })
+                .await?;
+        }
+        self.store
+            .exec(&Stmt {
+                sql: "UPDATE recommendation_runs SET status='published',response_json=?,published_at=?, \
+                      is_primary=CASE WHEN EXISTS (SELECT 1 FROM recommendation_runs old \
+                        WHERE old.price_date=recommendation_runs.price_date AND old.is_primary=1) THEN 0 ELSE 1 END \
+                      WHERE id=? AND status='pending'"
+                    .to_string(),
+                params: vec![text(response), int(now), int(id)],
+            })
+            .await?;
+        // 最新表示の互換キャッシュだけを更新する。履歴には DELETE を行わない。
+        self.store
+            .exec(&Stmt {
+                sql: "DELETE FROM recommendations WHERE date=(SELECT price_date FROM recommendation_runs WHERE id=? AND status='published')"
+                    .to_string(),
+                params: vec![int(id)],
+            })
+            .await?;
+        self.store
+            .exec(&Stmt {
+                sql: "INSERT INTO recommendations(date,rank,code,reason,model,created_at,grade,source) \
+                      SELECT r.price_date,c.rank,c.code,c.reason,r.model,r.published_at,c.grade,CASE WHEN r.trigger_mode='manual' THEN 'manual' ELSE 'cron' END \
+                      FROM recommendation_runs r JOIN recommendation_candidates c ON c.run_id=r.id \
+                      WHERE r.id=? AND r.status='published' AND c.rank IS NOT NULL"
+                    .to_string(),
+                params: vec![int(id)],
+            })
+            .await?;
+        Ok(())
+    }
+}
+
+/// publish 全体の再試行。D1 の一時エラーは文ごとに D1Store 側でも再試行されるが、
+/// 文と文の間の失敗（画面用行の削除後に挿入が失敗すると画面が空になる）は
+/// 全体の再試行で復旧させる
+const PUBLISH_RETRIES: u32 = 3;
+
 impl RecommendRepository for D1Recommendations<'_> {
     async fn latest_run(&self) -> Result<Option<DataStatus>, PortError> {
         let rows = self.store.query(&stmt(query::LATEST_RUN)).await?;
@@ -300,11 +364,12 @@ impl RecommendRepository for D1Recommendations<'_> {
             })
             .collect();
         // run と候補の保存は Worker 側では batch() の1トランザクション。REST には
-        // 複数文のトランザクションがないため順に実行する。候補 INSERT は MAX(id) を
-        // 引くため、この間に別の run が割り込まないことが前提（生成は日1回の単独実行）。
+        // 複数文のトランザクションがないため順に実行する。
+        // run の INSERT は再実行すると別の id で重複するためリトライしない（応答喪失時は
+        // 候補なしの pending 行が残るが、公開履歴には出ないので翌日の生成で埋まる）。
         let rows = self
             .store
-            .query(&Stmt {
+            .query_no_retry(&Stmt {
                 sql: "INSERT INTO recommendation_runs (price_date,batch_id,model,prompt_version,rule_version,app_version,request_json,status,trigger_mode,created_at) \
                       VALUES (?,?,?,?,?,?,?,'pending',?,?) RETURNING id"
                     .to_string(),
@@ -325,71 +390,36 @@ impl RecommendRepository for D1Recommendations<'_> {
             .first()
             .and_then(|r| r["id"].as_i64())
             .ok_or_else(|| PortError("missing recommendation id".into()))?;
+        // 候補の run_id は取得済みの id を束縛する。同時生成（Actions と管理者の作り直し）
+        // で MAX(id) が別の run を指す事故を防ぐ（PK (run_id,code)・UNIQUE (run_id,rank)
+        // があるため、リトライで重複してもエラーになるだけ）
         self.store
             .exec(&Stmt {
                 sql: "INSERT INTO recommendation_candidates (run_id,code,rule_rank,snapshot_json) \
-                      SELECT (SELECT MAX(id) FROM recommendation_runs),json_extract(value,'$.code'), \
+                      SELECT ?,json_extract(value,'$.code'), \
                              json_extract(value,'$.rule_rank'),json_set(json_extract(value,'$.stock'), \
                              '$.financial_doc_id',(SELECT fin_doc_id FROM indicators_latest WHERE code=json_extract(value,'$.code')), \
                              '$.financial_disclosed',(SELECT fin_submitted FROM indicators_latest WHERE code=json_extract(value,'$.code'))) FROM json_each(?)"
                     .to_string(),
-                params: vec![text(&json!(snapshots).to_string())],
+                params: vec![int(id), text(&json!(snapshots).to_string())],
             })
             .await?;
         Ok(id)
     }
 
     async fn publish(&self, id: i64, response: &str, picks: &[Pick]) -> Result<(), PortError> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        for p in picks {
-            self.store
-                .exec(&Stmt {
-                    sql: "UPDATE recommendation_candidates SET rank=?,reason=?,grade=? WHERE run_id=? AND code=? \
-                          AND EXISTS (SELECT 1 FROM recommendation_runs WHERE id=? AND status='pending')"
-                        .to_string(),
-                    params: vec![
-                        int(p.rank as i64),
-                        text(&p.reason),
-                        text(p.grade.as_str()),
-                        int(id),
-                        text(&p.code),
-                        int(id),
-                    ],
-                })
-                .await?;
+        let mut attempt = 0;
+        loop {
+            match self.publish_once(id, response, picks).await {
+                Ok(()) => return Ok(()),
+                Err(e) if attempt < PUBLISH_RETRIES => {
+                    attempt += 1;
+                    eprintln!("d1: publish: {e}; retry {attempt}/{PUBLISH_RETRIES}");
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+                Err(e) => return Err(e),
+            }
         }
-        self.store
-            .exec(&Stmt {
-                sql: "UPDATE recommendation_runs SET status='published',response_json=?,published_at=?, \
-                      is_primary=CASE WHEN EXISTS (SELECT 1 FROM recommendation_runs old \
-                        WHERE old.price_date=recommendation_runs.price_date AND old.is_primary=1) THEN 0 ELSE 1 END \
-                      WHERE id=? AND status='pending'"
-                    .to_string(),
-                params: vec![text(response), int(now), int(id)],
-            })
-            .await?;
-        // 最新表示の互換キャッシュだけを更新する。履歴には DELETE を行わない。
-        self.store
-            .exec(&Stmt {
-                sql: "DELETE FROM recommendations WHERE date=(SELECT price_date FROM recommendation_runs WHERE id=? AND status='published')"
-                    .to_string(),
-                params: vec![int(id)],
-            })
-            .await?;
-        self.store
-            .exec(&Stmt {
-                sql: "INSERT INTO recommendations(date,rank,code,reason,model,created_at,grade,source) \
-                      SELECT r.price_date,c.rank,c.code,c.reason,r.model,r.published_at,c.grade,CASE WHEN r.trigger_mode='manual' THEN 'manual' ELSE 'cron' END \
-                      FROM recommendation_runs r JOIN recommendation_candidates c ON c.run_id=r.id \
-                      WHERE r.id=? AND r.status='published' AND c.rank IS NOT NULL"
-                    .to_string(),
-                params: vec![int(id)],
-            })
-            .await?;
-        Ok(())
     }
 
     async fn fail(&self, id: i64, response: Option<&str>, error: &str) -> Result<(), PortError> {
