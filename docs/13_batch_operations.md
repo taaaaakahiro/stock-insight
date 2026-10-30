@@ -1,10 +1,10 @@
 # 13 バッチ運用
 
-設定元: [daily-batch.yml](../.github/workflows/daily-batch.yml)・[reit-batch.yml](../.github/workflows/reit-batch.yml)、実装: [batch-cli](../crates/batch-cli/src/main.rs)。
+設定元: [daily-batch.yml](../.github/workflows/daily-batch.yml)・[recommend-batch.yml](../.github/workflows/recommend-batch.yml)・[reit-batch.yml](../.github/workflows/reit-batch.yml)、実装: [batch-cli](../crates/batch-cli/src/main.rs)。
 
 ## 起動とジョブ
 
-日次workflowはWorker Cronの平日18:30 JST、予備はGitHub scheduleの18:45 JST。同一ワークフローはconcurrencyで直列化し、実行中の処理を取り消さない。
+日次workflowはGitHub scheduleの平日18:30 JST、AIレコメンドはrecommend-batch workflowの平日19:30 JST。同一ワークフローはconcurrencyで直列化し、実行中の処理を取り消さない。
 
 `should-run` はJSTの日付、土日・祝日・休場日を確認する。祝日データを取得・解釈できなければ失敗する。手動起動と `force=true` は休場日判定を省略する。
 
@@ -61,11 +61,11 @@ EDINETの原本は種類ごとに上書きし、削除対象キーをmanifestへ
 
 ## CLI
 
-コマンド: `migrate`, `sync-master`, `sync-jq`, `sync-edinet`, `sync-reit`, `compute`, `should-run`, `reit-probe`, `reit-dump`, `evaluate-recommendations`, `reit-rag`。
+コマンド: `migrate`, `sync-master`, `sync-jq`, `sync-edinet`, `sync-reit`, `compute`, `should-run`, `reit-probe`, `reit-dump`, `evaluate-recommendations`, `reit-rag`, `quality-report`, `generate-recommendations`。
 
 オプション: `--dry-run <file>`, `--from-file <file>`, `--label <英数字>`, `--force`, `--from <YYYY-MM-DD>`, `--until <YYYY-MM-DD>`, `--rate <回/分>`, `--max-minutes`, `--persist-every`, `--raw-dir`, `--limit`, `--out`, `--refill-prices`, `--refill-forecasts`, `--refetch-doe`, `--refetch-business`。各コマンドで使用するオプションはmain.rsの該当処理を参照する。すべてのオプションがすべてのコマンドに作用するわけではない。
 
-停止する場合はWorker CronとGitHub側の予備scheduleの両方を対象にする。アプリの管理者権限だけではバッチ・基盤を操作できない。
+停止する場合はGitHub側のscheduleを対象にする。アプリの管理者権限だけではバッチ・基盤を操作できない。
 
 推薦追跡はcompute成功後に実行する。株価・財務の変更を追記し、既存の公開推薦の成績と比較レポートを更新する。価格基準日・欠損・再実行の扱いは[成績仕様](16_recommendation_evaluation.md)を参照。
 
@@ -120,4 +120,4 @@ REIT専用workflowは次の順で分析する。各処理の上限は100分、�
 
 ## 同日の再実行
 
-同日に成功済みでも毎回取り込みを実行します。株価は未取得期間と直近7日分を再取得し、同じ日付を更新します。朝に未配信の終値は夕方の再実行で取得できます。手動起動は休場日も実行します。定期取得は18:30 JST、予備は18:45、AIレコメンドは19:30（当日のバッチ成功が条件）です。
+同日に成功済みでも毎回取り込みを実行します。株価は未取得期間と直近7日分を再取得し、同じ日付を更新します。朝に未配信の終値は夕方の再実行で取得できます。手動起動は休場日も実行します。定期取得は18:30 JST、AIレコメンドは19:30（当日のバッチ成功が条件）です。どちらもGitHub Actionsのscheduleです。

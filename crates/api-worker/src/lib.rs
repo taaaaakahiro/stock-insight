@@ -41,15 +41,10 @@ use usecase::portfolio::PortfolioError;
 use usecase::screening::{data_status, disclosures, reit_detail, screen};
 use usecase::themes::ThemesError;
 use usecase::Clock;
-use worker::{
-    event, Cache, Context, Env, Request, Response, Result, RouteContext, Router, ScheduleContext,
-    ScheduledEvent,
-};
+use worker::{event, Cache, Context, Env, Request, Response, Result, RouteContext, Router};
 
 const DB_BINDING: &str = "DB";
 const AI_BINDING: &str = "AI";
-/// wrangler.jsonc の triggers.crons のうち、AIレコメンドを作るほう
-const RECOMMEND_CRON: &str = "30 10 * * 1-5";
 
 /// ブラウザに持たせる時間（一覧・配当方針・状態）
 const BROWSER_CACHE: &str = "private, max-age=300";
@@ -108,28 +103,8 @@ impl AuthConfig {
     }
 }
 
-/// 日次バッチの起動。重複や休場日の判定は GitHub 側（batch-cli should-run）で行う。
-/// AIレコメンドの Cron はここで分岐する
-#[event(scheduled)]
-async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
-    if event.cron() == RECOMMEND_CRON {
-        recommend_cron(&env).await;
-        return;
-    }
-    let repo = env
-        .var("GITHUB_REPO")
-        .map(|v| v.to_string())
-        .unwrap_or_default();
-    let Ok(token) = env.secret("GITHUB_DISPATCH_TOKEN").map(|v| v.to_string()) else {
-        worker::console_error!("cron {}: GITHUB_DISPATCH_TOKEN is not set", event.cron());
-        return;
-    };
-    match adapter_cf::github::dispatch_workflow(&repo, "daily-batch.yml", "main", &token).await {
-        Ok(()) => worker::console_log!("cron {}: dispatched daily-batch", event.cron()),
-        Err(e) => worker::console_error!("cron {}: {e}", event.cron()),
-    }
-}
-
+/// 日次バッチとAIレコメンドの起動は GitHub Actions の schedule（18:30 / 19:30 JST）に移した。
+/// 重複や休場日の判定は GitHub 側（batch-cli should-run）、生成条件は usecase 側で行う
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let user = match auth(&req, &env).await {
@@ -533,35 +508,6 @@ fn portfolio_result(r: std::result::Result<(), PortfolioError>) -> Result<Respon
             &format!("up to {} stocks", domain::portfolio::MAX_ITEMS),
         ),
         Err(PortfolioError::Port(e)) => internal(&e.0),
-    }
-}
-
-/// F7: その日のバッチが成功していて、まだ結果がなければ上位10銘柄を選んで評価し、AI に理由を書かせて保存する
-async fn recommend_cron(env: &Env) {
-    let (db, ai) = match (env.d1(DB_BINDING), env.ai(AI_BINDING)) {
-        (Ok(db), Ok(ai)) => (db, ai),
-        (Err(e), _) | (_, Err(e)) => {
-            worker::console_error!("cron {RECOMMEND_CRON}: binding: {e}");
-            return;
-        }
-    };
-    let repo = D1Recommendations::new(db);
-    let now = WorkerClock.now_unix();
-    match usecase::recommend::generate(&repo, &WorkersAi::new(ai), now).await {
-        Ok(usecase::recommend::Outcome::Saved {
-            date,
-            picks,
-            dropped,
-        }) => {
-            worker::console_log!("cron {RECOMMEND_CRON}: saved {picks} recommendations for {date}");
-            for d in dropped {
-                worker::console_log!("cron {RECOMMEND_CRON}: dropped ({d})");
-            }
-        }
-        Ok(usecase::recommend::Outcome::Skipped(why)) => {
-            worker::console_log!("cron {RECOMMEND_CRON}: skipped ({why})")
-        }
-        Err(e) => worker::console_error!("cron {RECOMMEND_CRON}: {e}"),
     }
 }
 

@@ -34,14 +34,10 @@
     "CLERK_ISSUER": "https://clerk.maa-un.com",
     "CLERK_API_URL": "https://api.clerk.com/v1",
     // トークンの発行先（azp）として受け付けるオリジン
-    "AUTHORIZED_PARTIES": "https://stock.insight.maa-un.com",
-    // 日次バッチ（GitHub Actions）のリポジトリ。起動用のトークンは Worker Secret の GITHUB_DISPATCH_TOKEN
-    "GITHUB_REPO": "taaaaakahiro/stock-insight"
+    "AUTHORIZED_PARTIES": "https://stock.insight.maa-un.com"
   },
   // AIレコメンド（F7）に使う Workers AI。設定だけで有効になる（ダッシュボードの操作は不要）
   "ai": { "binding": "AI" },
-  // 平日 18:30 JST（= 09:30 UTC）に日次バッチを起動する。休場日の判定はバッチ側で行う。
-  // 平日 19:30 JST（= 10:30 UTC）はバッチが終わったあとの AIレコメンド（その日のバッチが成功していなければ何もしない）
-  "triggers": { "crons": ["30 9 * * 1-5", "30 10 * * 1-5"] },
+  // 日次バッチ（18:30 JST）とAIレコメンド（19:30 JST）は GitHub Actions の schedule に移した（Worker Cron は使わない）
   "observability": { "enabled": true }
 }

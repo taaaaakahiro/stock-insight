@@ -17,6 +17,8 @@
 //!   batch-cli quality-report [--out <file>]
 //!                                         財務品質JSONの業種別取得率と、新旧ルールの順位差分を出す
 //!                                         （読み取り専用。docs/19 の適用手順4）
+//!   batch-cli generate-recommendations    当日のバッチが成功していて未生成なら、AIレコメンドを生成して保存
+//!                                         （平日19:30 JSTの Actions バッチ。条件は usecase 側で判定）
 //!   batch-cli should-run [--label daily] [--force]
 //!                                         今日バッチを動かすか（休場日・当日成功済みなら false）。
 //!                                         GITHUB_OUTPUT があれば run=true|false を書く
@@ -112,7 +114,7 @@ struct Args {
 fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     let cmd = it.next().ok_or(
-        "command required: migrate | sync-master | sync-jq | sync-edinet | sync-reit | reit-probe | compute | quality-report | should-run",
+        "command required: migrate | sync-master | sync-jq | sync-edinet | sync-reit | reit-probe | compute | quality-report | generate-recommendations | should-run",
     )?;
     let mut a = Args {
         cmd,
@@ -192,6 +194,43 @@ fn d1_store(client: http::Client) -> Result<d1::D1Store, String> {
     ))
 }
 
+/// AIレコメンドの日次生成（19:30 JST の Actions バッチ）。生成条件（当日バッチ成功・
+/// 株価日付あり・未生成）は usecase::recommend::generate が判定する。AI は Workers AI の
+/// REST API を呼ぶので CLOUDFLARE_API_TOKEN に Workers AI の実行権限が要る。
+async fn generate_recommendations() -> Result<(), String> {
+    let client = http::client();
+    let store = d1::D1Store::new(
+        client.clone(),
+        &env("CLOUDFLARE_ACCOUNT_ID")?,
+        &env("D1_DATABASE_ID")?,
+        env("CLOUDFLARE_API_TOKEN")?,
+    );
+    let ai = adapter_batch::ai_rest::WorkersAiRest::new(
+        client,
+        &env("CLOUDFLARE_ACCOUNT_ID")?,
+        env("CLOUDFLARE_API_TOKEN")?,
+    );
+    let repo = adapter_batch::d1_recommend::D1Recommendations::new(&store);
+    match usecase::recommend::generate(&repo, &ai, SystemClock.now_unix()).await {
+        Ok(usecase::recommend::Outcome::Saved {
+            date,
+            picks,
+            dropped,
+        }) => {
+            println!("recommendations: saved {picks} picks for {date}");
+            for d in dropped {
+                println!("recommendations: dropped ({d})");
+            }
+            Ok(())
+        }
+        Ok(usecase::recommend::Outcome::Skipped(why)) => {
+            println!("recommendations: skipped ({why})");
+            Ok(())
+        }
+        Err(e) => Err(e.0),
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let args = match parse_args() {
@@ -235,6 +274,7 @@ async fn main() {
             Ok(store) => quality_report::run(&store, args.out.as_deref()).await,
             Err(e) => Err(e),
         },
+        "generate-recommendations" => generate_recommendations().await,
         "evaluate-recommendations" => evaluate_recommendations().await,
         "should-run" => should_run(args).await,
         other => Err(format!("unknown command: {other}")),

@@ -1,0 +1,52 @@
+name: recommend-batch
+
+# AIレコメンドの日次生成。平日19:30 JST（日次バッチのあと）。
+# 当日の日次バッチが成功していて株価日付があり、同じ株価日の結果がまだないときだけ生成する
+# （条件の判定は batch-cli generate-recommendations → usecase::recommend::generate が行う）。
+# Workers AI は REST API 経由で呼ぶので CLOUDFLARE_API_TOKEN に Workers AI の実行権限が要る
+# （docs/06_secrets_and_repository.md）。
+on:
+  workflow_dispatch:
+  schedule:
+    # 平日 10:30 UTC = 19:30 JST
+    - cron: "30 10 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recommend-batch
+  cancel-in-progress: false
+
+env:
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: batch-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - run: cargo build -q -p batch-cli --release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: batch-cli
+          path: target/release/batch-cli
+          retention-days: 1
+
+  generate:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - run: ./batch-cli generate-recommendations
