@@ -96,7 +96,9 @@ name = "batch-cli"
 version = "0.3.16"
 dependencies = [
  "adapter-batch",
+ "adapter-cf",
  "domain",
+ "serde",
  "serde_json",
  "tokio",
  "usecase",

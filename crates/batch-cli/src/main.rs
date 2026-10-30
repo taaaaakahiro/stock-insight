@@ -14,6 +14,9 @@
 //!   batch-cli reit-probe [options]        EDINET の REIT の有報から借入金明細と物件一覧を読み、BS・表の合計と
 //!                                         突き合わせて読み取りの精度を出す（D1 には触れない）
 //!   batch-cli compute [--label daily]     保存済みの株価と財務から、全銘柄の指標を計算して保存
+//!   batch-cli quality-report [--out <file>]
+//!                                         財務品質JSONの業種別取得率と、新旧ルールの順位差分を出す
+//!                                         （読み取り専用。docs/19 の適用手順4）
 //!   batch-cli should-run [--label daily] [--force]
 //!                                         今日バッチを動かすか（休場日・当日成功済みなら false）。
 //!                                         GITHUB_OUTPUT があれば run=true|false を書く
@@ -72,6 +75,8 @@ use usecase::edinet::{DocRef, EdinetDoc};
 use usecase::fins::{AnnualReport, FinancialStore, ForecastReport, PeriodReport};
 use usecase::{BatchRun, Clock, SnapshotStore};
 
+mod quality_report;
+
 struct SystemClock;
 impl Clock for SystemClock {
     fn now_unix(&self) -> i64 {
@@ -107,7 +112,7 @@ struct Args {
 fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     let cmd = it.next().ok_or(
-        "command required: migrate | sync-master | sync-jq | sync-edinet | sync-reit | reit-probe | compute | should-run",
+        "command required: migrate | sync-master | sync-jq | sync-edinet | sync-reit | reit-probe | compute | quality-report | should-run",
     )?;
     let mut a = Args {
         cmd,
@@ -226,6 +231,10 @@ async fn main() {
         "reit-probe" => reit_probe(args).await,
         "reit-dump" => reit_dump(args),
         "compute" => compute(args).await,
+        "quality-report" => match d1_store(http::client()) {
+            Ok(store) => quality_report::run(&store, args.out.as_deref()).await,
+            Err(e) => Err(e),
+        },
         "evaluate-recommendations" => evaluate_recommendations().await,
         "should-run" => should_run(args).await,
         other => Err(format!("unknown command: {other}")),
