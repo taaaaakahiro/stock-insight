@@ -38,6 +38,7 @@
   },
   // AIレコメンド（F7）に使う Workers AI。設定だけで有効になる（ダッシュボードの操作は不要）
   "ai": { "binding": "AI" },
-  // 日次バッチ（18:30 JST）とAIレコメンド（19:30 JST）は GitHub Actions の schedule に移した（Worker Cron は使わない）
+  // 日次バッチ（18:30 JST）とAIレコメンド（19:30 JST）は GitHub Actions の schedule に移した。既存の Worker Cron は deploy 時にこの空配列で削除する（triggers 自体を消すと既存スケジュールが残る）
+  "triggers": { "crons": [] },
   "observability": { "enabled": true }
 }
