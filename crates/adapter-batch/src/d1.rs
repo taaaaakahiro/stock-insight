@@ -352,7 +352,7 @@ impl D1Store {
 
     pub async fn edinet_docs_without_dividend_extraction(&self) -> Result<Vec<DocRef>, PortError> {
         let rows = self.query(&Stmt {
-            sql: "SELECT code, doc_kind, doc_id, submitted, period_end FROM edinet_docs WHERE doc_kind='annual' AND COALESCE(dividend_extraction_version, 0) < 1 ORDER BY submitted DESC".into(),
+            sql: "SELECT code, doc_kind, doc_id, submitted, period_end FROM edinet_docs WHERE doc_kind='annual' AND (COALESCE(dividend_extraction_version, 0) < 1 OR financial_quality_json IS NULL) ORDER BY submitted DESC".into(),
             params: vec![],
         }).await?;
         Ok(rows.iter().filter_map(doc_ref).collect())

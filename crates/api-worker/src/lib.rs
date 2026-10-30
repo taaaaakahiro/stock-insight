@@ -620,6 +620,7 @@ async fn recommendations(_req: Request, ctx: RouteContext<AuthUser>) -> Result<R
                         v["rank"] = json!(r.rank);
                         v["grade"] = json!(r.grade.map(|g| g.as_str()));
                         v["reason"] = json!(r.reason);
+                        v["recommendation_quality"] = r.quality_json.as_deref().and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok()).unwrap_or(serde_json::Value::Null);
                         v["themes"] = json!(r.themes);
                         v
                     }).collect::<Vec<_>>(),

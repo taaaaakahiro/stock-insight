@@ -325,6 +325,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0024_dividend_breakdowns",
         include_str!("../../../migrations/0024_dividend_breakdowns.sql"),
     ),
+    (
+        "0025_stock_financial_quality",
+        include_str!("../../../migrations/0025_stock_financial_quality.sql"),
+    ),
 ];
 
 async fn sync_master(args: Args) -> Result<(), String> {
@@ -1084,7 +1088,15 @@ async fn fetch_doc(
         .find(|(s, _)| *s == domain::disclosure::Section::Business)
         .map(|(_, t)| domain::theme::business_excerpt(t))
         .unwrap_or_default();
+    let financial_quality = (doc.kind == domain::disclosure::DocKind::Annual)
+        .then(|| {
+            adapter_batch::edinet::read_csv_from_zip(&zip)
+                .map(|rows| adapter_batch::stock_financial_quality::extract(&rows, doc))
+        })
+        .transpose()
+        .map_err(|e| FetchError::Unreadable(e.0))?;
     let body = serde_json::json!({
+        "financial_quality": financial_quality,
         "source": "EDINET",
         "code": doc.code,
         "kind": doc.kind.as_str(),
@@ -1133,6 +1145,7 @@ async fn fetch_doc(
         }
     );
     Ok(EdinetDoc {
+        financial_quality_json: financial_quality.map(|v| v.to_string()),
         dividend,
         doc: doc.clone(),
         signals,

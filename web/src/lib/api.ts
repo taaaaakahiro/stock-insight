@@ -8,7 +8,34 @@ export type Me = {
   permissions: { manage_themes: boolean; regenerate_recommendations: boolean };
 };
 
+export type RecommendationQuality = {
+  assessment?: {
+    financial_status: "complete" | "partial" | "unknown" | "not_applicable";
+    checked: number;
+    total: number;
+    missing: string[];
+    concerns: string[];
+  };
+  value: number;
+  financial: number;
+  earnings: number;
+  dividend: number;
+  total: number;
+  financial_applicable: boolean;
+  net_cash: number | null;
+  evidence: {
+    doc_id: string;
+    period_end: string;
+    scope: string;
+    cash: number | null;
+    debt: number | null;
+    liabilities: number | null;
+    excerpts?: { text: string; section?: string }[];
+  } | null;
+};
+
 export type StockRow = {
+  recommendation_quality?: RecommendationQuality | null;
   code: string;
   price: number;
   price_date: string;

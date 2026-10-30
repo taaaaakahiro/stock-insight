@@ -21,6 +21,7 @@ pub type DocKey = (String, DocKind);
 /// 取り込んだ書類と、その文章から拾った配当方針の手がかり
 #[derive(Debug, Clone, PartialEq)]
 pub struct EdinetDoc {
+    pub financial_quality_json: Option<String>,
     pub doc: DocRef,
     pub signals: DividendSignals,
     pub dividend: Option<domain::dividend_evidence::DividendEvidence>,

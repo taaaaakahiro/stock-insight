@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { RecommendationAssessment } from "@/components/recommendation-assessment";
 import { Button } from "@/components/ui/button";
 import {
   apiGet,
@@ -157,6 +158,7 @@ function Detail({ detail }: { detail: RecommendationHistoryDetail }) {
                     ) : (
                       <p className="mt-1 text-xs text-muted-foreground">公開レコメンドの対象外</p>
                     )}
+                    <RecommendationAssessment quality={c.stock?.recommendation_quality} />
                     {c.rule_rank !== null && (
                       <p className="mt-1 text-xs">ルール順位 {c.rule_rank}</p>
                     )}

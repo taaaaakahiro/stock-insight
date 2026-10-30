@@ -307,7 +307,7 @@ pub const LATEST_RUN: &str = "SELECT r.run_id, r.started_at, r.finished_at, r.st
 /// AIレコメンドの候補（株式で、バリュー株か「5年連続配当かつ通期黒字」）。最終の絞り込みは domain で行う
 pub fn recommend_candidates() -> String {
     format!(
-        "SELECT {LIST_COLUMNS} {FROM} WHERE COALESCE(s.kind, 'stock') = 'stock' \
+        "SELECT {LIST_COLUMNS}, (SELECT e.financial_quality_json FROM edinet_docs e WHERE e.code=i.code AND e.doc_kind='annual' AND e.submitted <= i.price_date AND e.period_end <= i.price_date AND e.period_end >= date(i.price_date, '-18 months') ORDER BY e.period_end DESC, e.submitted DESC LIMIT 1) AS financial_quality_json {FROM} WHERE COALESCE(s.kind, 'stock') = 'stock' \
          AND i.dividend_yield > 0 \
          AND (i.is_value = 1 OR (i.dividend_every_year = 1 AND i.no_loss_years = 1)) \
          ORDER BY i.code"
@@ -317,7 +317,11 @@ pub fn recommend_candidates() -> String {
 /// 最新日のレコメンド（順位順）に、銘柄名と最新の指標をつける
 pub fn recommendation_rows() -> String {
     format!(
-        "SELECT r.date, r.rank, r.grade, r.reason, r.model, r.created_at, r.source, {LIST_COLUMNS} \
+        "SELECT r.date, r.rank, r.grade, r.reason, r.model, r.created_at, r.source, {LIST_COLUMNS}, (SELECT json_extract(c.snapshot_json, '$.recommendation_quality') \
+          FROM recommendation_candidates c JOIN recommendation_runs run ON run.id=c.run_id \
+          WHERE run.status='published' AND run.price_date=r.date AND run.published_at=r.created_at \
+            AND run.model=r.model AND c.code=r.code AND c.rank=r.rank AND c.reason=r.reason \
+          ORDER BY run.id DESC LIMIT 1) AS quality_json \
          FROM recommendations r JOIN indicators_latest i ON i.code = r.code \
          LEFT JOIN stocks s ON s.code = r.code \
          WHERE r.date = (SELECT MAX(date) FROM recommendations) ORDER BY r.rank"
@@ -533,8 +537,7 @@ mod tests {
 
     #[test]
     fn recommendation_queries_use_the_list_columns() {
-        assert!(recommend_candidates()
-            .contains(&format!("SELECT {LIST_COLUMNS} FROM indicators_latest")));
+        assert!(recommend_candidates().contains(&format!("SELECT {LIST_COLUMNS},")));
         assert!(recommend_candidates().contains("COALESCE(s.kind, 'stock') = 'stock'"));
         assert!(recommendation_rows().contains(LIST_COLUMNS));
         assert!(recommendation_rows().contains("r.grade"));

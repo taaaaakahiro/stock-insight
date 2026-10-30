@@ -41,6 +41,7 @@ impl Source {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecommendationRow {
+    pub quality_json: Option<String>,
     pub rank: u32,
     /// 3段階の評価（評価を付ける前に保存した日の分は None）
     pub grade: Option<Grade>,
@@ -96,13 +97,13 @@ pub struct Attempt<'a> {
     pub manual: bool,
 }
 
-pub const RULE_VERSION: &str = "graded-dividend-theme-v2";
+pub const RULE_VERSION: &str = "graded-dividend-financial-v3";
 
 /// AI（Workers AI）。こちらで選んだ銘柄と根拠を渡して、各銘柄の理由の文章を受け取る
 pub trait Recommender {
     fn model(&self) -> &str;
     fn prompt_version(&self) -> &str {
-        "explain-grade-v1"
+        "explain-grade-financial-v2"
     }
     fn request(&self, picks: &[Explain]) -> String;
     /// 保存済みの入力を使い、解析に失敗しても応答本文を返す。
@@ -118,6 +119,7 @@ pub fn candidate_of(r: &StockRow, themed: bool) -> Candidate {
     let gap = r.policy_gap();
     Candidate {
         code: r.code.clone(),
+        quality_score: quality_score(r).total(),
         dividend_yield: r.dividend_yield,
         is_value: r.is_value,
         yield_cheap: r.valuation == "cheap",
@@ -328,6 +330,34 @@ pub async fn latest<R: RecommendRepository>(
     repo.latest().await
 }
 
+/// Policy scores are computed before truncating the shortlist and before AI.
+pub fn quality_score(r: &StockRow) -> domain::financial_quality::QualityScore {
+    use domain::financial_quality::{general_company, QualityScore};
+    let f = r
+        .financial_quality
+        .as_ref()
+        .filter(|_| general_company(r.sector33.as_deref()));
+    QualityScore {
+        value: if r.per.is_some_and(|p| p.is_finite() && p > 0.0 && p <= 10.0) {
+            2
+        } else {
+            0
+        },
+        financial: f.map_or(0, |f| f.financial_score()),
+        earnings: u8::from(r.no_loss_years == Some(true))
+            + u8::from(r.profit_uptrend == Some(true))
+            + u8::from(f.is_some_and(|f| f.positive_operating_cf_3y == Some(true))),
+        dividend: if r.dividend_cut == Some(true) {
+            0
+        } else {
+            u8::from(
+                r.payout_ratio
+                    .is_some_and(|p| p.is_finite() && p > 0.0 && p <= 0.5),
+            ) + u8::from(f.is_some_and(|f| f.covers_dividend()))
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,6 +512,7 @@ mod tests {
 
     fn row(code: &str, y: f64, value: bool) -> StockRow {
         StockRow {
+            financial_quality: None,
             code: code.into(),
             price: 1000.0,
             price_date: "2026-10-21".into(),
@@ -545,6 +576,33 @@ mod tests {
             attempts: RefCell::new(vec![]),
             failures: RefCell::new(vec![]),
         }
+    }
+
+    #[test]
+    fn quality_policy_boundaries_and_financial_sector() {
+        let mut r = row("1234", 0.03, true);
+        r.per = Some(10.0);
+        r.sector33 = Some("情報・通信業".into());
+        r.financial_quality = Some(domain::financial_quality::FinancialQuality {
+            cash: Some(100.0),
+            debt: Some(0.0),
+            liabilities: Some(10.0),
+            assets: Some(150.0),
+            equity: Some(140.0),
+            ..Default::default()
+        });
+        assert_eq!(quality_score(&r).value, 2);
+        assert_eq!(quality_score(&r).financial, 3);
+        r.per = Some(10.01);
+        assert_eq!(quality_score(&r).value, 0);
+        r.per = Some(-1.0);
+        assert_eq!(quality_score(&r).value, 0);
+        r.per = Some(f64::NAN);
+        assert_eq!(quality_score(&r).value, 0);
+        r.sector33 = Some("銀行業".into());
+        assert_eq!(quality_score(&r).financial, 0);
+        r.dividend_cut = Some(true);
+        assert_eq!(quality_score(&r).dividend, 0);
     }
 
     #[test]

@@ -2,6 +2,7 @@ import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { DocPreview } from "@/components/doc-preview";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
+import { RecommendationAssessment } from "@/components/recommendation-assessment";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -246,6 +247,7 @@ function Item({ r }: { r: Recommendation }) {
             ))}
           </div>
           <p className="text-sm">{r.reason}</p>
+          <RecommendationAssessment quality={r.recommendation_quality} />
           <Basis r={r} />
           <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:grid-cols-4 lg:grid-cols-8">
             {METRICS.map((m) => (

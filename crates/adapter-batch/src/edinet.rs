@@ -369,6 +369,10 @@ pub fn reit_detail_json(r: &ReitRecord) -> Value {
 /// CSVの1行（必要な列だけ）
 #[derive(Debug, Clone, PartialEq)]
 pub struct XbrlRow {
+    pub context: String,
+    pub scope: String,
+    pub unit: String,
+    pub label: String,
     pub element: String,
     pub value: String,
 }
@@ -425,6 +429,10 @@ pub fn parse_xbrl_csv(text: &str) -> Vec<XbrlRow> {
         .skip(1)
         .filter(|cols| cols.len() >= 9)
         .map(|cols| XbrlRow {
+            context: cols[2].clone(),
+            scope: cols[4].clone(),
+            unit: cols[7].clone(),
+            label: cols[1].clone(),
             element: cols[0].clone(),
             value: cols[8].clone(),
         })
