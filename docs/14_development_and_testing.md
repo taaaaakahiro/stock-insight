@@ -65,12 +65,17 @@ pnpm --dir web dev
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+python3 scripts/test_dividend_breakdowns.py
+python3 scripts/test_batch_guard.py
 python3 scripts/test_recommendation_tracking.py
 python3 scripts/test_reit_rag.py
+python3 scripts/test_diagnose_cloudflare.py
+python3 scripts/test_reit_workflow_gate.py
 cargo clippy -p api-worker -p adapter-cf --target wasm32-unknown-unknown -- -D warnings
 pnpm --dir web lint
 pnpm --dir web typecheck
 pnpm --dir web test
+pnpm --dir web build
 ```
 
 本番ビルドは `VITE_CLERK_PUBLISHABLE_KEY` が必要。CIではActions Variableから渡す。CIはPRとmainへのpushで動き、gitleaksで秘密情報も検査する。本番へ自動デプロイしない。

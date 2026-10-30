@@ -12,9 +12,11 @@
 |---|---|
 | build | CLIをビルドし、後続へ渡す |
 | probe（指定時） | J-Quantsの直近日付とEDINET少数書類を取得してSQL成果物へ出力。D1へ保存しない |
-| prepare | 実行判定、マイグレーション、JPX銘柄マスタ同期 |
+| guard | `should-run` で当日の実行可否を判定。probe指定時はスキップ |
+| prepare | マイグレーション、JPX銘柄マスタ同期 |
 | jquants | 株価・分割・財務・予想の同期、`compute --label daily`、`evaluate-recommendations`、原本をR2へ保存 |
 | edinet | 配当方針・事業内容を同期、原本をR2へ保存し不要キーを削除 |
+| refresh-dividends | jquants・edinet完了後に `compute --label dividend` |
 
 prepare後のJ-Quants・EDINET取得は並列。computeが書く `batch_runs` の成功は、EDINET取得・R2アップロードや別workflowのREIT処理の成功を示すものではない。
 
