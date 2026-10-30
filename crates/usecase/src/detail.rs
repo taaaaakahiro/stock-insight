@@ -102,6 +102,7 @@ mod tests {
     impl StockDetailQuery for Fake {
         async fn latest(&self, code: &StockCode) -> Result<Option<StockRow>, PortError> {
             Ok(self.found.then(|| StockRow {
+                financial_quality: None,
                 code: code.as_str().into(),
                 price: 1000.0,
                 price_date: "2026-10-21".into(),

@@ -18,6 +18,7 @@ pub const STRONG_UPSIDE: f64 = 0.2;
 /// 候補の判定に使う指標（一覧の1行から必要な分だけ）。判定できない値は None
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Candidate {
+    pub quality_score: u8,
     pub code: String,
     pub dividend_yield: Option<f64>,
     pub is_value: Option<bool>,
@@ -172,6 +173,7 @@ pub fn select_candidates(rows: &[Candidate]) -> Vec<Candidate> {
     out.sort_by(|a, b| {
         b.grade()
             .cmp(&a.grade())
+            .then_with(|| b.quality_score.cmp(&a.quality_score))
             .then_with(|| b.themed.cmp(&a.themed))
             .then_with(|| b.policy_floor_breach.cmp(&a.policy_floor_breach))
             .then_with(|| {
@@ -371,6 +373,21 @@ mod tests {
             no_loss_years: Some(no_loss),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn financial_quality_orders_within_grade_without_promoting_grade() {
+        let a = Candidate {
+            code: "1111".into(),
+            dividend_yield: Some(0.03),
+            is_value: Some(true),
+            ..Default::default()
+        };
+        let mut b = a.clone();
+        b.code = "2222".into();
+        b.quality_score = 10;
+        assert_eq!(a.grade(), b.grade());
+        assert_eq!(select_candidates(&[a, b])[0].code, "2222");
     }
 
     #[test]

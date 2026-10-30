@@ -408,14 +408,17 @@ pub fn edinet_docs_stmts(docs: &[EdinetDoc], fetched_at: i64) -> Vec<Stmt> {
                     .as_ref()
                     .map_or(Val::Null, |b| Val::Text(b.phrase.clone())),
                 Val::Int(1),
+                e.financial_quality_json
+                    .clone()
+                    .map_or(Val::Null, Val::Text),
             ]
         })
         .collect();
     multi_row(
         "INSERT INTO edinet_docs (code, doc_kind, doc_id, submitted, period_end, r2_key, progressive_dividend, \
          no_dividend_cut, dividend_raise, doe_target, payout_target, phrases, fetched_at, \
-         doe_floor, doe_goal, doe_phrase, payout_floor, payout_goal, payout_phrase, business_text, dividend_total, dividend_special, dividend_commemorative, dividend_phrase, dividend_extraction_version)",
-        25,
+         doe_floor, doe_goal, doe_phrase, payout_floor, payout_goal, payout_phrase, business_text, dividend_total, dividend_special, dividend_commemorative, dividend_phrase, dividend_extraction_version, financial_quality_json)",
+        26,
         "ON CONFLICT(code, doc_kind) DO UPDATE SET doc_id = excluded.doc_id, submitted = excluded.submitted, \
          period_end = excluded.period_end, r2_key = excluded.r2_key, \
          progressive_dividend = excluded.progressive_dividend, no_dividend_cut = excluded.no_dividend_cut, \
@@ -425,7 +428,7 @@ pub fn edinet_docs_stmts(docs: &[EdinetDoc], fetched_at: i64) -> Vec<Stmt> {
          payout_floor = excluded.payout_floor, payout_goal = excluded.payout_goal, \
          payout_phrase = excluded.payout_phrase, business_text = excluded.business_text, dividend_total = excluded.dividend_total, \
          dividend_special = excluded.dividend_special, dividend_commemorative = excluded.dividend_commemorative, \
-         dividend_phrase = excluded.dividend_phrase, dividend_extraction_version = excluded.dividend_extraction_version",
+         dividend_phrase = excluded.dividend_phrase, dividend_extraction_version = excluded.dividend_extraction_version, financial_quality_json = excluded.financial_quality_json",
         rows,
         usize::MAX,
     )
@@ -672,6 +675,7 @@ mod tests {
         use domain::Date;
         use usecase::edinet::DocRef;
         let doc = EdinetDoc {
+            financial_quality_json: None,
             dividend: None,
             doc: DocRef {
                 code: "7203".into(),
@@ -693,7 +697,7 @@ mod tests {
             business_text: "当社グループは自動車の製造販売を…".into(),
         };
         let stmts = edinet_docs_stmts(&vec![doc; 8], 1);
-        assert_eq!(stmts.len(), 2, "25列なので1文4行まで");
+        assert_eq!(stmts.len(), 3, "26列なので1文3行まで");
         let p = &stmts[0].params;
         assert_eq!(p[5], Val::Text("edinet/7203/annual.json.gz".into()));
         assert_eq!(p[6], Val::Int(1));

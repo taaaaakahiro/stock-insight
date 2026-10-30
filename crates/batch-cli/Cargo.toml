@@ -8,5 +8,7 @@ license.workspace = true
 domain = { path = "../domain" }
 usecase = { path = "../usecase" }
 adapter-batch = { path = "../adapter-batch" }
+adapter-cf = { path = "../adapter-cf" }
+serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }

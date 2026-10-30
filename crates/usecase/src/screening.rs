@@ -7,6 +7,7 @@ use domain::screening::{ScreeningFilter, PAGE_SIZE};
 /// 一覧の1行（indicators_latest の1行）。比率は小数（0.035 = 3.5%）
 #[derive(Debug, Clone, PartialEq)]
 pub struct StockRow {
+    pub financial_quality: Option<domain::financial_quality::FinancialQuality>,
     pub code: String,
     pub price: f64,
     pub price_date: String,

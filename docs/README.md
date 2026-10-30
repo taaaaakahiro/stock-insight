@@ -45,3 +45,5 @@
 | 売り時サイン | ポートフォリオの固定条件による表示。自動売買は行わない |
 
 - [通常配当と利回り](18_ordinary_dividends.md) — J-Quants・EDINETの照合と未確認時の扱い
+
+- [株式レコメンドの財務加点](19_stock_recommendation_quality.md)

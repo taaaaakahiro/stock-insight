@@ -47,6 +47,8 @@ fn err(e: worker::Error) -> PortError {
 /// indicators_latest の行。SQLite の真偽値は 0/1 の整数
 #[derive(Deserialize)]
 pub(crate) struct Row {
+    #[serde(default)]
+    financial_quality_json: Option<String>,
     code: String,
     price: f64,
     price_date: String,
@@ -145,6 +147,10 @@ impl From<Row> for StockRow {
             })
             .flatten();
         StockRow {
+            financial_quality: r
+                .financial_quality_json
+                .as_deref()
+                .and_then(crate::recommend::parse_financial_quality),
             code: r.code,
             price: r.price,
             price_date: r.price_date,

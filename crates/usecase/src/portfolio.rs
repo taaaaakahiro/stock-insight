@@ -252,6 +252,7 @@ mod tests {
 
     fn row(code: &str, payout: f64, valuation: &str) -> StockRow {
         StockRow {
+            financial_quality: None,
             code: code.into(),
             price: 1000.0,
             price_date: "2026-10-21".into(),

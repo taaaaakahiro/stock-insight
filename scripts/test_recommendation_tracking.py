@@ -28,6 +28,18 @@ class TrackingSql(unittest.TestCase):
         self.migration = (ROOT / "migrations/0021_recommendation_tracking.sql").read_text()
         self.db.executescript(self.migration)
 
+    def test_latest_assessment_comes_from_matching_published_snapshot(self):
+        query_source = (ROOT / "crates/adapter-cf/src/query.rs").read_text().replace("\\\n", "")
+        expr = re.search(r"\(SELECT json_extract\(c.snapshot_json, '\$\.recommendation_quality'\).*?LIMIT 1\)", query_source, re.S)[0]
+        run = self.begin()
+        self.db.execute("UPDATE recommendation_candidates SET snapshot_json=? WHERE run_id=?", (json.dumps({"recommendation_quality": {"total": 7}}), run))
+        self.publish(run)
+        self.begin(price=999)  # pending newer data must not change the published assessment
+        query = f"SELECT {expr} FROM recommendations r WHERE r.date='2026-10-23'"
+        self.assertEqual(json.loads(self.db.execute(query).fetchone()[0]), {"total": 7})
+        self.db.execute("UPDATE recommendation_candidates SET snapshot_json='{}' WHERE run_id=?", (run,))
+        self.assertIsNone(self.db.execute(query).fetchone()[0])
+
     def begin(self, price=100, date="2026-10-23"):
         with self.db:
             run = self.db.execute(sql("INSERT INTO recommendation_runs (price_date"),

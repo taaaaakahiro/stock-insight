@@ -41,6 +41,8 @@ struct RunRow {
 /// レコメンド側の列。指標の列は同じ結果を Row としても読む
 #[derive(Deserialize)]
 struct RecoRow {
+    #[serde(default)]
+    quality_json: Option<String>,
     date: String,
     rank: i64,
     grade: Option<String>,
@@ -150,6 +152,7 @@ impl RecommendRepository for D1Recommendations {
             .enumerate()
             .map(|(i, r)| {
                 let mut stock = row_json(r);
+                stock["recommendation_quality"] = crate::recommend::quality_json(r);
                 stock["themes"] = json!(a
                     .themes
                     .iter()
@@ -260,6 +263,7 @@ impl RecommendRepository for D1Recommendations {
                 .map(|(m, s)| {
                     let stock = StockRow::from(s);
                     RecommendationRow {
+                        quality_json: m.quality_json.clone(),
                         rank: m.rank as u32,
                         grade: m.grade.as_deref().and_then(Grade::parse),
                         reason: m.reason.clone(),
