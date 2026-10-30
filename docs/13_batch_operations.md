@@ -67,6 +67,8 @@ EDINETの原本は種類ごとに上書きし、削除対象キーをmanifestへ
 
 停止する場合はGitHub側のscheduleを対象にする。アプリの管理者権限だけではバッチ・基盤を操作できない。
 
+`generate-recommendations --force` は画面の「作り直し」と同じ regenerate 経路で、生成済みでも最新バッチの株価日で結果を入れ替える（手動扱い）。recommend-batch workflow の `force` 入力でも指定できる。
+
 推薦追跡はcompute成功後に実行する。株価・財務の変更を追記し、既存の公開推薦の成績と比較レポートを更新する。価格基準日・欠損・再実行の扱いは[成績仕様](16_recommendation_evaluation.md)を参照。
 
 ## REIT専用workflow

@@ -7,6 +7,10 @@ name: recommend-batch
 # （docs/06_secrets_and_repository.md）。
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: "true なら生成済みでも最新バッチの株価日で作り直す（regenerate 経路、manual 扱い）"
+        default: "false"
   schedule:
     # 平日 10:30 UTC = 19:30 JST
     - cron: "30 10 * * 1-5"
@@ -49,4 +53,4 @@ jobs:
         with:
           name: batch-cli
       - run: chmod +x batch-cli
-      - run: ./batch-cli generate-recommendations
+      - run: ./batch-cli generate-recommendations ${{ github.event.inputs.force == 'true' && '--force' || '' }}
