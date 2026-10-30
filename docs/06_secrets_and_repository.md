@@ -7,10 +7,9 @@
 | `CLERK_ISSUER` | Worker vars | JWT issuer・JWKS取得先 |
 | `CLERK_API_URL` | Worker vars | Clerk Backend API。既定 `https://api.clerk.com/v1` |
 | `AUTHORIZED_PARTIES` | Worker vars | 許可するJWTのazp（カンマ区切り） |
-| `GITHUB_REPO` | Worker vars | 日次バッチを起動するリポジトリ |
 | `CLERK_SECRET_KEY` | Worker Secret | ユーザー情報の取得 |
 | `ADMIN_NOTIFY_EMAIL` | Worker Secret | 管理者の主メールアドレス。現行ではメール送信には使わない |
-| `GITHUB_DISPATCH_TOKEN` | Worker Secret | 対象リポジトリのActions起動 |
+| `GITHUB_DISPATCH_TOKEN` | Worker Secret | （未使用。バッチ起動のActions移管に伴い削除してよい） |
 | `CLOUDFLARE_ACCOUNT_ID` | Actions Secret / CLI環境 | D1・R2のアカウント |
 | `D1_DATABASE_ID` | Actions Secret / CLI環境 | バッチのD1接続先 |
 | `CLOUDFLARE_API_TOKEN` | Actions Secret / CLI環境 | バッチのD1編集・R2操作・Workers AI Read/Edit（両方）。意味検索使用時はVectorizeも必要 |

@@ -41,12 +41,12 @@ REITはこのランキングに含めない。日次取得後に別処理で分�
 
 | 起動 | 条件・更新 |
 |---|---|
-| 平日19:30 JSTのCron | 最新バッチが成功、終了がJST当日、株価日付あり、同じ株価日の結果なし |
+| 平日19:30 JSTのActionsバッチ | 最新バッチが成功、終了がJST当日、株価日付あり、同じ株価日の結果なし |
 | 管理者の作り直し | 最新バッチが成功、株価日付・候補あり。同日の既存結果やバッチ終了日では拒否しない |
 
 手動再生成に日次回数上限はない。前提不成立は409、AI・検証・保存の失敗は500。保存日は株価の日付。保存列は順位・コード・説明・モデル・生成時刻・評価・生成元。最新画面の指標とテーマ名は現在値を結合する。履歴画面では生成時点のスナップショットを表示する。
 
-実装: [生成usecase](../crates/usecase/src/recommend.rs)、[保存](../crates/adapter-cf/src/d1_recommend.rs)。
+実装: [生成usecase](../crates/usecase/src/recommend.rs)、保存（[Worker側](../crates/adapter-cf/src/d1_recommend.rs)・[Actions側](../crates/adapter-batch/src/d1_recommend.rs)）。
 
 ## テーマ
 

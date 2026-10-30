@@ -6,9 +6,11 @@ version = 4
 name = "adapter-batch"
 version = "0.3.16"
 dependencies = [
+ "adapter-cf",
  "domain",
  "flate2",
  "reqwest",
+ "serde",
  "serde_json",
  "sha2",
  "tokio",
