@@ -248,6 +248,29 @@ impl D1Recommendations<'_> {
                 params: vec![text(response), int(now), int(id)],
             })
             .await?;
+        // 上の UPDATE が no-op だったか確認する。同日に先に公開された run があると
+        // この run は published にならず、そのままでは pending で宙に浮くうえ
+        // 「保存した」ように見えてしまう。理由を付けて failed にしてからエラーを返す
+        let rows = self
+            .store
+            .query(&Stmt {
+                sql: "SELECT status FROM recommendation_runs WHERE id=?".to_string(),
+                params: vec![int(id)],
+            })
+            .await?;
+        if rows.first().and_then(|r| r["status"].as_str()) != Some("published") {
+            self.store
+                .exec(&Stmt {
+                    sql: "UPDATE recommendation_runs SET status='failed',error='superseded by another published run' \
+                          WHERE id=? AND status='pending'"
+                        .to_string(),
+                    params: vec![int(id)],
+                })
+                .await?;
+            return Err(PortError(
+                "superseded: another run already published for the date".into(),
+            ));
+        }
         // 最新表示の互換キャッシュだけを更新する。履歴には DELETE を行わない。
         self.store
             .exec(&Stmt {
@@ -417,6 +440,8 @@ impl RecommendRepository for D1Recommendations<'_> {
         loop {
             match self.publish_once(id, response, picks).await {
                 Ok(()) => return Ok(()),
+                // 同時実行で先に公開された場合は状態が確定しているので再試行しない
+                Err(e) if e.0.starts_with("superseded") => return Err(e),
                 Err(e) if attempt < PUBLISH_RETRIES => {
                     attempt += 1;
                     eprintln!("d1: publish: {e}; retry {attempt}/{PUBLISH_RETRIES}");
