@@ -50,7 +50,7 @@ flowchart LR
 |---|---|---|---|
 | Worker Cron | 平日09:30 | 平日18:30 | `daily-batch` をmainに対して起動 |
 | GitHub schedule | 平日09:45 | 平日18:45 | 日次取得の予備起動 |
-| Worker Cron | 平日12:00 | 平日19:30 | 条件を満たす日のAIレコメンド生成 |
+| Worker Cron | 平日10:30 | 平日19:30 | 条件を満たす日のAIレコメンド生成 |
 
 祝日・実行済みの判定は日次バッチ側で行う。AI側は最新バッチの状態・終了日・既存結果を確認する。[バッチ運用](13_batch_operations.md)と[AI仕様](12_recommendations_and_themes.md)を参照。
 

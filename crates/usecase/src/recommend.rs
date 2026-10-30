@@ -23,7 +23,7 @@ pub struct Recommendations {
     pub rows: Vec<RecommendationRow>,
 }
 
-/// 保存の元: 21:00 の Cron か、画面のボタン
+/// 保存の元: 19:30 JST の Cron か、画面のボタン
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     Cron,
@@ -171,7 +171,7 @@ pub enum Outcome {
     },
 }
 
-/// その日のバッチが成功していて、まだ結果がなければ生成して保存する（21:00 の Cron）
+/// その日のバッチが成功していて、まだ結果がなければ生成して保存する（19:30 JST の Cron）
 pub async fn generate<R: RecommendRepository, A: Recommender>(
     repo: &R,
     ai: &A,
