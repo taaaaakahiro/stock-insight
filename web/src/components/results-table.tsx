@@ -47,6 +47,7 @@ export function DividendAmount({ r }: { r: StockRow }) {
         </span>
       )}
       {r.kind === "stock" &&
+        r.dividend_basis !== "forecast" &&
         ((r.dividend_special ?? 0) > 0 || (r.dividend_commemorative ?? 0) > 0) && (
           <span
             className="ml-1 text-[10px] text-muted-foreground"

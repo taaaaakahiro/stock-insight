@@ -137,6 +137,14 @@ impl DividendBreakdown {
 }
 
 impl Dividend {
+    /// 利回り用配当。会社予想は特別・記念配当を含む年間総額を使う。
+    pub fn yield_amount(&self) -> Option<f64> {
+        if self.forecast {
+            return (self.annual.is_finite() && self.annual >= 0.0).then_some(self.annual);
+        }
+        self.ordinary()
+    }
+
     pub fn ordinary(&self) -> Option<f64> {
         match &self.breakdown {
             Some(b) => b.ordinary(self.annual),

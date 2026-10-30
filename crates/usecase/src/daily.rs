@@ -67,10 +67,8 @@ fn annual_as_period(a: &StoredAnnual) -> Option<CumulativePeriod> {
 }
 
 /// 利回りに使う配当の移り変わり（新しい順）。実績・予想のどちらかの開示があった日ごとに、
-/// 確認済みの通常配当予想を優先する。予想の内訳未確認・予想未定なら最新実績を使い、実績もなければ予想合計を参考にする
+/// 会社予想の年間配当総額を優先する。予想未定なら最新実績を使う
 fn dividend_series(actuals: &[Dividend], forecasts: &[StoredForecast]) -> Vec<Dividend> {
-    let mut latest: Vec<&StoredForecast> = forecasts.iter().collect();
-    latest.sort_by(|a, b| (a.disclosed, &a.doc_id).cmp(&(b.disclosed, &b.doc_id)));
     let mut days: Vec<Date> = actuals
         .iter()
         .map(|a| a.effective)
@@ -86,19 +84,14 @@ fn dividend_series(actuals: &[Dividend], forecasts: &[StoredForecast]) -> Vec<Di
     days.into_iter()
         .rev()
         .filter_map(|day| {
-            let forecast = latest
+            // 過年度の訂正開示で今期予想を上書きしない。同じ対象年度では最新開示を使う。
+            // 最新年度が未定の場合も、過年度の予想に戻らず実績に切り替える。
+            let forecast = forecasts
                 .iter()
-                .rev()
-                .find(|f| f.disclosed <= day)
+                .filter(|f| f.disclosed <= day)
+                .max_by_key(|f| (f.fiscal_year_end, f.disclosed, &f.doc_id))
                 .filter(|f| f.dps.is_some());
             let actual = domain::dividend_at(actuals, day);
-            let forecast = forecast.filter(|f| {
-                f.dps == Some(0.0)
-                    || f.breakdown
-                        .as_ref()
-                        .is_some_and(|b| b.known_since.is_none_or(|known| known <= day))
-                    || actual.is_none()
-            });
             match forecast {
                 Some(f) => Some(Dividend {
                     effective: day,
@@ -538,6 +531,46 @@ mod tests {
     }
 
     #[test]
+    fn march_company_uses_2027_forecast_despite_later_prior_year_correction() {
+        let annuals = [annual("2026-03-31", Some("2026-05-08"), 60.0, 100.0)];
+        let mut forecasts = vec![
+            StoredForecast {
+                fiscal_year_end: Some(d("2027-03-31")),
+                ..forecast("2026-05-08", Some(80.0))
+            },
+            StoredForecast {
+                fiscal_year_end: Some(d("2027-03-31")),
+                ..forecast("2026-08-10", Some(90.0))
+            },
+            StoredForecast {
+                fiscal_year_end: Some(d("2026-03-31")),
+                ..forecast("2026-10-01", Some(65.0))
+            },
+        ];
+        let bars = vec![PriceBar {
+            date: d("2026-10-29"),
+            close: 2000.0,
+        }];
+        let (m, _, _, _) = build_inputs(bars.clone(), &annuals, &forecasts, &[], &[]);
+        let i = compute(&m, None, &[]).unwrap();
+        assert_eq!(i.dividend_yield, Some(90.0 / 2000.0));
+        assert_eq!(i.dividend_is_forecast, Some(true));
+        assert_eq!(
+            domain::annual_dividend_at(&m.dividends, d("2026-07-01")),
+            Some(80.0)
+        );
+
+        forecasts.push(StoredForecast {
+            fiscal_year_end: Some(d("2027-03-31")),
+            ..forecast("2026-10-15", None)
+        });
+        let (m, _, _, _) = build_inputs(bars, &annuals, &forecasts, &[], &[]);
+        let i = compute(&m, None, &[]).unwrap();
+        assert_eq!(i.dividend_ttm, 60.0);
+        assert_eq!(i.dividend_is_forecast, Some(false));
+    }
+
+    #[test]
     fn dividend_of_the_year_before_a_split_is_adjusted() {
         // SPK（7466）: 2026-03-30 に1:2の分割（効力は 4/1）。2026/03 期の配当73円は分割前の株に払い、
         // 2026-05-08 の決算短信では EPS だけ分割後に直して開示している
@@ -589,7 +622,7 @@ mod tests {
         assert!((i.payout_ratio.unwrap() - 36.5 / 133.35).abs() < 1e-9);
     }
     #[test]
-    fn ordinary_yield_separates_special_and_commemorative_and_adjusts_splits() {
+    fn forecast_yield_uses_total_including_special_and_adjusts_splits() {
         let mut f = forecast("2026-08-13", Some(475.0));
         f.breakdown = Some(domain::DividendBreakdown {
             special: 415.0,
@@ -607,8 +640,8 @@ mod tests {
         assert_eq!(i.dividend_total, Some(237.5));
         assert_eq!(i.dividend_special, Some(207.5));
         assert_eq!(i.dividend_commemorative, Some(0.0));
-        assert_eq!(i.dividend_ttm, 30.0);
-        assert!((i.dividend_yield.unwrap() - 60.0 / 2814.0).abs() < 1e-10);
+        assert_eq!(i.dividend_ttm, 237.5);
+        assert!((i.dividend_yield.unwrap() - 475.0 / 2814.0).abs() < 1e-10);
         assert_eq!(
             i.dividend_source.as_deref(),
             Some("https://example.com/disclosure")
@@ -616,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_forecast_breakdown_falls_back_to_actual() {
+    fn unknown_forecast_breakdown_still_uses_forecast() {
         let a = annual("2026-03-31", Some("2026-05-10"), 40.0, 100.0);
         let mut f = forecast("2026-08-13", Some(475.0));
         f.breakdown = None;
@@ -632,9 +665,9 @@ mod tests {
             &[],
         );
         let i = compute(&m, fin.as_ref(), &q).unwrap();
-        assert_eq!(i.dividend_yield, Some(40.0 / 2814.0));
-        assert_eq!(i.dividend_total, Some(40.0));
-        assert_eq!(i.dividend_is_forecast, Some(false));
+        assert_eq!(i.dividend_yield, Some(475.0 / 2814.0));
+        assert_eq!(i.dividend_total, Some(475.0));
+        assert_eq!(i.dividend_is_forecast, Some(true));
         assert!(!domain::yield_series(&m).is_empty());
         // 予想自体が未定なら実績の通常配当に戻す。
         f.dps = None;
@@ -682,7 +715,7 @@ mod tests {
             source: "https://example.com/edinet".into(),
             known_since: Some(d("2026-06-20")),
         });
-        let mut f = forecast("2026-05-10", Some(120.0));
+        let mut f = forecast("2026-05-10", None);
         f.breakdown = None;
         let bars = vec![PriceBar {
             date: d("2026-07-01"),
@@ -715,9 +748,9 @@ mod tests {
         }];
         let (m, _, _, _) = build_inputs(bars.clone(), &[a], std::slice::from_ref(&f), &[], &[]);
         let i = compute(&m, None, &[]).unwrap();
-        assert_eq!(i.dividend_yield, Some(0.04));
+        assert_eq!(i.dividend_yield, Some(0.05));
         assert_eq!(i.dividend_special, None);
-        assert_eq!(i.dividend_is_forecast, Some(false));
+        assert_eq!(i.dividend_is_forecast, Some(true));
         let (m, _, _, _) = build_inputs(bars, &[], &[f], &[], &[]);
         let i = compute(&m, None, &[]).unwrap();
         assert_eq!(i.dividend_yield, Some(0.05));

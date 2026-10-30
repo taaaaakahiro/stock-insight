@@ -100,7 +100,7 @@ const GROWTH_TIPS: Partial<Record<MetricKey, string>> = {
 /** 指標の説明（あるものだけ）。InfoTip に出す */
 export function metricTip(key: MetricKey, kind: Kind): string | undefined {
   if (kind === "stock" && (key === "dividend_ttm" || key === "dividend_yield")) {
-    return "通常配当の予想が確認できれば予想を使い、内訳が不明なら実績を優先します。EDINETで確認できた特別・記念配当を除外し、実績の内訳も不明な場合は合計額で計算して「内訳未確認」と表示します。実績がない場合は予想合計を参考にします。";
+    return "会社予想の年間配当総額（特別・記念配当を含む）÷ 株価で計算します。開示済みの最新対象年度の予想を使用します。予想が未定の場合は実績を使い、EDINETで確認できた特別・記念配当を除外します。";
   }
   if (key === "yield_percentile") return yieldPercentileTip(kind);
   return REIT_TIPS[key] ?? DOE_TIPS[key] ?? GROWTH_TIPS[key];
