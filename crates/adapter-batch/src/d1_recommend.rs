@@ -233,12 +233,17 @@ impl D1Recommendations<'_> {
                 })
                 .await?;
         }
+        // scheduled 実行は同日に公開済みの run（手動の作り直しなど）があると公開しない。
+        // 後続の DELETE/INSERT はこの run が published でないと何もしないため、
+        // 同時実行された手動公開の内容を消さない。manual は従来どおり上書き可能
         self.store
             .exec(&Stmt {
                 sql: "UPDATE recommendation_runs SET status='published',response_json=?,published_at=?, \
                       is_primary=CASE WHEN EXISTS (SELECT 1 FROM recommendation_runs old \
                         WHERE old.price_date=recommendation_runs.price_date AND old.is_primary=1) THEN 0 ELSE 1 END \
-                      WHERE id=? AND status='pending'"
+                      WHERE id=? AND status='pending' \
+                      AND (trigger_mode='manual' OR NOT EXISTS (SELECT 1 FROM recommendation_runs pub \
+                        WHERE pub.price_date=recommendation_runs.price_date AND pub.status='published'))"
                     .to_string(),
                 params: vec![text(response), int(now), int(id)],
             })
