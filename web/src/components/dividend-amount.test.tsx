@@ -14,11 +14,11 @@ describe("ordinary dividend display", () => {
     expect(html).toContain("475");
     expect(html).toContain("実績");
   });
-  it("shows the ordinary amount and separates extraordinary dividends", () => {
+  it("shows the company forecast total without claiming extraordinary dividends are excluded", () => {
     const html = renderToStaticMarkup(
       <DividendAmount
         r={row({
-          dividend: 60,
+          dividend: 475,
           dividend_total: 475,
           dividend_special: 415,
           dividend_commemorative: 0,
@@ -26,9 +26,8 @@ describe("ordinary dividend display", () => {
         })}
       />,
     );
-    expect(html).toContain("60");
-    expect(html).toContain("415");
-    expect(html).toContain("臨時配当除外");
+    expect(html).toContain("475");
+    expect(html).not.toContain("臨時配当除外");
     expect(html).toContain("予想");
   });
   it("keeps known zero distinct from unknown and labels fund distributions separately", () => {

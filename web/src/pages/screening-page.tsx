@@ -188,7 +188,7 @@ export function ScreeningPage() {
 
           {filters.kind === "stock" && (
             <p className="mb-3 text-xs text-muted-foreground">
-              利回りは確認できた特別・記念配当を除いて計算します。予想の内訳が不明なら実績を優先し、実績も内訳不明の場合は合計額を使って「内訳未確認」と表示します。
+              利回りは会社予想の年間配当総額を株価で割って計算します。予想が未定の場合は実績を使い、確認できた特別・記念配当を除きます。
             </p>
           )}
           {conditions.length > 0 && (

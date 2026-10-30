@@ -101,7 +101,7 @@ pub fn dividend_at(divs: &[Dividend], date: Date) -> Option<Dividend> {
 }
 
 pub fn annual_dividend_at(divs: &[Dividend], date: Date) -> Option<f64> {
-    dividend_at(divs, date).and_then(|d| d.ordinary())
+    dividend_at(divs, date).and_then(|d| d.yield_amount())
 }
 
 /// 週1点（5営業日ごと）の過去の配当利回りを、日付付きで新しい順に並べる（詳細ページのグラフ用）。
@@ -214,7 +214,7 @@ pub fn compute(
     let last = *market.bars.last().ok_or(IndicatorError::NoPrice)?;
     let price = last.close;
     let current = dividend_at(&market.dividends, last.date);
-    let annual = current.as_ref().and_then(|d| d.ordinary());
+    let annual = current.as_ref().and_then(|d| d.yield_amount());
     let ttm = annual.unwrap_or(0.0);
     let dividend_yield = annual.filter(|_| price > 0.0).map(|d| d / price);
     let yield_percentile = dividend_yield.and_then(|y| percentile_rank(&yield_history(market), y));
