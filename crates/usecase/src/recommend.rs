@@ -1,12 +1,12 @@
-//! AIレコメンド（F7）: 日次バッチのあとにルールで候補を絞り、3段階の評価と順位をこちらで決め、
-//! Workers AI に各銘柄の理由だけを書かせて保存する。答えのうち壊れた分（理由がない・空など）は捨て、
-//! 正しい分が MIN_PICKS に届かなければ保存しない。
+//! AIレコメンド（F7）: 日次バッチのあとにルールで候補を絞って3段階の評価を付け、上位 RERANK_POOL 件を
+//! Workers AI に渡し、AI が選んで並べ替えた順に理由を付けさせて保存する。候補外のコード・壊れた分
+//! （理由がない・空など）は捨て、正しい分が MIN_PICKS に届かなければ保存しない。
 
 use crate::screening::{DataStatus, StockRow};
 use crate::PortError;
 use domain::dividend_policy::{PolicyGap, PolicyLevel};
 use domain::recommend::{
-    select_candidates, validate_picks, Candidate, Grade, Pick, RawPick, PICK_COUNT,
+    select_candidates, validate_reranked, Candidate, Grade, Pick, RawPick, RERANK_POOL,
 };
 use domain::Date;
 
@@ -51,9 +51,10 @@ pub struct RecommendationRow {
     pub stock: StockRow,
 }
 
-/// AI に理由を書かせる1銘柄: こちらで決めた順位・評価と、その根拠
+/// AI に並べ替えと理由を依頼する1銘柄: ルールで決めた暫定順位・評価と、その根拠
 #[derive(Debug, Clone, PartialEq)]
 pub struct Explain {
+    /// ルール順位（AI が参照する暫定の並び。公開順位は AI の返答順）
     pub rank: u32,
     pub grade: Grade,
     pub stock: StockRow,
@@ -99,11 +100,12 @@ pub struct Attempt<'a> {
 
 pub const RULE_VERSION: &str = "graded-dividend-financial-v3";
 
-/// AI（Workers AI）。こちらで選んだ銘柄と根拠を渡して、各銘柄の理由の文章を受け取る
+/// AI（Workers AI）。ルールで絞った候補と暫定順位・評価・根拠を渡して、AI が選んで並べ替えた
+/// 銘柄ごとの理由の文章を受け取る。返答の並びが公開順位になる
 pub trait Recommender {
     fn model(&self) -> &str;
     fn prompt_version(&self) -> &str {
-        "explain-grade-financial-v2"
+        "explain-grade-financial-v3"
     }
     fn request(&self, picks: &[Explain]) -> String;
     /// 保存済みの入力を使い、解析に失敗しても応答本文を返す。
@@ -141,8 +143,8 @@ pub fn candidate_of(r: &StockRow, themed: bool) -> Candidate {
     }
 }
 
-/// ルールによる候補の絞り込みと順位づけ（株式だけ）。先頭から PICK_COUNT 件が画面に出る分。
-/// `themes` は (コード, テーマ名) の列
+/// ルールによる候補の絞り込みと順位づけ（株式だけ）。先頭から RERANK_POOL 件を AI の並べ替え
+/// 母集団にする（画面に出るのはその中から AI が選んだ PICK_COUNT 件まで）。`themes` は (コード, テーマ名) の列
 pub fn candidates_of(rows: &[StockRow], themes: &[(String, String)]) -> Vec<Candidate> {
     let all: Vec<Candidate> = rows
         .iter()
@@ -240,7 +242,8 @@ pub async fn regenerate<R: RecommendRepository, A: Recommender>(
     build_and_save(repo, ai, &date, &run.run_id, now, Source::Manual).await
 }
 
-/// 候補を絞って順位と評価を決め、AI に理由を書かせて保存する（generate と regenerate の共通部分）
+/// 候補を絞って評価を付け、上位 RERANK_POOL 件を AI に渡して並べ替えと理由を受け、保存する
+/// （generate と regenerate の共通部分）。公開順位は AI の返答順、評価はルールのまま
 async fn build_and_save<R: RecommendRepository, A: Recommender>(
     repo: &R,
     ai: &A,
@@ -261,7 +264,7 @@ async fn build_and_save<R: RecommendRepository, A: Recommender>(
         .take(50)
         .filter_map(|c| rows.iter().find(|r| r.code == c.code).cloned())
         .collect();
-    picks.truncate(PICK_COUNT);
+    picks.truncate(RERANK_POOL);
     let codes: Vec<String> = picks.iter().map(|c| c.code.clone()).collect();
     let phrases = repo.policy_phrases(&codes).await?;
     let explains: Vec<Explain> = picks
@@ -305,7 +308,7 @@ async fn build_and_save<R: RecommendRepository, A: Recommender>(
         }
     };
     let v = match raw
-        .and_then(|raw| validate_picks(&raw, &picks).map_err(|e| PortError(format!("ai: {e}"))))
+        .and_then(|raw| validate_reranked(&raw, &picks).map_err(|e| PortError(format!("ai: {e}"))))
     {
         Ok(value) => value,
         Err(e) => {
@@ -635,7 +638,11 @@ mod tests {
         assert_eq!(saved[0].2[1].grade, Grade::Watch);
 
         let seen = ai.seen.borrow();
-        assert_eq!(seen.len(), 10, "画面に出す10件だけ AI に渡す");
+        assert_eq!(
+            seen.len(),
+            RERANK_POOL,
+            "並べ替えの母集団として上位20件を AI に渡す"
+        );
         assert_eq!(seen[0].rank, 1);
         assert_eq!(seen[0].gap.as_ref().map(|g| g.key()), Some("doe_floor"));
         assert_eq!(seen[0].phrases, vec!["DOE3.5%を下限とします。".to_string()]);
@@ -643,8 +650,8 @@ mod tests {
         assert!(seen[0].themes.is_empty());
         assert_eq!(
             repo.asked_phrases.borrow().len(),
-            10,
-            "方針の文は選んだ銘柄の分だけ読む"
+            RERANK_POOL,
+            "方針の文は母集団の銘柄の分だけ読む"
         );
     }
 
@@ -686,31 +693,41 @@ mod tests {
     }
 
     #[test]
-    fn saves_the_valid_picks_when_some_are_broken() {
+    fn ai_reranks_and_selects_within_the_rule_pool() {
         let repo = fake(run("succeeded", NOW - 3600), 30);
         let pick = |code: &str| RawPick {
             code: code.into(),
             reason: format!("{code} は割安"),
         };
-        // 同じ評価なら条件を多く満たす順（偶数コードがバリュー）→ コード順なので、5000, 5002, …, 5018
-        let mut answer: Vec<RawPick> = (0..10)
-            .map(|i| pick(&format!("{}", 5000 + 2 * i)))
-            .collect();
-        answer[4] = pick("5000"); // 5008 の理由がなく、5000 が2回（2回目は無視）
-        answer[7] = pick("9999"); // 5014 の理由がなく、候補にない銘柄の理由（無視）
+        // AI は母集団（ルール上位20件。偶数コードがバリューで先に並ぶ）から選び・並べ替えて返す。
+        // 母集団の最後尾 5009 を先頭に、ルール上位の 5000 は選ばない、候補外は捨てる
+        let mut answer: Vec<RawPick> = vec![pick("5009")];
+        answer.extend(
+            [
+                "5002", "5004", "5006", "5008", "5010", "5012", "5014", "5016",
+            ]
+            .iter()
+            .map(|c| pick(c)),
+        );
+        answer.push(pick("9999"));
         let out = block_on(generate(&repo, &FixedAi(answer), NOW)).unwrap();
         assert_eq!(
             out,
             Outcome::Saved {
                 date: "2026-10-21".into(),
-                picks: 8,
-                dropped: vec!["no reason for 5008".into(), "no reason for 5014".into()],
+                picks: 9,
+                dropped: vec!["not a candidate: 9999".into()],
             }
         );
         let saved = repo.saved.borrow();
-        assert_eq!(saved[0].2.len(), 8);
-        assert_eq!(saved[0].2[7].rank, 8);
-        assert_eq!(saved[0].2[7].code, "5018");
+        assert_eq!(saved[0].2.len(), 9);
+        assert_eq!(saved[0].2[0].rank, 1);
+        assert_eq!(saved[0].2[0].code, "5009", "AI の返答順が公開順位");
+        assert_eq!(saved[0].2[8].code, "5016");
+        assert!(
+            saved[0].2.iter().all(|p| p.code != "5000"),
+            "AI が選ばなかったルール上位の銘柄は出ない"
+        );
     }
 
     #[test]
