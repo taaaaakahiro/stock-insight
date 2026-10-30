@@ -1,10 +1,13 @@
-//! AIレコメンド（F7）の純粋な部分: ルールで候補を絞り、3段階の評価と順位を決め、AI が書いた理由を検証すること。
-//! 数字の計算と評価はここ（と indicators / analysis / dividend_policy）で済ませ、AI には理由の文章だけを任せる。
+//! AIレコメンド（F7）の純粋な部分: ルールで候補を絞って3段階の評価を付け、上位 RERANK_POOL 件を
+//! AI に渡して並べ替えと理由を受け取り、検証すること。候補の母集団と評価はルールで決めるが、
+//! その中での最終的な選択と順位は AI の返答順を採用する。
 
 use crate::portfolio::{PAYOUT_WARN, PBR_WARN};
 
-/// 画面に出す（AI に理由を書かせる）銘柄数
+/// 画面に出す銘柄数。AI は候補の中からこの件数まで選んで順位を付ける
 pub const PICK_COUNT: usize = 10;
+/// AI に並べ替えと理由を依頼する、ルール順位の上位候補数（選択肢の母集団）
+pub const RERANK_POOL: usize = 20;
 /// 壊れた答えを捨てたあと、保存するのに最低限ほしい銘柄数
 pub const MIN_PICKS: usize = 5;
 /// これ以上の配当利回りは候補にしない。特別配当や株価の急落で一時的に高く見えていることが多く、
@@ -219,8 +222,8 @@ pub struct Pick {
 /// AI の答えのうち、捨てた1件の理由
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickError {
-    /// こちらが選んだ銘柄の理由が返ってこなかった
-    MissingReason(String),
+    /// 候補（ルールで絞った母集団）にないコードを返した
+    NotCandidate(String),
     /// 理由が空、または長すぎる
     BadReason(String),
 }
@@ -228,7 +231,7 @@ pub enum PickError {
 impl std::fmt::Display for PickError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PickError::MissingReason(c) => write!(f, "no reason for {c}"),
+            PickError::NotCandidate(c) => write!(f, "not a candidate: {c}"),
             PickError::BadReason(c) => write!(f, "bad reason for {c}"),
         }
     }
@@ -326,14 +329,19 @@ pub fn tidy_reason(reason: &str) -> String {
     out
 }
 
-/// AI が書いた理由を、こちらで決めた順位の銘柄（`picks`）に当てる。理由が返ってこない・空・長すぎる銘柄は
-/// その1件だけ捨て、残りを順位順に詰める。候補にない銘柄の理由は無視する。残りが MIN_PICKS 未満なら保存しない
-pub fn validate_picks(raw: &[RawPick], picks: &[Candidate]) -> Result<Validated, TooFewPicks> {
-    let mut out: Vec<Pick> = Vec::with_capacity(picks.len());
+/// AI が返した並びをそのまま公開順位にする。候補（ルールで絞った `pool`）にないコード、理由が空・
+/// 長すぎる分はその1件だけ捨て、残りを返答順に PICK_COUNT まで詰める。AI が返さなかった候補は
+/// 「選ばれなかった」だけで落とした分には数えない。残りが MIN_PICKS 未満なら保存しない
+pub fn validate_reranked(raw: &[RawPick], pool: &[Candidate]) -> Result<Validated, TooFewPicks> {
+    let mut out: Vec<Pick> = Vec::with_capacity(PICK_COUNT);
     let mut dropped = Vec::new();
-    for c in picks {
-        let Some(p) = raw.iter().find(|p| p.code.trim() == c.code) else {
-            dropped.push(PickError::MissingReason(c.code.clone()));
+    for p in raw {
+        let code = p.code.trim();
+        if out.iter().any(|x| x.code == code) {
+            continue; // 採用済みのコードの2回目以降は無視
+        }
+        let Some(c) = pool.iter().find(|c| c.code == code) else {
+            dropped.push(PickError::NotCandidate(code.into()));
             continue;
         };
         let reason = tidy_reason(&p.reason.split_whitespace().collect::<Vec<_>>().join(" "));
@@ -347,6 +355,9 @@ pub fn validate_picks(raw: &[RawPick], picks: &[Candidate]) -> Result<Validated,
             grade: c.grade(),
             reason,
         });
+        if out.len() == PICK_COUNT {
+            break;
+        }
     }
     if out.len() < MIN_PICKS {
         return Err(TooFewPicks {
@@ -637,8 +648,9 @@ mod tests {
         }
     }
 
-    fn ten_picks() -> Vec<Candidate> {
-        (0..10)
+    /// AI に渡す母集団（ルール上位 RERANK_POOL 件に見立てた20候補）
+    fn rerank_pool() -> Vec<Candidate> {
+        (0..RERANK_POOL)
             .map(|i| cand(&format!("{}", 4000 + i), Some(0.03), true, true, true))
             .collect()
     }
@@ -671,20 +683,24 @@ mod tests {
     }
 
     #[test]
-    fn reasons_are_matched_to_our_ranking() {
-        let c = ten_picks();
-        // AI の並びは関係なく、こちらの順位で並ぶ
-        let mut ans: Vec<RawPick> = c
-            .iter()
-            .rev()
-            .map(|x| raw(&format!(" {} ", x.code), "  割安で\n増配が続く  "))
-            .collect();
-        ans.push(raw("9999", "候補にない銘柄の理由は無視する"));
-        let v = validate_picks(&ans, &c).unwrap();
-        assert!(v.dropped.is_empty());
+    fn ai_order_becomes_the_published_rank() {
+        // ルール上位20件の母集団から、AI が返した順が公開順位になる
+        let c = rerank_pool();
+        let mut ans: Vec<RawPick> = vec![raw("9999", "候補にない銘柄は選べない")];
+        ans.extend(
+            c.iter()
+                .take(PICK_COUNT)
+                .rev()
+                .map(|x| raw(&format!(" {} ", x.code), "  割安で\n増配が続く  ")),
+        );
+        let v = validate_reranked(&ans, &c).unwrap();
+        assert_eq!(v.dropped, vec![PickError::NotCandidate("9999".into())]);
         let codes: Vec<&str> = v.picks.iter().map(|p| p.code.as_str()).collect();
-        assert_eq!(codes[0], "4000", "前後の空白は取って突き合わせる");
-        assert_eq!(codes[9], "4009");
+        assert_eq!(
+            codes[0], "4009",
+            "AI の返答順が公開順位。前後の空白は取って突き合わせる"
+        );
+        assert_eq!(codes[9], "4000");
         assert_eq!(v.picks[0].rank, 1);
         assert_eq!(v.picks[9].rank, 10);
         assert_eq!(v.picks[0].grade, Grade::Watch);
@@ -695,54 +711,72 @@ mod tests {
     }
 
     #[test]
-    fn drops_only_the_broken_reasons_and_renumbers() {
-        let c = ten_picks();
-        let mut ans: Vec<RawPick> = c.iter().map(|x| raw(&x.code, "r")).collect();
-        ans.remove(1); // 4001 の理由がない
-        ans[4].reason = " \n ".into(); // 4005 の理由が空
-        ans[6].reason = "あ".repeat(MAX_REASON_CHARS + 1); // 4007 が長すぎる
-        let v = validate_picks(&ans, &c).unwrap();
+    fn ai_selects_within_the_pool_and_drops_broken_reasons() {
+        let c = rerank_pool();
+        let mut ans: Vec<RawPick> = c
+            .iter()
+            .take(PICK_COUNT)
+            .map(|x| raw(&x.code, "r"))
+            .collect();
+        ans[2].reason = " \n ".into(); // 4002 の理由が空
+        ans[4].reason = "あ".repeat(MAX_REASON_CHARS + 1); // 4004 が長すぎる
+        ans.push(raw(&c[12].code, "r")); // 後ろの順位の候補も選べる
+        ans.push(raw("9999", "候補外"));
+        ans.push(raw(&c[0].code, "2回目は無視"));
+        let v = validate_reranked(&ans, &c).unwrap();
         let codes: Vec<&str> = v.picks.iter().map(|p| p.code.as_str()).collect();
         assert_eq!(
             codes,
-            vec!["4000", "4002", "4003", "4004", "4006", "4008", "4009"]
+            vec!["4000", "4001", "4003", "4005", "4006", "4007", "4008", "4009", "4012"]
         );
         let ranks: Vec<u32> = v.picks.iter().map(|p| p.rank).collect();
         assert_eq!(
             ranks,
-            vec![1, 2, 3, 4, 5, 6, 7],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
             "捨てた分は詰めて順位にする"
         );
         assert_eq!(
             v.dropped,
             vec![
-                PickError::MissingReason("4001".into()),
-                PickError::BadReason("4005".into()),
-                PickError::BadReason("4007".into()),
-            ]
+                PickError::BadReason("4002".into()),
+                PickError::BadReason("4004".into()),
+                PickError::NotCandidate("9999".into()),
+            ],
+            "AI が返さなかった候補は落とした分に数えない"
         );
     }
 
     #[test]
+    fn caps_the_picks_at_ten() {
+        let c = rerank_pool();
+        let ans: Vec<RawPick> = c.iter().map(|x| raw(&x.code, "r")).collect();
+        let v = validate_reranked(&ans, &c).unwrap();
+        assert_eq!(v.picks.len(), PICK_COUNT, "11件目以降は採用しない");
+        assert_eq!(v.picks[9].code, "4009");
+    }
+
+    #[test]
     fn needs_at_least_five_reasons() {
-        let c = ten_picks();
+        let c = rerank_pool();
         let all: Vec<RawPick> = c.iter().map(|x| raw(&x.code, "r")).collect();
         assert_eq!(
-            validate_picks(&all[..MIN_PICKS], &c).unwrap().picks.len(),
+            validate_reranked(&all[..MIN_PICKS], &c)
+                .unwrap()
+                .picks
+                .len(),
             5
         );
         assert_eq!(
-            validate_picks(&all[..MIN_PICKS - 1], &c).unwrap_err().kept,
+            validate_reranked(&all[..MIN_PICKS - 1], &c)
+                .unwrap_err()
+                .kept,
             4
         );
         assert_eq!(
-            validate_picks(&[], &c),
+            validate_reranked(&[], &c),
             Err(TooFewPicks {
                 kept: 0,
-                dropped: c
-                    .iter()
-                    .map(|x| PickError::MissingReason(x.code.clone()))
-                    .collect()
+                dropped: vec![]
             })
         );
     }
