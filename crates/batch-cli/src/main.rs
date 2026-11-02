@@ -427,7 +427,7 @@ async fn migrate() -> Result<(), String> {
 
 async fn should_run(args: Args) -> Result<(), String> {
     let now = SystemClock.now_unix();
-    let today = Date::from_unix_jst(now);
+    let today = domain::calendar::batch_date(now);
     let client = http::client();
     let (run, reason) = if args.force {
         (true, "forced".to_string())
