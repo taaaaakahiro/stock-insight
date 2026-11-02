@@ -4,11 +4,11 @@
 
 use crate::screening::{DataStatus, StockRow};
 use crate::PortError;
+use domain::calendar::batch_date;
 use domain::dividend_policy::{PolicyGap, PolicyLevel};
 use domain::recommend::{
     select_candidates, validate_reranked, Candidate, Grade, Pick, RawPick, RERANK_POOL,
 };
-use domain::Date;
 
 /// 保存した1日分
 #[derive(Debug, Clone, PartialEq)]
@@ -197,8 +197,8 @@ pub async fn generate<R: RecommendRepository, A: Recommender>(
             run.run_id, run.status
         )));
     }
-    let today = Date::from_unix_jst(now);
-    if run.finished_at.map(Date::from_unix_jst) != Some(today) {
+    let today = batch_date(now);
+    if run.finished_at.map(batch_date) != Some(today) {
         return Ok(Outcome::Skipped(format!(
             "latest batch {} did not finish today",
             run.run_id
@@ -674,6 +674,15 @@ mod tests {
         done.existing.push("2026-10-21".into());
         assert!(skipped(&done), "同じ日の結果がある");
         assert!(skipped(&fake(run("succeeded", NOW - 3600), 0)), "候補なし");
+    }
+
+    #[test]
+    fn delayed_schedule_after_midnight_uses_previous_days_batch() {
+        // NOW は 21:00 JST。バッチが 23:50 に終わり、レコメンドの起動が翌 00:30 にずれた
+        let repo = fake(run("succeeded", NOW + 2 * 3600 + 50 * 60), 30);
+        let outcome = block_on(generate(&repo, &echo(), NOW + 3 * 3600 + 30 * 60)).unwrap();
+        assert!(!matches!(outcome, Outcome::Skipped(_)), "{outcome:?}");
+        assert_eq!(repo.saved.borrow().len(), 1);
     }
 
     #[test]
