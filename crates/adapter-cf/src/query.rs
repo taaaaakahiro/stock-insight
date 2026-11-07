@@ -291,7 +291,8 @@ pub const ANNUALS_BY_CODE: &str = "SELECT a.*, a.rowid AS rid,
  LEFT JOIN edinet_docs b ON b.code = a.code AND b.doc_kind = 'annual'
  AND b.period_end = a.period_end AND b.dividend_extraction_version = 1
  AND ABS(b.dividend_total - a.dps) < 0.000001
- WHERE a.code = ? ORDER BY a.period_end DESC LIMIT 10";
+ WHERE a.code = ?1 ORDER BY a.period_end DESC
+ LIMIT CASE WHEN (SELECT kind FROM stocks WHERE code = ?1) = 'reit' THEN 72 ELSE 10 END";
 
 pub const QUARTERLIES_BY_CODE: &str =
     "SELECT fiscal_year_end, period_type, period_end, net_sales, \
@@ -410,6 +411,15 @@ mod tests {
             .sql
             .contains("ORDER BY i.dividend_yield IS NULL, i.dividend_yield DESC"));
         assert_eq!(q.args[0], Arg::Text("stock".into()));
+    }
+
+    #[test]
+    fn reit_ranking_filters_and_sorts_on_the_stored_annual_yield() {
+        let f = ScreeningFilter::from_pairs([("kind", "reit"), ("dividend_yield_min", "0.05")])
+            .unwrap();
+        let q = list(&f);
+        assert!(q.sql.contains("AND i.dividend_yield >= ? ORDER BY i.dividend_yield IS NULL, i.dividend_yield DESC, i.code ASC"));
+        assert_eq!(q.args[..2], [Arg::Text("reit".into()), Arg::Real(0.05)]);
     }
 
     #[test]

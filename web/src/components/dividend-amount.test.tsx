@@ -40,4 +40,18 @@ describe("ordinary dividend display", () => {
     expect(metricLabel("dividend_yield", "stock")).toBe("配当利回り");
     expect(metricLabel("dividend_yield", "reit")).toBe("分配金利回り");
   });
+
+  it("distinguishes annual forecasts from trailing actuals for REITs", () => {
+    const distribution = { kind: "reit", dividend: 6000 } as const;
+    expect(
+      renderToStaticMarkup(
+        <DividendAmount r={row({ ...distribution, dividend_basis: "forecast" })} />,
+      ),
+    ).toContain("年間予想");
+    expect(
+      renderToStaticMarkup(
+        <DividendAmount r={row({ ...distribution, dividend_basis: "actual" })} />,
+      ),
+    ).toContain("実績（過去12か月）");
+  });
 });

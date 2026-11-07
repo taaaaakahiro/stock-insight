@@ -35,6 +35,14 @@ type Column = {
 /** 1株配当と、それが会社予想か実績か（利回りはこの配当で出している） */
 export function DividendAmount({ r }: { r: StockRow }) {
   if (r.dividend == null) return yen(null);
+  const basis =
+    r.kind === "reit"
+      ? r.dividend_basis === "forecast"
+        ? "年間予想"
+        : "実績（過去12か月）"
+      : r.dividend_basis === "forecast"
+        ? "予想"
+        : "実績";
   return (
     <>
       {yen(r.dividend)}
@@ -56,11 +64,7 @@ export function DividendAmount({ r }: { r: StockRow }) {
             臨時配当除外
           </span>
         )}
-      {r.dividend_basis && (
-        <span className="ml-1 text-[10px] text-muted-foreground">
-          {r.dividend_basis === "forecast" ? "予想" : "実績"}
-        </span>
-      )}
+      {r.dividend_basis && <span className="ml-1 text-[10px] text-muted-foreground">{basis}</span>}
     </>
   );
 }

@@ -81,7 +81,15 @@ function Detail({ d }: { d: StockDetail }) {
   const metrics: { label: string; value: React.ReactNode }[] = [
     { label: metricLabel("price", kind), value: yen(s.price) },
     { label: metricLabel("dividend_ttm", kind), value: <DividendAmount r={s} /> },
-    { label: metricLabel("dividend_yield", kind), value: pct(s.dividend_yield) },
+    {
+      label:
+        kind === "reit" && s.dividend_basis
+          ? s.dividend_basis === "forecast"
+            ? "予想分配金利回り"
+            : "実績分配金利回り"
+          : metricLabel("dividend_yield", kind),
+      value: pct(s.dividend_yield),
+    },
     { label: metricLabel("yield_percentile", kind), value: pct(s.yield_percentile, 0) },
     ...(stock
       ? [
