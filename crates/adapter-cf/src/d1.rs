@@ -136,7 +136,8 @@ impl From<Row> for StockRow {
                 )
             })
             .flatten();
-        let payout_forecast = forecast
+        // REIT の年間分配予想を1決算期の EPS で割らない。
+        let payout_forecast = (forecast && r.kind != "reit")
             .then(|| {
                 domain::indicators::payout_from_yield(
                     r.dividend_total
@@ -377,6 +378,8 @@ struct ForecastRow {
     disclosed: String,
     fiscal_year_end: Option<String>,
     dps: Option<f64>,
+    #[serde(flatten)]
+    reit: crate::forecast::ReitForecastColumns,
 }
 
 #[derive(Deserialize)]
@@ -433,6 +436,7 @@ impl StockDetailQuery for D1Indicators {
                     disclosed: Date::parse(&r.disclosed)?,
                     fiscal_year_end: r.fiscal_year_end.as_deref().and_then(Date::parse),
                     dps: r.dps,
+                    reit: r.reit.into(),
                 })
             })
             .collect())

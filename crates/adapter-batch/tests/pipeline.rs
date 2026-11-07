@@ -5,7 +5,7 @@
 use adapter_batch::{d1::SqlFileStore, jquants};
 use domain::{Date, PriceBar, StockCode};
 use std::collections::HashMap;
-use usecase::daily::{compute_all, StoredAnnual, StoredFinancials};
+use usecase::daily::{build_inputs, compute_all, StoredAnnual, StoredFinancials, StoredForecast};
 use usecase::fins::FinancialStore;
 use usecase::{BatchRun, SnapshotStore};
 
@@ -95,5 +95,88 @@ async fn offline_pipeline_writes_sql() {
         "3Q の行が入る"
     );
     let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/poc_offline.sql");
+    std::fs::write(out, sql).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reit_forecasts_feed_the_snapshot_and_detail_history_on_the_same_basis() {
+    let d = |value| Date::parse(value).unwrap();
+    let rows = serde_json::json!([
+        {
+            "Code": "89510", "DocType": "REITDividendForecastRevision", "DiscNo": "1",
+            "DiscDate": "2026-04-01", "DiscTime": "15:30:00",
+            "CurFYSt": "2026-04-01", "CurFYEn": "2026-09-30", "FDivUnit": "6000"
+        },
+        {
+            "Code": "89510", "DocType": "REITDividendForecastRevision", "DiscNo": "2",
+            "DiscDate": "2026-06-01", "DiscTime": "15:30:00",
+            "CurFYSt": "2026-04-01", "CurFYEn": "2026-09-30", "FDivUnit": "3000",
+            "NxtFYSt": "2026-10-01", "NxtFYEn": "2027-03-31", "NxFDivUnit": "2500"
+        }
+    ]);
+    let reports = jquants::forecast_reports(rows.as_array().unwrap());
+    assert_eq!(reports.len(), 2);
+    let code = reports[0].code.clone();
+    let forecasts: Vec<_> = reports
+        .iter()
+        .map(|f| StoredForecast {
+            doc_id: f.doc_id.clone(),
+            disclosed: f.disclosed,
+            fiscal_year_end: f.fiscal_year_end,
+            dps: f.dps,
+            reit: f.reit.clone(),
+            breakdown: None,
+        })
+        .collect();
+    let mut bars = vec![PriceBar {
+        date: d("2026-04-15"),
+        close: 200_000.0,
+    }];
+    bars.extend((0..5).map(|n| PriceBar {
+        date: d("2026-06-15").add_days(n),
+        close: 100_000.0,
+    }));
+    let splits = vec![domain::split::Split::new(d("2026-05-01"), 0.5).unwrap()];
+    let (market, _, _, _) = build_inputs(bars.clone(), &[], &forecasts, &[], &splits, true);
+    assert_eq!(
+        market
+            .reit_distributions
+            .as_ref()
+            .unwrap()
+            .at(bars[0].date)
+            .unwrap()
+            .annual,
+        6000.0
+    );
+    assert_eq!(
+        domain::yield_series(&market),
+        vec![(bars[5].date, 0.055), (bars[0].date, 0.06)]
+    );
+    let key = code.as_str().to_owned();
+    let (snaps, skipped) = compute_all(
+        &[code],
+        HashMap::from([(key.clone(), bars)]),
+        &StoredFinancials {
+            forecasts: HashMap::from([(key.clone(), forecasts)]),
+            splits: HashMap::from([(key.clone(), splits)]),
+            reit_codes: [key].into(),
+            ..Default::default()
+        },
+        "reit-offline",
+        1,
+    );
+    assert_eq!(skipped, 0);
+    let i = &snaps[0].indicators;
+    assert_eq!(i.dividend_ttm, 5500.0);
+    assert_eq!(i.dividend_yield, Some(0.055));
+    assert_eq!(i.dividend_is_forecast, Some(true));
+    let store = SqlFileStore::default();
+    store.save_forecasts(&reports, 1).await.unwrap();
+    store.save_snapshots(&snaps).await.unwrap();
+    let sql = store.into_string();
+    let out = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../target/reit_yield_offline.sql"
+    );
     std::fs::write(out, sql).unwrap();
 }

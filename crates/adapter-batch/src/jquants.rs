@@ -5,6 +5,7 @@
 
 use crate::http;
 use domain::analysis::{CumulativePeriod, PeriodType};
+use domain::reit_distribution::{ForecastDetails, ForecastPeriod};
 use domain::split::Split;
 use domain::{AnnualFinancial, Date, PriceBar, StockCode};
 use serde_json::Value;
@@ -176,6 +177,13 @@ fn is_forecast_revision(r: &Value) -> bool {
         .is_some_and(|t| t.contains("ForecastRevision"))
 }
 
+fn is_reit_row(r: &Value) -> bool {
+    r["DocType"].as_str().is_some_and(|t| t.contains("REIT"))
+        || ["FDivUnit", "NxFDivUnit", "DivUnit"]
+            .iter()
+            .any(|k| num(&r[*k]).is_some())
+}
+
 /// 1Q/2Q/3Q/FY の行を累計値のまま取り出す（4Q・5Q などの変則決算は対象外）
 pub fn period_report(r: &Value) -> Option<PeriodReport> {
     if is_forecast_revision(r) {
@@ -227,8 +235,8 @@ pub fn annual_report(r: &Value) -> Option<AnnualReport> {
             equity: first(&["ShEq", "Eq", "NCShEq", "NCEq"]),
             eps: first(&["EPS", "NCEPS"]),
             bps: first(&["BPS", "NCBPS"]),
-            // REIT・ETF は1口当たり分配金
-            dps: first(&["DivAnn", "DivUnit"]),
+            // REIT は1口当たり・1決算期分の分配金を原数値のまま保存。
+            dps: num(&r[if is_reit_row(r) { "DivUnit" } else { "DivAnn" }]),
             operating_cf: num(&r["CFO"]),
         },
     })
@@ -239,15 +247,48 @@ pub fn annual_report(r: &Value) -> Option<AnnualReport> {
 pub fn forecast_report(r: &Value) -> Option<ForecastReport> {
     let code = code_from_jquants(r["Code"].as_str()?)?;
     let disclosed = Date::parse(r["DiscDate"].as_str()?)?;
-    let first = |keys: &[&str]| keys.iter().find_map(|k| num(&r[*k]));
     let revision = is_forecast_revision(r);
+    if is_reit_row(r) {
+        let date = |k: &str| r[k].as_str().and_then(Date::parse);
+        let period = |start, end, amount| {
+            Some(ForecastPeriod {
+                start: date(start),
+                end: date(end)?,
+                amount: num(&r[amount]).filter(|&x| x >= 0.0)?,
+            })
+        };
+        let current = period("CurFYSt", "CurFYEn", "FDivUnit");
+        let next = period("NxtFYSt", "NxtFYEn", "NxFDivUnit");
+        // REIT の期別分配金は、両方あれば同じ開示から両方残す。
+        let (primary, other) = if r["CurPerType"].as_str() == Some("FY") && !revision {
+            (next.or(current), next.and(current))
+        } else {
+            (current.or(next), current.and(next))
+        };
+        let primary = primary?;
+        return Some(ForecastReport {
+            code,
+            doc_id: r["DiscNo"].as_str().unwrap_or_default().to_string(),
+            disclosed,
+            fiscal_year_end: Some(primary.end),
+            dps: Some(primary.amount),
+            reit: ForecastDetails {
+                start: primary.start,
+                other,
+                disclosed_time: r["DiscTime"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
+            },
+        });
+    }
     let (dps, fiscal_year_end) = match r["CurPerType"].as_str()? {
         "FY" if !revision => (
-            first(&["NxFDivAnn", "NxFDivUnit"]),
+            num(&r["NxFDivAnn"]),
             r["NxtFYEn"].as_str().and_then(Date::parse),
         ),
         "1Q" | "2Q" | "3Q" | "FY" => (
-            first(&["FDivAnn", "FDivUnit"]),
+            num(&r["FDivAnn"]),
             r["CurFYEn"].as_str().and_then(Date::parse),
         ),
         _ => return None,
@@ -261,6 +302,7 @@ pub fn forecast_report(r: &Value) -> Option<ForecastReport> {
         disclosed,
         fiscal_year_end,
         dps,
+        reit: ForecastDetails::default(),
     })
 }
 
@@ -344,7 +386,7 @@ mod tests {
               {"DiscDate":"2025-09-02","DiscNo":"5","Code":"86970","DocType":"EarnForecastRevision",
                "CurPerType":"FY","CurFYEn":"2026-03-31","FDivAnn":""},
               {"DiscDate":"2025-05-15","DiscNo":"6","Code":"89510","DocType":"FYFinancialStatements_NonConsolidated_REIT",
-               "CurPerType":"FY","CurFYEn":"2025-03-31","DivUnit":"18500","NxFDivAnn":"","NxFDivUnit":"18700"}
+               "CurPerType":"FY","CurFYEn":"2025-03-31","NxtFYEn":"2025-09-30","DivUnit":"18500","NxFDivAnn":"","NxFDivUnit":"18700"}
             ]}"#,
         )
         .unwrap();

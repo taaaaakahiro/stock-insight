@@ -13,6 +13,7 @@ pub mod portfolio;
 pub mod price_history;
 pub mod recommend;
 pub mod reit;
+pub mod reit_distribution;
 pub mod screening;
 pub mod split;
 pub mod stock_master;

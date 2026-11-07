@@ -158,6 +158,7 @@ impl Dividend {
 pub struct MarketData {
     pub bars: Vec<PriceBar>,
     pub dividends: Vec<Dividend>,
+    pub reit_distributions: Option<crate::reit_distribution::DistributionHistory>,
 }
 
 /// 年次の財務（1決算期分）。取れない項目は None。

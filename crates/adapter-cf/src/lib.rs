@@ -2,6 +2,7 @@
 #![recursion_limit = "256"]
 
 pub mod clerk_user;
+pub mod forecast;
 pub mod jwt;
 pub mod query;
 pub mod recommend;

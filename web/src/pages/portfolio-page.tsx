@@ -264,8 +264,8 @@ export function PortfolioPage() {
               <TableHead>銘柄</TableHead>
               <TableHead>取得日・取得後の騰落</TableHead>
               <TableHead className="text-right">株価</TableHead>
-              <TableHead className="text-right">1株配当</TableHead>
-              <TableHead className="text-right">配当利回り</TableHead>
+              <TableHead className="text-right">年間配当・分配金</TableHead>
+              <TableHead className="text-right">利回り</TableHead>
               <TableHead className="text-right">配当性向</TableHead>
               <TableHead className="text-right">PBR</TableHead>
               <TableHead className="text-right">DOE</TableHead>

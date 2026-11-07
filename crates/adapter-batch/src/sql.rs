@@ -254,8 +254,9 @@ pub fn period_reports_stmts(reports: &[PeriodReport], fetched_at: i64) -> Vec<St
     )
 }
 
-/// 会社予想の配当（開示1件1行）を upsert する
+/// 会社予想の配当（開示1件1行。REIT は同じ開示の別の対象期も保存）を upsert する
 pub fn forecasts_stmts(reports: &[ForecastReport], fetched_at: i64) -> Vec<Stmt> {
+    let date = |d: Option<domain::Date>| d.map_or(Val::Null, |d| Val::Text(d.to_string()));
     let rows = reports
         .iter()
         .map(|r| {
@@ -267,14 +268,23 @@ pub fn forecasts_stmts(reports: &[ForecastReport], fetched_at: i64) -> Vec<Stmt>
                     .map_or(Val::Null, |d| Val::Text(d.to_string())),
                 Val::opt_f(r.dps),
                 Val::Int(fetched_at),
+                date(r.reit.start),
+                date(r.reit.other.and_then(|p| p.start)),
+                date(r.reit.other.map(|p| p.end)),
+                Val::opt_f(r.reit.other.map(|p| p.amount)),
+                r.reit.disclosed_time.clone().map_or(Val::Null, Val::Text),
             ]
         })
         .collect();
     multi_row(
-        "INSERT INTO dividend_forecasts (code, doc_id, disclosed, fiscal_year_end, dps, fetched_at)",
-        6,
+        "INSERT INTO dividend_forecasts (code, doc_id, disclosed, fiscal_year_end, dps, fetched_at, \
+         reit_period_start, reit_other_period_start, reit_other_period_end, reit_other_dps, reit_disclosed_time)",
+        11,
         "ON CONFLICT(code, doc_id) DO UPDATE SET disclosed = excluded.disclosed, \
-         fiscal_year_end = excluded.fiscal_year_end, dps = excluded.dps, fetched_at = excluded.fetched_at",
+         fiscal_year_end = excluded.fiscal_year_end, dps = excluded.dps, fetched_at = excluded.fetched_at, \
+         reit_period_start = excluded.reit_period_start, reit_other_period_start = excluded.reit_other_period_start, \
+         reit_other_period_end = excluded.reit_other_period_end, reit_other_dps = excluded.reit_other_dps, \
+         reit_disclosed_time = excluded.reit_disclosed_time",
         rows,
         usize::MAX,
     )

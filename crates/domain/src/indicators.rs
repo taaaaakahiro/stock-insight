@@ -104,8 +104,15 @@ pub fn annual_dividend_at(divs: &[Dividend], date: Date) -> Option<f64> {
     dividend_at(divs, date).and_then(|d| d.yield_amount())
 }
 
+fn market_dividend_at(market: &MarketData, date: Date) -> Option<Dividend> {
+    match &market.reit_distributions {
+        Some(history) => history.at(date),
+        None => dividend_at(&market.dividends, date),
+    }
+}
+
 /// 週1点（5営業日ごと）の過去の配当利回りを、日付付きで新しい順に並べる（詳細ページのグラフ用）。
-/// その時点で開示済みの年間配当 ÷ その日の終値（どちらも分割調整前なので、分割をまたいでもずれない）
+/// その時点で開示済みの年間配当 ÷ その日の終値（両方の分割基準をそろえる）
 pub fn yield_series(market: &MarketData) -> Vec<(Date, f64)> {
     let Some(last) = market.bars.last() else {
         return vec![];
@@ -119,7 +126,9 @@ pub fn yield_series(market: &MarketData) -> Vec<(Date, f64)> {
         .step_by(5)
         .filter(|b| b.close > 0.0)
         .filter_map(|b| {
-            annual_dividend_at(&market.dividends, b.date).map(|d| (b.date, d / b.close))
+            market_dividend_at(market, b.date)
+                .and_then(|d| d.yield_amount())
+                .map(|d| (b.date, d / b.close))
         })
         .collect()
 }
@@ -213,7 +222,7 @@ pub fn compute(
 ) -> Result<Indicators, IndicatorError> {
     let last = *market.bars.last().ok_or(IndicatorError::NoPrice)?;
     let price = last.close;
-    let current = dividend_at(&market.dividends, last.date);
+    let current = market_dividend_at(market, last.date);
     let annual = current.as_ref().and_then(|d| d.yield_amount());
     let ttm = annual.unwrap_or(0.0);
     let dividend_yield = annual.filter(|_| price > 0.0).map(|d| d / price);
@@ -289,7 +298,10 @@ pub fn compute(
         dividend_is_forecast: current.as_ref().map(|d| d.forecast),
         dividend_cut: dividend_cut(
             &dps_series,
-            current.filter(|d| d.forecast).map(|d| d.annual),
+            // REIT の年換算予想と1決算期の実績は比較しない。
+            current
+                .filter(|d| d.forecast && market.reit_distributions.is_none())
+                .map(|d| d.annual),
         ),
         op_growth_q: latest_q.op_growth,
         net_growth_q: latest_q.net_growth,
@@ -459,7 +471,11 @@ mod tests {
                 forecast: false,
             },
         ];
-        let market = MarketData { bars, dividends };
+        let market = MarketData {
+            bars,
+            dividends,
+            ..Default::default()
+        };
         let fin = FinancialData {
             doc_id: "S100TEST".into(),
             submitted: Some(d("2026-06-20")),

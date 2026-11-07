@@ -34,6 +34,7 @@ pub struct ForecastReport {
     pub fiscal_year_end: Option<Date>,
     /// None は「予想なし（未定・非開示）」
     pub dps: Option<f64>,
+    pub reit: domain::reit_distribution::ForecastDetails,
 }
 
 pub trait FinancialStore {

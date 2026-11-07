@@ -12,6 +12,7 @@ use domain::disclosure::DocKind;
 use domain::split::Split;
 use domain::stock_master::ListedStock;
 use domain::{AnnualFinancial, Date, PriceBar};
+use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use usecase::daily::{StoredAnnual, StoredForecast};
@@ -508,6 +509,9 @@ impl D1Store {
                         disclosed,
                         fiscal_year_end: r["fiscal_year_end"].as_str().and_then(Date::parse),
                         dps: r["dps"].as_f64(),
+                        reit: adapter_cf::forecast::ReitForecastColumns::deserialize(r)
+                            .map_err(|e| PortError(format!("invalid REIT forecast columns: {e}")))?
+                            .into(),
                     });
             }
         }

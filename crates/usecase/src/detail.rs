@@ -58,8 +58,14 @@ pub async fn stock_detail<Q: StockDetailQuery>(
         .filter(|a| !a.financial.has_no_figures())
         .filter_map(|a| a.disclosed)
         .max();
-    let (market, fin, quarters, _) =
-        build_inputs(bars, &annuals, &forecasts, &quarterlies, &splits);
+    let (market, fin, quarters, _) = build_inputs(
+        bars,
+        &annuals,
+        &forecasts,
+        &quarterlies,
+        &splits,
+        latest.kind == "reit",
+    );
     let mut ys = yield_series(&market);
     ys.reverse();
     // 最も古い年度の伸び率も出せるよう、絞り込む前に前年と比べる

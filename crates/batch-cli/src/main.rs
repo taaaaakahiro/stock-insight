@@ -386,6 +386,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0025_stock_financial_quality",
         include_str!("../../../migrations/0025_stock_financial_quality.sql"),
     ),
+    (
+        "0026_reit_distribution_forecasts",
+        include_str!("../../../migrations/0026_reit_distribution_forecasts.sql"),
+    ),
 ];
 
 async fn sync_master(args: Args) -> Result<(), String> {
@@ -1770,6 +1774,12 @@ async fn compute(args: Args) -> Result<(), String> {
         forecasts: store.load_forecasts().await.map_err(|e| e.0)?,
         quarterlies: store.load_quarterlies().await.map_err(|e| e.0)?,
         splits: store.load_splits().await.map_err(|e| e.0)?,
+        reit_codes: store
+            .listed_codes(&["reit"])
+            .await
+            .map_err(|e| e.0)?
+            .into_iter()
+            .collect(),
     };
     println!(
         "compute: {} codes, {} price histories, {} with annual financials, {} with quarterly rows, {} with splits, \
