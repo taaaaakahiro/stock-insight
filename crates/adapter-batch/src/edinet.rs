@@ -21,6 +21,7 @@ use usecase::edinet::DocRef;
 use usecase::PortError;
 
 const BASE: &str = "https://api.edinet-fsa.go.jp/api/v2";
+pub const REIT_ASSETS_PARSE_VERSION: i64 = 2;
 
 pub struct EdinetClient {
     client: reqwest::Client,
@@ -362,6 +363,7 @@ pub fn reit_detail_json(r: &ReitRecord) -> Value {
         "doc_id": r.doc.doc_id,
         "period_end": r.period_end.to_string(),
         "assets": rp.assets,
+        "assets_parse_version": REIT_ASSETS_PARSE_VERSION,
         "loans": rp.debt.loans.iter().map(|l| serde_json::json!({
             "kind": l.kind.map(|k| match k { reit::LoanKind::Short => "short", reit::LoanKind::Long => "long" }),
             "lender": l.lender,

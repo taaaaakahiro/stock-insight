@@ -179,7 +179,7 @@ fn property_table(rows: &[Vec<String>], period: Date, scale: i64) -> Option<(i64
                     .map(|cell| compact(cell))
                     .collect();
                 head.iter()
-                    .any(|cell| labels.contains(&cell.as_str()))
+                    .any(|cell| labels.contains(&cell.split("(注").next().unwrap_or(cell)))
                     .then_some((head, row))
             })
             .collect();
@@ -271,6 +271,17 @@ mod tests {
         );
         let conflict = accounts.replace("</p>", "</p><p>（単位：百万円）</p>");
         assert!(property_values(&ixbrl::blocks(&conflict), PERIOD).is_none());
+    }
+
+    #[test]
+    fn reads_property_values_with_note_numbers_on_the_labels() {
+        let accounts = ACCOUNTS
+            .replace("期末残高", "期末残高（注２）")
+            .replace("期末時価", "期末時価（注３）");
+        assert_eq!(
+            property_values(&ixbrl::blocks(&accounts), PERIOD),
+            Some((1_000_000, 1_400_000)),
+        );
     }
 
     #[test]
