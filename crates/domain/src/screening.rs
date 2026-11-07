@@ -29,6 +29,8 @@ pub enum Metric {
     AvgRate,
     /// REIT: 面積加重の稼働率
     Occupancy,
+    /// REIT: 投資口価格 ÷ 1口当たりNAV
+    NavMultiple,
     /// 有報・半期報告書に書かれた DOE の下限
     DoeFloor,
     /// DOE（会社予想の配当があればそれで、なければ実績）− DOE の下限
@@ -39,7 +41,7 @@ pub enum Metric {
 }
 
 impl Metric {
-    pub const ALL: [Metric; 22] = [
+    pub const ALL: [Metric; 23] = [
         Metric::Price,
         Metric::Dividend,
         Metric::DividendYield,
@@ -58,6 +60,7 @@ impl Metric {
         Metric::RepriceMaxRatio,
         Metric::AvgRate,
         Metric::Occupancy,
+        Metric::NavMultiple,
         Metric::DoeFloor,
         Metric::DoeMargin,
         Metric::OpGrowthQ,
@@ -85,6 +88,7 @@ impl Metric {
             Metric::RepriceMaxRatio => "reprice_max_ratio",
             Metric::AvgRate => "avg_rate",
             Metric::Occupancy => "occupancy",
+            Metric::NavMultiple => "nav_multiple",
             Metric::DoeFloor => "doe_floor",
             Metric::DoeMargin => "doe_margin",
             Metric::OpGrowthQ => "op_growth_q",
@@ -102,6 +106,7 @@ impl Metric {
                 | Metric::RepriceMaxRatio
                 | Metric::AvgRate
                 | Metric::Occupancy
+                | Metric::NavMultiple
         )
     }
 

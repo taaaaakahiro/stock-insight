@@ -14,6 +14,7 @@
 | `D1_DATABASE_ID` | Actions Secret / CLI環境 | バッチのD1接続先 |
 | `CLOUDFLARE_API_TOKEN` | Actions Secret / CLI環境 | バッチのD1編集・R2操作・Workers AI Read/Edit（両方）。意味検索使用時はVectorizeも必要 |
 | `JQUANTS_API_KEY` | Actions Secret / CLI環境 | 株価・財務取得 |
+| `JQUANTS_TDNET_ENABLED` | Actions Variable | TDnetアドオンを契約済みの場合、`true` でREITの分配予想PDFを日次取得 |
 | `EDINET_API_KEY` | Actions Secret / CLI環境 | EDINET取得 |
 | `REIT_RAG_ENABLED` | Actions Variable | `true` のとき日次REIT分析を実行 |
 | `REIT_RAG_BUCKET` | workflow / CLI環境 | 原本・AI入出力の保存先。workflowは `maaun-stock-insight-raw` |

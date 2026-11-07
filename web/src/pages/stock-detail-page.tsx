@@ -91,6 +91,7 @@ function Detail({ d }: { d: StockDetail }) {
       value: pct(s.dividend_yield),
     },
     { label: metricLabel("yield_percentile", kind), value: pct(s.yield_percentile, 0) },
+    ...(kind === "reit" ? [{ label: "NAV倍率", value: times(s.reit?.nav_multiple) }] : []),
     ...(stock
       ? [
           { label: "年間配当合計（参考）", value: yen(s.dividend_total ?? null) },

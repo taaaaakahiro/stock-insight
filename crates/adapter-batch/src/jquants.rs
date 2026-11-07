@@ -89,6 +89,65 @@ impl JQuantsClient {
         self.fetch_all(&format!("/fins/summary?date={date}")).await
     }
 
+    pub async fn disclosures_on(&self, date: Date) -> Result<Vec<Value>, PortError> {
+        self.fetch_all(&format!("/td/list?date={date}")).await
+    }
+
+    pub async fn disclosures_for(
+        &self,
+        code: &StockCode,
+        from: Date,
+        until: Date,
+    ) -> Result<Vec<Value>, PortError> {
+        self.fetch_all(&format!(
+            "/td/list?code={}&from={from}&to={until}",
+            code.as_str()
+        ))
+        .await
+    }
+
+    pub async fn disclosure_pdf(&self, id: &str) -> Result<Vec<u8>, PortError> {
+        if id.len() != 14 || !id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(PortError("invalid TDnet disclosure number".into()));
+        }
+        let response = self.get(&format!("{BASE}/td/files?discNo={id}")).await?;
+        let row: Value = serde_json::from_slice(&response)
+            .map_err(|e| PortError(format!("TDnet files: {e}")))?;
+        if row["discNo"].as_str() != Some(id) {
+            return Err(PortError(format!(
+                "TDnet {id}: response disclosure number does not match"
+            )));
+        }
+        let url = ["pdf", "summaryPdf"]
+            .iter()
+            .find_map(|key| {
+                row["files"][*key]
+                    .as_str()
+                    .filter(|url| url.starts_with("https://"))
+            })
+            .ok_or_else(|| PortError(format!("TDnet {id}: missing PDF URL")))?;
+        // URL は期限付き。J-Quants の認証ヘッダーはダウンロード先へ送らない。
+        let mut response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|e| PortError(format!("TDnet {id}: {}", e.without_url())))?;
+        let mut pdf = Vec::new();
+        while let Some(bytes) = response
+            .chunk()
+            .await
+            .map_err(|e| PortError(format!("TDnet {id}: {}", e.without_url())))?
+        {
+            if pdf.len() + bytes.len() > crate::reit_forecast_pdf::MAX_PDF_BYTES {
+                return Err(PortError(format!("TDnet {id}: PDF too large")));
+            }
+            pdf.extend_from_slice(&bytes);
+        }
+        Ok(pdf)
+    }
+
     /// 指定日の全上場銘柄の日足（全項目そのまま）。休場日は空
     pub async fn bars_on(&self, date: Date) -> Result<Vec<Value>, PortError> {
         self.fetch_all(&format!("/equities/bars/daily?date={date}"))

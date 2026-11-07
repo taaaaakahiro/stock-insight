@@ -22,6 +22,7 @@ export type MetricKey =
   | "reprice_max_ratio"
   | "avg_rate"
   | "occupancy"
+  | "nav_multiple"
   | "doe_floor"
   | "doe_margin"
   | "op_growth_q"
@@ -63,10 +64,13 @@ export const METRICS: { key: MetricKey; label: string; unit: Unit; kinds: Kind[]
   { key: "reprice_max_ratio", label: "同（最大）", unit: "pct", kinds: REIT },
   { key: "avg_rate", label: "平均利率", unit: "pct", kinds: REIT },
   { key: "occupancy", label: "稼働率", unit: "pct", kinds: REIT },
+  { key: "nav_multiple", label: "NAV倍率", unit: "times", kinds: REIT },
 ];
 
 /** REIT の金利・稼働率の説明（有報の借入金明細・物件の表から読んだ値） */
 const REIT_TIPS: Partial<Record<MetricKey, string>> = {
+  nav_multiple:
+    "投資口価格を、最新の有報に基づく1口当たりNAVで割った値です。NAVには賃貸等不動産の含み損益を反映し、投資口分割は価格と同じ基準にそろえます。",
   floating_ratio:
     "有利子負債（借入金＋投資法人債）のうち、有報に「変動金利」と書かれている借入の割合です。金利が上がるとすぐに支払利息が増えます。",
   unknown_ratio:
@@ -431,7 +435,7 @@ export const METRIC_GROUPS: { key: string; label: string; keys: MetricKey[]; ope
     keys: ["dividend_yield", "payout_ratio", "consecutive_increases"],
     open: true,
   },
-  { key: "value", label: "割安さ", keys: ["pbr", "per"], open: true },
+  { key: "value", label: "割安さ", keys: ["pbr", "per", "nav_multiple"], open: true },
   { key: "doe", label: "配当方針（DOE）", keys: ["doe", "doe_margin"] },
   {
     key: "growth",

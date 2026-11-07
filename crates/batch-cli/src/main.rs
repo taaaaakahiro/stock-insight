@@ -78,6 +78,7 @@ use usecase::fins::{AnnualReport, FinancialStore, ForecastReport, PeriodReport};
 use usecase::{BatchRun, Clock, SnapshotStore};
 
 mod quality_report;
+mod reit_forecast_pdfs;
 
 struct SystemClock;
 impl Clock for SystemClock {
@@ -114,7 +115,7 @@ struct Args {
 fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     let cmd = it.next().ok_or(
-        "command required: migrate | sync-master | sync-jq | sync-edinet | sync-reit | reit-probe | compute | quality-report | generate-recommendations [--force] | should-run",
+        "command required: migrate | sync-master | sync-jq | sync-reit-forecast-pdfs | sync-edinet | sync-reit | reit-probe | compute | quality-report | generate-recommendations [--force] | should-run",
     )?;
     let mut a = Args {
         cmd,
@@ -252,6 +253,7 @@ async fn main() {
         "migrate" => migrate().await,
         "sync-master" => sync_master(args).await,
         "sync-jq" => sync_jq(args).await,
+        "sync-reit-forecast-pdfs" => reit_forecast_pdfs::run(args).await,
         "refill-reit-prices" => refill_reit_prices(args).await,
         "sync-edinet" => sync_edinet(args).await,
         "sync-reit" => sync_reit(args).await,
