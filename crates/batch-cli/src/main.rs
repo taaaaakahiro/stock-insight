@@ -1442,17 +1442,20 @@ async fn backfill_reit_assets(
     started: Instant,
     deadline: std::time::Duration,
 ) -> Result<(), String> {
+    use adapter_batch::edinet::REIT_ASSETS_PARSE_VERSION;
     use adapter_batch::sql::{Stmt, Val};
 
     let rows = store
         .query(&Stmt {
-            sql: "SELECT p.code, p.doc_id, p.period_end FROM reit_profile p \
+            sql:
+                "SELECT p.code, p.doc_id, p.period_end FROM reit_profile p \
               JOIN stocks s ON s.code=p.code AND s.kind='reit' \
               JOIN reit_detail d ON d.code=p.code AND d.period_end=p.period_end \
               WHERE json_extract(d.body, '$.doc_id')=p.doc_id \
-                AND json_type(d.body, '$.assets') IS NULL ORDER BY p.code"
-                .into(),
-            params: vec![],
+                AND json_extract(d.body, '$.assets.nav_per_unit') IS NULL \
+                AND COALESCE(json_extract(d.body, '$.assets_parse_version'), 0) < ? ORDER BY p.code"
+                    .into(),
+            params: vec![Val::Int(REIT_ASSETS_PARSE_VERSION)],
         })
         .await
         .map_err(|e| e.0)?;
@@ -1487,17 +1490,26 @@ async fn backfill_reit_assets(
                 continue;
             }
         };
+        let assets = match report.assets {
+            Some(assets) => Val::Text(serde_json::to_string(&assets).map_err(|e| e.to_string())?),
+            None => Val::Null,
+        };
         store
             .exec(&Stmt {
-                sql: "UPDATE reit_detail SET body=json_set(body, '$.assets', json(?)) \
+                sql: "UPDATE reit_detail SET body=json_set(body, \
+                    '$.assets', json(COALESCE(?, json_extract(body, '$.assets'), 'null')), \
+                    '$.assets_parse_version', ?) \
                   WHERE code=? AND period_end=? AND json_extract(body, '$.doc_id')=? \
-                    AND json_type(body, '$.assets') IS NULL"
+                    AND json_extract(body, '$.assets.nav_per_unit') IS NULL \
+                    AND COALESCE(json_extract(body, '$.assets_parse_version'), 0) < ?"
                     .into(),
                 params: vec![
-                    Val::Text(serde_json::to_string(&report.assets).map_err(|e| e.to_string())?),
+                    assets,
+                    Val::Int(REIT_ASSETS_PARSE_VERSION),
                     Val::Text(code.into()),
                     Val::Text(period.to_string()),
                     Val::Text(doc_id.into()),
+                    Val::Int(REIT_ASSETS_PARSE_VERSION),
                 ],
             })
             .await
