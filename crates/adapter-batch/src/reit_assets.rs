@@ -87,16 +87,24 @@ fn issued_units(fund: &[Block], period: Date) -> Option<i64> {
         };
         let column = period_column(rows, period, true)?;
         same_value(rows.iter().filter_map(|row| {
-            let labels = row.get(..column)?;
-            let is_units = labels.iter().any(|cell| {
+            let labels: Vec<_> = row
+                .get(..column)?
+                .iter()
+                .map(|cell| compact(cell))
+                .collect();
+            let label = labels.iter().find(|cell| {
                 matches!(
-                    compact(cell).split('(').next(),
+                    cell.split('(').next(),
                     Some("発行済投資口の総口数" | "発行済投資口数" | "発行済投資口総数")
                 )
-            }) && labels
+            })?;
+            let in_label = label.contains("(口)");
+            let in_column = labels
                 .iter()
-                .any(|cell| matches!(compact(cell).as_str(), "口" | "(口)"));
-            is_units.then(|| amount(row.get(column)?)).flatten()
+                .any(|cell| matches!(cell.as_str(), "口" | "(口)"));
+            (in_label || in_column)
+                .then(|| amount(row.get(column)?))
+                .flatten()
         }))
     }))
 }
@@ -142,7 +150,12 @@ fn property_values(accounts: &[Block], period: Date) -> Option<(i64, i64)> {
                         .or(scale);
                     continue;
                 }
-                if let Some(value) = scale.and_then(|unit| property_table(rows, period, unit)) {
+                let header_units = rows.iter().take(3).flatten().filter_map(|cell| {
+                    let text = compact(cell);
+                    text.contains("単位:").then(|| monetary_unit(&text))
+                });
+                let unit = same_value(scale.map(Some).into_iter().chain(header_units)).flatten();
+                if let Some(value) = unit.and_then(|unit| property_table(rows, period, unit)) {
                     values.push(value);
                 }
                 in_note = false;
@@ -238,6 +251,26 @@ mod tests {
         assert_eq!(assets.property_book_value, 1_000_000);
         assert_eq!(assets.property_fair_value, 1_400_000);
         assert_eq!(assets.nav_per_unit, Some(120.0));
+    }
+
+    #[test]
+    fn accepts_units_in_table_headers_and_rejects_conflicting_units() {
+        let fund = FUND.replace("(c)</td><td>口", "（口）</td><td>");
+        let accounts = ACCOUNTS.replace("<p>（単位：千円）</p>", "").replace(
+            "<td></td><td></td><td>前期",
+            "<td>（単位：千円）</td><td></td><td>前期",
+        );
+        assert_eq!(issued_units(&ixbrl::blocks(&fund), PERIOD), Some(10_000));
+        assert_eq!(
+            issued_units(&ixbrl::blocks(&fund.replace("（口）", "（千口）")), PERIOD),
+            None
+        );
+        assert_eq!(
+            property_values(&ixbrl::blocks(&accounts), PERIOD),
+            Some((1_000_000, 1_400_000))
+        );
+        let conflict = accounts.replace("</p>", "</p><p>（単位：百万円）</p>");
+        assert!(property_values(&ixbrl::blocks(&conflict), PERIOD).is_none());
     }
 
     #[test]
