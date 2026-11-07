@@ -401,11 +401,36 @@ pub fn verified_instant_facts(
     documents: &[(String, String)],
     period_end: domain::Date,
 ) -> Vec<VerifiedInstantFact> {
-    let mut contexts: HashMap<String, (String, bool)> = HashMap::new();
+    instant_facts(documents, period_end, false)
+}
+
+pub fn verified_reit_instant_facts(
+    documents: &[(String, String)],
+    period_end: domain::Date,
+) -> Vec<VerifiedInstantFact> {
+    instant_facts(documents, period_end, true)
+}
+
+fn instant_facts(
+    documents: &[(String, String)],
+    period_end: domain::Date,
+    allow_nonconsolidated: bool,
+) -> Vec<VerifiedInstantFact> {
+    #[derive(Default)]
+    struct Context {
+        id: String,
+        date: String,
+        scenario: bool,
+        nonconsolidated: bool,
+        invalid: bool,
+    }
+
+    let mut contexts: HashMap<String, (String, bool, bool)> = HashMap::new();
     let mut units: HashMap<String, String> = HashMap::new();
     for (_, html) in documents {
-        let mut context: Option<(String, String, bool)> = None;
+        let mut context: Option<Context> = None;
         let mut instant = false;
+        let mut member: Option<String> = None;
         let mut unit: Option<(String, String, bool)> = None;
         let mut measure = false;
         for event in scan(html) {
@@ -414,27 +439,52 @@ pub fn verified_instant_facts(
                     let local = t.name.rsplit(':').next().unwrap_or("");
                     match (local, t.closing) {
                         ("context", false) => {
-                            context =
-                                Some((t.attr("id").unwrap_or("").into(), String::new(), false))
+                            context = Some(Context {
+                                id: t.attr("id").unwrap_or("").into(),
+                                ..Context::default()
+                            });
                         }
                         ("instant", false) => instant = true,
                         ("instant", true) => instant = false,
-                        ("segment" | "scenario" | "explicitmember" | "typedmember", false) => {
+                        ("scenario", false) => {
                             if let Some(c) = context.as_mut() {
-                                c.2 = true;
+                                c.invalid |= c.scenario || !allow_nonconsolidated;
+                                c.scenario = true;
+                            }
+                        }
+                        ("explicitmember", false) => {
+                            if let Some(c) = context.as_mut() {
+                                let standalone = t.attr("dimension")
+                                    == Some("jppfs_cor:ConsolidatedOrNonConsolidatedAxis");
+                                c.invalid |= !c.scenario || c.nonconsolidated || !standalone;
+                                member = Some(String::new());
+                            }
+                        }
+                        ("explicitmember", true) => {
+                            if let (Some(c), Some(value)) = (context.as_mut(), member.take()) {
+                                c.nonconsolidated =
+                                    value.trim() == "jppfs_cor:NonConsolidatedMember";
+                                c.invalid |= !c.nonconsolidated;
+                            }
+                        }
+                        ("segment" | "typedmember", false) => {
+                            if let Some(c) = context.as_mut() {
+                                c.invalid = true;
                             }
                         }
                         ("context", true) => {
-                            if let Some((id, date, dimension)) = context.take() {
+                            if let Some(c) = context.take() {
+                                let invalid = c.invalid || (c.scenario && !c.nonconsolidated);
+                                let date = c.date;
                                 // A contradictory resource definition invalidates the context.
                                 contexts
-                                    .entry(id)
+                                    .entry(c.id)
                                     .and_modify(|old| {
-                                        if *old != (date.clone(), dimension) {
+                                        if old.0 != date || old.2 != c.nonconsolidated || invalid {
                                             old.1 = true;
                                         }
                                     })
-                                    .or_insert((date, dimension));
+                                    .or_insert((date, invalid, c.nonconsolidated));
                             }
                         }
                         ("unit", false) => {
@@ -470,8 +520,11 @@ pub fn verified_instant_facts(
                 Ev::Text(text) => {
                     if instant {
                         if let Some(c) = context.as_mut() {
-                            c.1.push_str(text);
+                            c.date.push_str(text);
                         }
+                    }
+                    if let Some(value) = member.as_mut() {
+                        value.push_str(text);
                     }
                     if measure {
                         if let Some(u) = unit.as_mut() {
@@ -508,10 +561,9 @@ pub fn verified_instant_facts(
                         .next()
                         .unwrap_or("");
                     let currency = units.get(t.attr("unitref").unwrap_or(""));
-                    let valid = contexts
-                        .get(&ctx)
-                        .is_some_and(|(date, dim)| !dim && date.trim() == period_end.to_string())
-                        && currency.is_some_and(|u| u == "iso4217:JPY")
+                    let valid = contexts.get(&ctx).is_some_and(|(date, invalid, _)| {
+                        !invalid && date.trim() == period_end.to_string()
+                    }) && currency.is_some_and(|u| u == "iso4217:JPY")
                         && scale.is_some_and(|v| (-6..=12).contains(&v))
                         && matches!(format, "" | "numdotdecimal" | "num-dot-decimal")
                         && !matches!(t.attr("xsi:nil"), Some("true" | "1"));

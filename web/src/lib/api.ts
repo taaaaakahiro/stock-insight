@@ -148,6 +148,13 @@ export type ReitDetail = {
   occupancy: number | null;
   checks: { loans: string; properties: string } | null;
   detail: {
+    doc_id?: string;
+    period_end?: string;
+    assets?: {
+      property_book_value: number;
+      property_fair_value: number;
+      nav_per_unit: number | null;
+    } | null;
     loans: {
       kind: "short" | "long" | null;
       lender: string;
