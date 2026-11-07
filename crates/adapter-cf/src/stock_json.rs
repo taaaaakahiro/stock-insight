@@ -47,6 +47,7 @@ pub fn row_json(r: &StockRow) -> Value {
             "reprice_max_ratio": x.reprice_max_ratio,
             "avg_rate": x.avg_rate,
             "occupancy": x.occupancy,
+            "nav_multiple": x.nav_multiple,
         })),
     });
     // json! の再帰の上限に当たるので、配当方針は後から足す

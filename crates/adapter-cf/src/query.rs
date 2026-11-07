@@ -52,6 +52,20 @@ macro_rules! payout_goal_sql {
 const DOE_NOW: &str =
     "(CASE WHEN i.dividend_basis = 'forecast' THEN (i.dividend_total / NULLIF(i.price, 0)) * i.pbr ELSE i.doe END)";
 
+/// 期末の1口NAVを終値と同じ投資口数の基準にそろえる。期末翌日効力の分割も含めるため、
+/// 分配金と同じく期末7日前を分割調整の境界とする。
+const NAV_MULTIPLE: &str = "(CASE WHEN s.kind = 'reit' AND i.price > 0 THEN (
+    SELECT i.price / (json_extract(d.body, '$.assets.nav_per_unit') * COALESCE((
+        SELECT EXP(SUM(LN(sp.factor))) FROM splits sp
+        WHERE sp.code = i.code AND sp.date > DATE(d.period_end, '-7 days') AND sp.factor > 0
+    ), 1.0))
+    FROM reit_detail d
+    WHERE d.code = i.code AND d.period_end = r.period_end AND d.period_end <= i.price_date
+      AND json_extract(d.body, '$.doc_id') = r.doc_id
+      AND json_type(d.body, '$.assets.nav_per_unit') IN ('integer', 'real')
+      AND json_extract(d.body, '$.assets.nav_per_unit') > 0
+) END)";
+
 /// 指標の SQL の式。株式などは indicators_latest の列、REIT は reit_profile から計算する（比率は小数）
 pub fn metric_sql(m: Metric) -> String {
     match m {
@@ -61,6 +75,7 @@ pub fn metric_sql(m: Metric) -> String {
         Metric::RepriceMaxRatio => format!("(r.reprice_1y_max * 1.0 / {REIT_DEBT})"),
         Metric::AvgRate => "(r.avg_rate / 100.0)".into(),
         Metric::Occupancy => "(r.occupancy / 100.0)".into(),
+        Metric::NavMultiple => NAV_MULTIPLE.into(),
         Metric::Dividend => {
             "(CASE WHEN i.dividend_yield IS NOT NULL THEN i.dividend_ttm END)".into()
         }
@@ -74,13 +89,14 @@ pub fn metric_sql(m: Metric) -> String {
 fn reit_columns() -> String {
     let m = |x: Metric| format!("{} AS {}", metric_sql(x), x.key());
     format!(
-        "r.sector AS reit_sector, {}, {}, {}, {}, {}, {}, r.period_end AS reit_period_end",
+        "r.sector AS reit_sector, {}, {}, {}, {}, {}, {}, {}, r.period_end AS reit_period_end",
         m(Metric::FloatingRatio),
         m(Metric::UnknownRatio),
         m(Metric::RepriceRatio),
         m(Metric::RepriceMaxRatio),
         m(Metric::AvgRate),
-        m(Metric::Occupancy)
+        m(Metric::Occupancy),
+        m(Metric::NavMultiple)
     )
 }
 

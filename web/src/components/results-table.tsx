@@ -91,6 +91,7 @@ const RENDER: Record<MetricKey, (r: StockRow) => React.ReactNode> = {
   reprice_max_ratio: (r) => pct(r.reit?.reprice_max_ratio, 1),
   avg_rate: (r) => pct(r.reit?.avg_rate, 2),
   occupancy: (r) => pct(r.reit?.occupancy, 1),
+  nav_multiple: (r) => times(r.reit?.nav_multiple),
   doe_floor: (r) => pct(r.doe_floor, 1),
   doe_margin: (r) => <DoeMargin r={r} />,
 };
@@ -149,6 +150,7 @@ const ORDER: MetricKey[] = [
   "dividend_yield",
   "yield_percentile",
   "pbr",
+  "nav_multiple",
   "per",
   "payout_ratio",
   "consecutive_increases",

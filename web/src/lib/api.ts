@@ -117,6 +117,7 @@ export type ReitListFields = {
   reprice_max_ratio: number | null;
   avg_rate: number | null;
   occupancy: number | null;
+  nav_multiple: number | null;
 };
 
 export type ReitRateType = "fixed" | "swap_fixed" | "floating" | null;

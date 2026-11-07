@@ -177,6 +177,7 @@ describe("activeConditions", () => {
 
   it("groups only the metrics the tab has", () => {
     expect(metricGroupsFor("reit").map((g) => g.label)).toEqual(["配当", "割安さ", "借入・物件"]);
+    expect(metricGroupsFor("reit").find((g) => g.key === "value")?.keys).toEqual(["nav_multiple"]);
     // 割安さは REIT・ETF でも残す（利回りの過去5年比の選択を入れる）
     expect(metricGroupsFor("etf").map((g) => [g.key, g.keys])).toEqual([
       ["dividend", ["dividend_yield"]],

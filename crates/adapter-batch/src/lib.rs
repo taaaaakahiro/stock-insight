@@ -16,6 +16,7 @@ pub mod recommendation_evaluation;
 pub mod recommendation_report;
 
 mod reit_assets;
+pub mod reit_forecast_pdf;
 pub mod reit_metrics;
 pub mod reit_rag;
 

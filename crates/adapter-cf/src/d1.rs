@@ -109,6 +109,8 @@ pub(crate) struct Row {
     avg_rate: Option<f64>,
     #[serde(default)]
     occupancy: Option<f64>,
+    #[serde(default)]
+    nav_multiple: Option<f64>,
     /// 条件に合う件数（一覧の SQL だけが返す）
     #[serde(default)]
     total: Option<i64>,
@@ -208,6 +210,7 @@ impl From<Row> for StockRow {
                 reprice_max_ratio: r.reprice_max_ratio,
                 avg_rate: r.avg_rate,
                 occupancy: r.occupancy,
+                nav_multiple: r.nav_multiple,
             }),
         }
     }

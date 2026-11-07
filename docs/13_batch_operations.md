@@ -61,7 +61,7 @@ EDINETの原本は種類ごとに上書きし、削除対象キーをmanifestへ
 
 ## CLI
 
-コマンド: `migrate`, `sync-master`, `sync-jq`, `sync-edinet`, `sync-reit`, `compute`, `should-run`, `reit-probe`, `reit-dump`, `evaluate-recommendations`, `reit-rag`, `quality-report`, `generate-recommendations`。
+コマンド: `migrate`, `sync-master`, `sync-jq`, `sync-reit-forecast-pdfs`, `sync-edinet`, `sync-reit`, `compute`, `should-run`, `reit-probe`, `reit-dump`, `evaluate-recommendations`, `reit-rag`, `quality-report`, `generate-recommendations`。
 
 オプション: `--dry-run <file>`, `--from-file <file>`, `--label <英数字>`, `--force`, `--from <YYYY-MM-DD>`, `--until <YYYY-MM-DD>`, `--rate <回/分>`, `--max-minutes`, `--persist-every`, `--raw-dir`, `--limit`, `--out`, `--refill-prices`, `--refill-forecasts`, `--refetch-doe`, `--refetch-business`。各コマンドで使用するオプションはmain.rsの該当処理を参照する。すべてのオプションがすべてのコマンドに作用するわけではない。
 
@@ -119,6 +119,26 @@ REIT専用workflowは次の順で分析する。各処理の上限は100分、�
 `REIT_RAG_ENABLED` の変更は次のworkflowから適用される。停止しても既存の公開結果は残る。稼働状態はActionsの `reit-rag-audit`・`reit-rag-archive`・`reit-rag-prepare`・`reit-rag-assess`・`reit-rag` ジョブと `sync_state.reit_rag_attempt_status`、公開結果は `reit_rag_publication` で確認する。初回バッチの完了とデプロイ完了は別。
 
 進捗ログには段階、銘柄コード、分割番号、経過秒を記録する。各ジョブは110分未満で停止する設定だが、全工程の所要時間や時間内の完走は保証しない。
+
+## REIT の分配予想PDF
+
+J-Quants のTDnetアドオンを契約済みの場合は、GitHubの `JQUANTS_TDNET_ENABLED` を `true` にすると、日次バッチが `sync-reit-forecast-pdfs` を指標計算の前に実行する。初回は直近210日分、以降は前回の続きと直近数日分を取得する。CLIの `--from`・`--until` で期間指定もできる。PDF側の取得に失敗した場合は次回再取得し、日次バッチは保存済みの予想で指標計算を続ける。
+
+手元の公式PDFを使う場合は、`pdftotext`（Poppler）を用意し、次の形式のJSONを作る。PDFへの相対パスはJSONファイルの位置を基準とする。開示IDはTDnetの開示番号など同じ書類で再利用できる値を指定する。開示時刻（`time`）は分かる場合に指定する。
+
+```json
+[
+  {"code":"3476","doc_id":"mirai-20260617","disclosed":"2026-06-17","pdf":"mirai.pdf"}
+]
+```
+
+```sh
+batch-cli sync-reit-forecast-pdfs --from-file disclosures.json --dry-run forecast.sql
+batch-cli sync-reit-forecast-pdfs --from-file disclosures.json
+batch-cli compute --label reitforecast
+```
+
+取り込むのは、先頭3ページで銘柄コード・開示日・対象期間・分配金の列を確認できた短信と分配予想の修正。読み取れない書式やスキャン画像は対象外。保存先は既存の `dividend_forecasts` で、開示IDごとに再実行できる。
 
 ## 同日の再実行
 

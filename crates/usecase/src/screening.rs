@@ -114,6 +114,7 @@ pub struct ReitListFields {
     pub reprice_max_ratio: Option<f64>,
     pub avg_rate: Option<f64>,
     pub occupancy: Option<f64>,
+    pub nav_multiple: Option<f64>,
 }
 
 /// REIT の最新の有報の要約（reit_profile）。金額は円、面積は㎡、avg_rate・occupancy は %
