@@ -1354,7 +1354,7 @@ async fn sync_reit(args: Args) -> Result<(), String> {
                 .await
                 .map_err(|e| format!("{}: {}", d.doc_id, e.0))?,
         };
-        let record = match adapter_batch::edinet::read_reit_report(&zip) {
+        let record = match adapter_batch::edinet::read_reit_report_for_period(&zip, d.period_end) {
             Ok(rep) => adapter_batch::edinet::reit_record(d.clone(), rep),
             Err(e) => {
                 println!(
@@ -1415,6 +1415,7 @@ async fn sync_reit(args: Args) -> Result<(), String> {
             for s in &sector_stmts {
                 st.exec(s).await.map_err(|e| e.0)?;
             }
+            backfill_reit_assets(st, &ed, &cache, started, deadline).await?;
             st.set_state(REIT_CURSOR_KEY, &listed_until.to_string(), now)
                 .await
                 .map_err(|e| e.0)?;
@@ -1430,6 +1431,78 @@ async fn sync_reit(args: Args) -> Result<(), String> {
         (None, None) => unreachable!(),
     }
     println!("sync-reit: saved {saved} reports, listed until {listed_until}");
+    Ok(())
+}
+
+/// 保存済みの最新明細のうち、NAVの取込がまだの書類を補完する。
+async fn backfill_reit_assets(
+    store: &d1::D1Store,
+    ed: &EdinetClient,
+    cache: &std::path::Path,
+    started: Instant,
+    deadline: std::time::Duration,
+) -> Result<(), String> {
+    use adapter_batch::sql::{Stmt, Val};
+
+    let rows = store
+        .query(&Stmt {
+            sql: "SELECT p.code, p.doc_id, p.period_end FROM reit_profile p \
+              JOIN stocks s ON s.code=p.code AND s.kind='reit' \
+              JOIN reit_detail d ON d.code=p.code AND d.period_end=p.period_end \
+              WHERE json_extract(d.body, '$.doc_id')=p.doc_id \
+                AND json_type(d.body, '$.assets') IS NULL ORDER BY p.code"
+                .into(),
+            params: vec![],
+        })
+        .await
+        .map_err(|e| e.0)?;
+    for row in rows {
+        if started.elapsed() > deadline {
+            break;
+        }
+        let (Some(code), Some(doc_id), Some(period)) = (
+            row["code"].as_str(),
+            row["doc_id"].as_str(),
+            row["period_end"].as_str().and_then(Date::parse),
+        ) else {
+            continue;
+        };
+        let zip = match std::fs::read(cache.join(format!("{doc_id}.zip"))) {
+            Ok(bytes) => Ok(bytes),
+            Err(_) => ed.fetch_ixbrl_zip(doc_id).await,
+        };
+        let report = match zip.and_then(|bytes| {
+            adapter_batch::edinet::read_reit_report_for_period(&bytes, Some(period))
+        }) {
+            Ok(report) if report.code.as_deref() == Some(code) => report,
+            Ok(_) => {
+                eprintln!("sync-reit: {code} {doc_id}: NAV補完の証券コードが一致しません");
+                continue;
+            }
+            Err(e) => {
+                eprintln!(
+                    "sync-reit: {code} {doc_id}: NAV補完の書類を取得・解析できません ({})",
+                    e.0
+                );
+                continue;
+            }
+        };
+        store
+            .exec(&Stmt {
+                sql: "UPDATE reit_detail SET body=json_set(body, '$.assets', json(?)) \
+                  WHERE code=? AND period_end=? AND json_extract(body, '$.doc_id')=? \
+                    AND json_type(body, '$.assets') IS NULL"
+                    .into(),
+                params: vec![
+                    Val::Text(serde_json::to_string(&report.assets).map_err(|e| e.to_string())?),
+                    Val::Text(code.into()),
+                    Val::Text(period.to_string()),
+                    Val::Text(doc_id.into()),
+                ],
+            })
+            .await
+            .map_err(|e| e.0)?;
+    }
     Ok(())
 }
 
@@ -1529,7 +1602,7 @@ async fn reit_probe(args: Args) -> Result<(), String> {
                 b
             }
         };
-        let r = match adapter_batch::edinet::read_reit_report(&zip) {
+        let r = match adapter_batch::edinet::read_reit_report_for_period(&zip, d.period_end) {
             Ok(r) => r,
             Err(e) => {
                 println!("{} {} 読めない: {}", d.edinet_code, d.filer_name, e.0);
@@ -1631,6 +1704,7 @@ async fn reit_probe(args: Args) -> Result<(), String> {
             "doc_id": d.doc_id,
             "submitted": d.submitted.to_string(),
             "period_end": d.period_end.map(|p| p.to_string()),
+            "assets": r.assets,
             "checks": { "loans": total_check, "kind": kind_check, "properties": prop_check, "occupancy_off": occ_off },
             "balance": { "short_loans": r.balance.short_loans, "long_loans": r.balance.long_loans, "bonds": r.balance.bonds },
             "loans_total": loans_total,

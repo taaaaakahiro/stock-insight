@@ -6,7 +6,7 @@
 //! API キーは URL に載せず、ヘッダーで渡す。EDINET は Azure API Management の既定のヘッダー名
 //! （Ocp-Apim-Subscription-Key）だけを受け付ける。クエリと同じ名前の Subscription-Key ヘッダーは 401 になる。
 
-use crate::{http, ixbrl, jquants::code_from_jquants};
+use crate::{http, ixbrl, jquants::code_from_jquants, reit_assets};
 use domain::disclosure::{normalize_text, DocKind, Section};
 use domain::reit::{
     self, Checks, DebtSchedule, DebtSummary, PortfolioSummary, Property, PropertyTotal, RateMix,
@@ -235,6 +235,7 @@ pub struct ReitReport {
     pub debt: DebtSchedule,
     pub properties: Vec<Property>,
     pub property_total: Option<PropertyTotal>,
+    pub assets: Option<reit_assets::ReitAssets>,
 }
 
 /// 本文のファイル名の先頭2桁で分けたブロック（01 = ファンドの状況、02 = 経理の状況）
@@ -253,8 +254,16 @@ pub fn reit_blocks(zip_bytes: &[u8]) -> Result<(Vec<reit::Block>, Vec<reit::Bloc
 
 /// type=1 の zip から読む。本文のファイル名の先頭2桁で、01 = ファンドの状況（物件）、02 = 経理の状況（借入金）
 pub fn read_reit_report(zip_bytes: &[u8]) -> Result<ReitReport, PortError> {
+    read_reit_report_for_period(zip_bytes, None)
+}
+
+pub fn read_reit_report_for_period(
+    zip_bytes: &[u8],
+    period: Option<Date>,
+) -> Result<ReitReport, PortError> {
     let docs = ixbrl::public_docs(zip_bytes)?;
     let mut code = None;
+    let mut assets_period = None;
     let mut fund = vec![];
     let mut accounts = vec![];
     let mut facts = std::collections::HashMap::new();
@@ -263,6 +272,16 @@ pub fn read_reit_report(zip_bytes: &[u8]) -> Result<ReitReport, PortError> {
             code = ixbrl::non_numeric(html, "SecurityCodeDEI")
                 .and_then(|c| code_from_jquants(&c))
                 .map(|c| c.as_str().to_string());
+            assets_period = period.filter(|period| {
+                ixbrl::non_numeric(html, "CurrentPeriodEndDateDEI").as_deref()
+                    == Some(period.to_string().as_str())
+                    && ixbrl::non_numeric(
+                        html,
+                        "WhetherConsolidatedFinancialStatementsArePreparedDEI",
+                    )
+                    .as_deref()
+                        == Some("false")
+            });
             continue;
         }
         facts.extend(ixbrl::facts(html));
@@ -293,6 +312,8 @@ pub fn read_reit_report(zip_bytes: &[u8]) -> Result<ReitReport, PortError> {
         debt: reit::parse_debt(&accounts),
         properties,
         property_total,
+        assets: assets_period
+            .and_then(|period| reit_assets::extract(&docs, &fund, &accounts, period)),
     })
 }
 
@@ -340,6 +361,7 @@ pub fn reit_detail_json(r: &ReitRecord) -> Value {
     serde_json::json!({
         "doc_id": r.doc.doc_id,
         "period_end": r.period_end.to_string(),
+        "assets": rp.assets,
         "loans": rp.debt.loans.iter().map(|l| serde_json::json!({
             "kind": l.kind.map(|k| match k { reit::LoanKind::Short => "short", reit::LoanKind::Long => "long" }),
             "lender": l.lender,

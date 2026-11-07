@@ -159,8 +159,8 @@ function Detail({ d }: { d: StockDetail }) {
 
       {kind === "reit" && (
         <>
+          <ReitDebt key={s.code} code={s.code} />
           <ReitAssessment code={s.code} />
-          <ReitDebt code={s.code} />
         </>
       )}
 

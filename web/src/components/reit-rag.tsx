@@ -247,7 +247,7 @@ export function ReitAssessmentContent({
                 );
               })}
               <p className="text-xs text-muted-foreground">
-                未確認: {item.assessment.missing_information.join("、")}
+                AI評価での未確認項目　{item.assessment.missing_information.join("、")}
               </p>
             </div>
           </details>

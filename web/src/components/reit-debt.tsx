@@ -10,7 +10,7 @@ import {
 import { ApiError, apiGet, type ReitDetail, type ReitRateType } from "@/lib/api";
 import { useAuthState } from "@/lib/auth";
 import { reitSectorLabel } from "@/lib/filters";
-import { oku, pct, ymd } from "@/lib/format";
+import { oku, pct, yen, ymd } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 type Load =
@@ -78,7 +78,7 @@ const RATE_LABEL: Record<NonNullable<ReitRateType>, string> = {
 
 const LADDER_LABELS = ["1年以内", "1〜2年", "2〜3年", "3〜4年", "4〜5年", "5年超"];
 
-/** REIT の金利の影響（有利子負債の内訳・返済の予定）と物件の稼働率。有報（EDINET）の表から読んだ値 */
+/** REITの保有資産と借入。EDINETの有報から取得した値を表示する。 */
 export function ReitDebt({ code }: { code: string }) {
   const { getToken } = useAuthState();
   const [load, setLoad] = useState<Load>({ state: "loading" });
@@ -97,9 +97,9 @@ export function ReitDebt({ code }: { code: string }) {
   }, [code, getToken]);
 
   return (
-    <section aria-labelledby="reit-debt" className="flex flex-col gap-4">
-      <h3 id="reit-debt" className="text-sm">
-        金利の影響と物件の稼働率（有価証券報告書から）
+    <section aria-labelledby="reit-assets" className="flex flex-col gap-4">
+      <h3 id="reit-assets" className="text-sm">
+        NAVと保有資産
       </h3>
       {load.state === "loading" && <p className="text-sm text-muted-foreground">読み込み中…</p>}
       {load.state === "missing" && (
@@ -136,20 +136,59 @@ function Body({ d }: { d: ReitDetail }) {
     },
     { label: "平均利率", value: d.avg_rate == null ? "—" : `${d.avg_rate.toFixed(2)}%` },
     { label: "平均残存年数", value: d.avg_years == null ? "—" : `${d.avg_years.toFixed(1)}年` },
+  ];
+  const assets =
+    d.detail?.doc_id === d.doc_id && d.detail.period_end === d.period_end ? d.detail.assets : null;
+  const assetTiles = [
     {
-      label: "稼働率",
-      value: d.occupancy == null ? "—" : `${d.occupancy.toFixed(1)}%`,
-      sub: d.property_count > 0 ? `${d.property_count}物件` : undefined,
+      label: "1口当たりNAV",
+      value: assets?.nav_per_unit == null ? "未取得" : yen(assets.nav_per_unit),
     },
+    { label: "賃貸等不動産の期末時価", value: oku(assets?.property_fair_value) },
+    { label: "賃貸等不動産の期末簿価", value: oku(assets?.property_book_value) },
+    {
+      label: "賃貸等不動産の含み損益",
+      value: assets ? oku(assets.property_fair_value - assets.property_book_value) : "—",
+    },
+    { label: "取込物件数", value: d.property_count > 0 ? `${d.property_count}件` : "—" },
+    { label: "稼働率", value: d.occupancy == null ? "—" : `${d.occupancy.toFixed(1)}%` },
   ];
 
   return (
     <>
       <p className="text-xs text-muted-foreground">
-        {ymd(d.period_end)} 期末の有価証券報告書（{ymd(d.submitted)}{" "}
-        提出）の借入金明細表・物件の表から読んだ値
-        {sector ? `。用途: ${sector}` : ""}
-        。金額は四捨五入、幅のある値は「記載なし」の借入をどう見るかの差です。
+        {ymd(d.period_end)} 期末{sector && `・${sector}`}・出典{" "}
+        <a
+          href={`https://disclosure2dl.edinet-fsa.go.jp/searchdocument/pdf/${encodeURIComponent(d.doc_id)}.pdf`}
+          target="_blank"
+          rel="noreferrer"
+          className="underline"
+        >
+          有価証券報告書（{ymd(d.submitted)} 提出）
+        </a>
+      </p>
+      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        {assetTiles.map(({ label, value }) => (
+          <div key={label} className="rounded-xl border p-3">
+            <dt className="text-xs text-muted-foreground">{label}</dt>
+            <dd className="text-lg tabular-nums">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="text-xs text-muted-foreground">
+        1口当たりNAVは、期末の純資産（分配金控除前）に賃貸等不動産の含み損益を加え、期末の発行済投資口数で割った値です。
+      </p>
+      {d.detail && d.detail.properties.length > 0 ? (
+        <Properties d={d} />
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          この有価証券報告書から物件明細を取得できていません。
+        </p>
+      )}
+
+      <h3 className="text-sm">金利の影響と返済予定</h3>
+      <p className="text-xs text-muted-foreground">
+        幅のある値は、金利区分が「記載なし」の借入をどう扱うかによる差です。
       </p>
       {unreliable && (
         <p role="note" className="rounded-lg border border-warning/50 bg-warning/10 p-3 text-xs">
@@ -170,7 +209,6 @@ function Body({ d }: { d: ReitDetail }) {
       <MixBar d={d} debt={debt} />
       <Ladder d={d} />
       {d.history.length > 1 && <History d={d} />}
-      {d.detail && d.detail.properties.length > 0 && <Properties d={d} />}
       {d.detail && d.detail.loans.length > 0 && <Loans d={d} />}
     </>
   );
@@ -362,9 +400,7 @@ function Properties({ d }: { d: ReitDetail }) {
   const m2 = new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 0 });
   return (
     <details className="group rounded-xl border p-3">
-      <summary className="cursor-pointer text-sm">
-        物件ごとの稼働率・賃料（{props.length}物件）
-      </summary>
+      <summary className="cursor-pointer text-sm">保有物件一覧（{props.length}件）</summary>
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted-foreground">並べ替え:</span>
         {(
