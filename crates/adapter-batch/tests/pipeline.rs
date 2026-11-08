@@ -138,20 +138,13 @@ async fn reit_forecasts_feed_the_snapshot_and_detail_history_on_the_same_basis()
     }));
     let splits = vec![domain::split::Split::new(d("2026-05-01"), 0.5).unwrap()];
     let (market, _, _, _) = build_inputs(bars.clone(), &[], &forecasts, &[], &splits, true);
-    assert_eq!(
-        market
-            .reit_distributions
-            .as_ref()
-            .unwrap()
-            .at(bars[0].date)
-            .unwrap()
-            .annual,
-        6000.0
-    );
-    assert_eq!(
-        domain::yield_series(&market),
-        vec![(bars[5].date, 0.055), (bars[0].date, 0.06)]
-    );
+    assert!(market
+        .reit_distributions
+        .as_ref()
+        .unwrap()
+        .at(bars[0].date)
+        .is_none());
+    assert_eq!(domain::yield_series(&market), vec![(bars[5].date, 0.055)]);
     let key = code.as_str().to_owned();
     let (snaps, skipped) = compute_all(
         &[code],

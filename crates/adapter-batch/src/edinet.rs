@@ -91,6 +91,17 @@ impl EdinetClient {
         parse_reit_list(&body, date)
     }
 
+    /// Use a single listing for report intake and correction/withdrawal checks.
+    pub async fn list_reit_scoring_day(
+        &self,
+        date: Date,
+    ) -> Result<(Vec<ReitDocRef>, Vec<Value>), PortError> {
+        let body = self
+            .get(&format!("{BASE}/documents.json?date={date}&type=2"))
+            .await?;
+        Ok((parse_reit_list(&body, date)?, parse_reit_events(&body)?))
+    }
+
     /// RAG audit retains corrections and withdrawal/metadata events, including
     /// older reports appearing in today's list. Do not apply submitted==day here.
     pub async fn list_reit_events(&self, date: Date) -> Result<Vec<Value>, PortError> {

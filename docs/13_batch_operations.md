@@ -138,8 +138,18 @@ batch-cli sync-reit-forecast-pdfs --from-file disclosures.json
 batch-cli compute --label reitforecast
 ```
 
-取り込むのは、先頭3ページで銘柄コード・開示日・対象期間・分配金の列を確認できた短信と分配予想の修正。読み取れない書式やスキャン画像は対象外。保存先は既存の `dividend_forecasts` で、開示IDごとに再実行できる。
+取り込むのは、先頭3ページで銘柄コード・開示日・対象期間・分配金の列を確認できた短信と分配予想の修正。読み取れない書式やスキャン画像は対象外。既存一覧の保存先は `dividend_forecasts`。定量評価用には該当ページを一意に特定できた値を `reit_metric_observations` に保存する。開示IDごとに再実行できる。
 
 ## 同日の再実行
 
 同日に成功済みでも毎回取り込みを実行します。株価は未取得期間と直近7日分を再取得し、同じ日付を更新します。朝に未配信の終値は夕方の再実行で取得できます。手動起動は休場日も実行します。定期取得は18:30 JST、AIレコメンドは19:30（当日のバッチ成功が条件）です。scheduleの遅れで日付をまたいでも、09:00 JSTまでは前日の分として扱います。どちらもGitHub Actionsのscheduleです。
+
+## J-REITの定量評価
+
+マイグレーション `0027` を適用してからJ-Quants・EDINETを同期する。通常は `reit-batch` の `reit-scoring` ジョブが `sync-reit` 成功後に定量評価を公開する。`REIT_RAG_ENABLED` の設定は不要。計算だけをやり直すには `batch-cli compute-reit-scores` を実行する。
+
+- 既存の最新有報は `sync-reit` で検証済み観測値を補完する。過去の有報は `sync-reit --from YYYY-MM-DD --until YYYY-MM-DD` で開示期間を区切って取り直せる。期間を明示した実行は定量評価の観測値だけを補完し、日次の同期カーソルや既存の最新要約を更新しない。
+- `sync-jq --refill-forecasts` は過去の予想に加え、確定DPUの開示・改訂情報も補完する。J-Quantsの契約で取得できる履歴の範囲を使う。
+- 年額のFFO・利息・NOIをすぐに使うには連続した直近12か月分、FFOの5年CAGRには5年前の12か月分の有報も取り込む。`reit-probe` の `income_observations` で、取得結果とiXBRL内の出典を確認できる。
+- その他の補足資料は [入力契約](20_reit_scoring.md#補足入力の契約) に従って `batch-cli import-reit-observations --from-file <path>` で取り込み、再計算する。
+- 実行ログの対象数・順位対象数・充足率の最小／中央値／最大と、画面またはAPIの銘柄別充足率を確認する。暫定評価は欠損が解消するまで順位対象外。公開前に失敗した場合は、原因を解消して再計算する。前回の公開版は残る。

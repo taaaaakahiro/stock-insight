@@ -1,4 +1,5 @@
 use crate::{d1_store, env, Args, SystemClock};
+use adapter_batch::reit_scoring::{self, Observation};
 use adapter_batch::{d1, http, jquants::JQuantsClient, reit_forecast_pdf as pdf};
 use domain::{Date, StockCode};
 use serde::Deserialize;
@@ -20,7 +21,7 @@ pub async fn run(args: Args) -> Result<(), String> {
     let now = SystemClock.now_unix();
     let today = Date::from_unix_jst(now);
     if let Some(manifest) = &args.from_file {
-        let reports = local_reports(Path::new(manifest), today)?;
+        let (reports, evidence) = local_reports(Path::new(manifest), today, now)?;
         if let Some(out) = &args.dry_run {
             let store = d1::SqlFileStore::default();
             store.save_forecasts(&reports, now).await.map_err(|e| e.0)?;
@@ -42,6 +43,9 @@ pub async fn run(args: Args) -> Result<(), String> {
             return Err(format!("{} is not a listed REIT", report.code.as_str()));
         }
         store.save_forecasts(&reports, now).await.map_err(|e| e.0)?;
+        reit_scoring::save_observations(&store, &evidence)
+            .await
+            .map_err(|e| e.0)?;
         println!("reit forecast PDFs: imported {} disclosures", reports.len());
         return Ok(());
     }
@@ -102,6 +106,7 @@ pub async fn run(args: Args) -> Result<(), String> {
         .map(|doc| (doc.doc_id.clone(), doc))
         .collect();
     let mut reports = Vec::new();
+    let mut evidence = Vec::new();
     for disclosure in disclosures.values() {
         let bytes = jq
             .disclosure_pdf(&disclosure.doc_id)
@@ -109,7 +114,10 @@ pub async fn run(args: Args) -> Result<(), String> {
             .map_err(|e| e.0)?;
         let text = pdf::pdf_text(&bytes)?;
         match pdf::forecast_report(disclosure, &text) {
-            Some(report) => reports.push(report),
+            Some(report) => {
+                evidence.extend(pdf::scoring_observations(&report, &text, now));
+                reports.push(report);
+            }
             None => eprintln!(
                 "reit forecast PDFs: unverified table for {} ({})",
                 disclosure.code, disclosure.doc_id
@@ -117,6 +125,15 @@ pub async fn run(args: Args) -> Result<(), String> {
         }
     }
     store.save_forecasts(&reports, now).await.map_err(|e| e.0)?;
+    reit_scoring::save_observations(&store, &evidence)
+        .await
+        .map_err(|e| e.0)?;
+    for id in deleted {
+        store.exec(&adapter_batch::sql::Stmt {
+            sql: "UPDATE reit_metric_observations SET quality_flags=json_array('withdrawn') WHERE method_version='tdnet-pdf-v1' AND source_document_id=?".into(),
+            params: vec![adapter_batch::sql::Val::Text(id.to_owned())],
+        }).await.map_err(|e| e.0)?;
+    }
     // ネットワークや保存の失敗で中断した場合はカーソルを進めず、次回同じ開示を取り直す。
     if cursor.is_none_or(|day| day < until) && args.from.is_none() && args.until.is_none() {
         store
@@ -132,7 +149,11 @@ pub async fn run(args: Args) -> Result<(), String> {
     Ok(())
 }
 
-fn local_reports(manifest: &Path, today: Date) -> Result<Vec<ForecastReport>, String> {
+fn local_reports(
+    manifest: &Path,
+    today: Date,
+    now: i64,
+) -> Result<(Vec<ForecastReport>, Vec<Observation>), String> {
     let bytes = std::fs::read(manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
     let entries: Vec<LocalDisclosure> =
         serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", manifest.display()))?;
@@ -141,7 +162,8 @@ fn local_reports(manifest: &Path, today: Date) -> Result<Vec<ForecastReport>, St
     }
     let dir = manifest.parent().unwrap_or_else(|| Path::new("."));
     let mut ids = HashSet::new();
-    entries
+    let mut evidence = Vec::new();
+    let reports = entries
         .into_iter()
         .map(|entry| {
             let path = dir.join(entry.pdf);
@@ -158,7 +180,9 @@ fn local_reports(manifest: &Path, today: Date) -> Result<Vec<ForecastReport>, St
             if !ids.insert((report.code.clone(), report.doc_id.clone())) {
                 return Err(format!("{}: duplicate disclosure ID", path.display()));
             }
+            evidence.extend(pdf::scoring_observations(&report, &text, now));
             Ok(report)
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok((reports, evidence))
 }

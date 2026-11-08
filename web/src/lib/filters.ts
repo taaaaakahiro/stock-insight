@@ -104,7 +104,7 @@ const GROWTH_TIPS: Partial<Record<MetricKey, string>> = {
 /** 指標の説明（あるものだけ）。InfoTip に出す */
 export function metricTip(key: MetricKey, kind: Kind): string | undefined {
   if (kind === "reit" && (key === "dividend_ttm" || key === "dividend_yield")) {
-    return "今後12か月の予想分配金を合計し、投資口価格で割ります。予想が1期分の場合は決算回数に応じて年換算し、使える予想がなければ直近の開示済み決算期末までの12か月の実績を使います。記念分配や物件売却益による一時的な分配が含まれる場合があります。利益超過分配金は別途加算しません。";
+    return "12か月分の会社予想がそろえば合計し、投資口価格で割ります。予想が不足するときは直近の開示済み決算期末までの12か月の確定実績を使います。記念分配や物件売却益による一時的な分配が含まれる場合があります。利益超過分配金は別途加算しません。";
   }
   if (kind === "stock" && (key === "dividend_ttm" || key === "dividend_yield")) {
     return "会社予想の年間配当総額（特別・記念配当を含む）÷ 株価で計算します。開示済みの最新対象年度の予想を使用します。予想が未定の場合は実績を使い、EDINETで確認できた特別・記念配当を除外します。";

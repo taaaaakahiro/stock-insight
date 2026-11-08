@@ -5,6 +5,7 @@ import { DocPreview } from "@/components/doc-preview";
 import { PortfolioToggle } from "@/components/portfolio-toggle";
 import { ReitDebt } from "@/components/reit-debt";
 import { ReitAssessment } from "@/components/reit-rag";
+import { ReitScoreCard } from "@/components/reit-score";
 import { DividendAmount, Flags } from "@/components/results-table";
 import { Button } from "@/components/ui/button";
 import {
@@ -160,6 +161,11 @@ function Detail({ d }: { d: StockDetail }) {
 
       {kind === "reit" && (
         <>
+          <ReitScoreCard
+            key={`score-${s.code}`}
+            code={s.code}
+            runId={new URLSearchParams(window.location.search).get("reit_run") ?? undefined}
+          />
           <ReitDebt key={s.code} code={s.code} />
           <ReitAssessment code={s.code} />
         </>

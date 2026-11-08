@@ -21,6 +21,11 @@ impl Split {
     }
 }
 
+/// 期末分配は権利確定時の口数。決算期末付近の権利落ちをまたぐ分割に備える。
+pub fn distribution_unit_basis(fiscal_period_end: Date) -> Date {
+    fiscal_period_end.add_days(-7)
+}
+
 /// `date` より後に権利落ちした分割の係数をすべて掛けたもの。
 /// `date` の時点の終値や、`date` に開示された1株当たりの値に掛けると、最新の株数の基準になる
 pub fn factor_after(splits: &[Split], date: Date) -> f64 {

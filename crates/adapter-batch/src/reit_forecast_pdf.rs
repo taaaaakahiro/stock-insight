@@ -385,6 +385,43 @@ pub fn forecast_report(disclosure: &Disclosure, text: &str) -> Option<ForecastRe
     })
 }
 
+/// Only pin a page if its table independently confirms the same target and amount.
+pub fn scoring_observations(
+    report: &ForecastReport,
+    text: &str,
+    now: i64,
+) -> Vec<crate::reit_scoring::Observation> {
+    let normalized = normalize(text);
+    let mut pages = Vec::new();
+    for (i, page) in normalized.split('\u{000c}').enumerate() {
+        let lines: Vec<_> = page.lines().collect();
+        let periods = financial_results(&lines).or_else(|| revisions(&lines));
+        pages.push((i as u32 + 1, periods.unwrap_or_default()));
+    }
+    let primary = report
+        .fiscal_year_end
+        .zip(report.dps)
+        .map(|(end, amount)| ForecastPeriod {
+            start: report.reit.start,
+            end,
+            amount,
+        });
+    primary
+        .into_iter()
+        .chain(report.reit.other)
+        .filter_map(|period| {
+            let mut matches = pages
+                .iter()
+                .filter(|(_, periods)| periods.contains(&period));
+            let page = matches.next()?.0;
+            if matches.next().is_some() {
+                return None;
+            }
+            crate::reit_scoring::pdf_forecast(report, period, page, now)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +453,10 @@ mod tests {
         assert_eq!(next.start, Date::parse("2026-11-01"));
         assert_eq!(next.end, Date::new(2027, 4, 30));
         assert_eq!(next.amount, 1225.0);
+        let evidence = scoring_observations(&report, &format!("{text}\u{000c}余白"), 1);
+        assert_eq!(evidence.len(), 2);
+        assert!(evidence.iter().all(|o| o.source_page == Some(1)));
+        assert!(scoring_observations(&report, &format!("{text}\u{000c}{text}"), 1).is_empty());
         assert!(forecast_report(
             &disclosure(),
             &text.replace("1,300 1,225 75", "1,301 1,225 75")

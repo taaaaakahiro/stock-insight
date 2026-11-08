@@ -21,3 +21,5 @@ pub mod reit_metrics;
 pub mod reit_rag;
 
 pub mod stock_financial_quality;
+
+pub mod reit_scoring;
