@@ -1,0 +1,50 @@
+name: production-login-monitor
+
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/login-monitor.yml
+      - scripts/login-monitor/**
+      - scripts/check_d1_capacity.py
+
+permissions:
+  contents: read
+
+jobs:
+  login:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: scripts/login-monitor
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: scripts/login-monitor/package-lock.json
+      - run: npm ci
+      - run: npx --no-install playwright install --with-deps chromium
+      - run: node check.mjs
+
+  d1-capacity:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check production D1 storage
+        run: python3 scripts/check_d1_capacity.py
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+          D1_STORAGE_ALERT_BYTES: ${{ vars.D1_STORAGE_ALERT_BYTES }}

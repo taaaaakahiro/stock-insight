@@ -7,6 +7,7 @@ poc-*.sql
 /.wrangler
 /node_modules
 /web/node_modules
+/scripts/login-monitor/node_modules
 /web/dist
 /backups
 .DS_Store

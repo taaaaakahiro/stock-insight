@@ -147,10 +147,8 @@ where
         is_admin: matches!(access, Access::Allowed { is_admin: true }),
         checked_at: now,
     };
-    repo.save(&record)
-        .await
-        .map_err(|e| AuthError::Unavailable(e.0))?;
-    // 記録の失敗でログインを止めない
+    // Clerk で確認した判定を使う。キャッシュや記録の保存失敗でログインを止めない。
+    let _ = repo.save(&record).await;
     let _ = repo
         .record_login(&LoginEvent {
             user_id: user.id,
@@ -221,9 +219,9 @@ impl<R: UserRepository> UserRepository for CachedUsers<'_, R> {
     }
 
     async fn save(&self, user: &StoredUser) -> Result<(), PortError> {
-        self.inner.save(user).await?;
+        let result = self.inner.save(user).await;
         self.remember(user);
-        Ok(())
+        result
     }
 
     async fn record_login(&self, event: &LoginEvent) -> Result<(), PortError> {
@@ -284,6 +282,7 @@ mod tests {
         users: RefCell<Vec<StoredUser>>,
         events: RefCell<Vec<LoginEvent>>,
         finds: Cell<u32>,
+        writes_fail: bool,
     }
     impl UserRepository for Repo {
         async fn find(&self, id: &str) -> Result<Option<StoredUser>, PortError> {
@@ -291,12 +290,18 @@ mod tests {
             Ok(self.users.borrow().iter().find(|u| u.id == id).cloned())
         }
         async fn save(&self, user: &StoredUser) -> Result<(), PortError> {
+            if self.writes_fail {
+                return Err(PortError("database full".into()));
+            }
             let mut us = self.users.borrow_mut();
             us.retain(|u| u.id != user.id);
             us.push(user.clone());
             Ok(())
         }
         async fn record_login(&self, event: &LoginEvent) -> Result<(), PortError> {
+            if self.writes_fail {
+                return Err(PortError("database full".into()));
+            }
             self.events.borrow_mut().push(event.clone());
             Ok(())
         }
@@ -418,6 +423,45 @@ mod tests {
         run_cached(&memo, &dir, &repo, 1000 + RECHECK_AFTER_SECS);
         assert_eq!(repo.finds.get(), 2, "1時間たったら D1 を読み直す");
         assert_eq!(dir.calls.get(), 2);
+    }
+
+    #[test]
+    fn uses_clerk_decision_when_database_is_read_only() {
+        let (allowed, denied, memo) = (
+            Directory::new(true, true),
+            Directory::new(false, true),
+            UserMemo::default(),
+        );
+        let mut repo = Repo::default();
+        // A previously allowed account is now denied. D1 cannot persist the change.
+        run(Some("ok:bob"), &allowed, &repo, 0).unwrap();
+        repo.writes_fail = true;
+        let now = RECHECK_AFTER_SECS;
+        let check = |token, directory| {
+            block_on(authenticate(
+                Some(token),
+                &RequestMeta::default(),
+                None,
+                &Verifier,
+                directory,
+                &CachedUsers::new(&repo, &memo, now),
+                &At(now),
+            ))
+        };
+        assert!(check("ok:alice", &allowed).is_ok());
+        assert_eq!(
+            check("ok:bob", &denied),
+            Err(AuthError::Forbidden(Access::DeniedNotListed))
+        );
+        assert_eq!(
+            check("ok:bob", &denied),
+            Err(AuthError::Forbidden(Access::DeniedNotListed))
+        );
+        assert_eq!(denied.calls.get(), 1, "the fresh denial stays in memory");
+        assert!(matches!(
+            check("invalid", &allowed),
+            Err(AuthError::Unauthenticated(_))
+        ));
     }
 
     #[test]
