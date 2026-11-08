@@ -20,6 +20,17 @@ fn err(e: worker::Error) -> PortError {
     PortError(format!("d1: {e}"))
 }
 
+fn cache_write_err(e: worker::Error) -> PortError {
+    let error = err(e);
+    let reason = if error.0.contains("Exceeded maximum DB size") {
+        "d1_capacity"
+    } else {
+        "d1_write_failed"
+    };
+    worker::console_error!("auth_cache_write_failed reason={reason}");
+    error
+}
+
 fn text(s: &str) -> JsValue {
     JsValue::from_str(s)
 }
@@ -79,10 +90,10 @@ impl UserRepository for D1Users {
                 int(u.checked_at),
                 int(u.checked_at),
             ])
-            .map_err(err)?
+            .map_err(cache_write_err)?
             .run()
             .await
-            .map_err(err)?;
+            .map_err(cache_write_err)?;
         Ok(())
     }
 
