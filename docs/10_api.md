@@ -12,6 +12,9 @@
 | `GET /api/stocks/:code/edinet` | 銘柄コード | `code, docs`（未取得は空配列） | 不正コード400 |
 | `GET /api/stocks/:code/reit` | 銘柄コード | REIT要約・詳細・履歴 | 不正コード400、未取得404 |
 | `GET /api/stocks/:code/reit-assessment` | 銘柄コード | REIT分析の公開版と `items` | 不正コード400、未生成・対象なしは空配列 |
+| `GET /api/reits/rankings` | `profile`, `sector`, `as_of` と任意の閾値 | J-REITの定量順位・暫定評価 | 条件不正400 |
+| `GET /api/reits/:ticker/score` | 証券コード、任意で `as_of` または `run_id` | 1銘柄の定量評価と根拠 | 不正400、対象・指定版なし404 |
+| `GET /api/reits/compare` | カンマ区切りの `tickers`、任意で `as_of` または `run_id` | 同じ公開版の最大5銘柄の定量評価 | 不正・重複・6件以上400、対象・指定版なし404 |
 | `GET /api/reit/sectors` | なし | REIT分析の公開版とセクター別 `items` | 未生成は空配列 |
 | `GET /api/status` | なし | `version, latest_run`（未実行はnull） | — |
 | `GET /api/portfolio` | なし | `codes, rows` | — |
@@ -58,7 +61,7 @@ metricは22種類:
 
 `dividend_ttm` は検索キーで、応答では採用配当を `dividend` として返す。条件間はAND、同一分類の複数選択はOR。NULLは数値範囲に一致せず、並べ替えでは末尾、同順位はコード昇順。未定義のクエリキーに独自の効果を期待しない。
 
-J-REIT の `dividend` は1口当たりの年額（予想を合計または年換算、予想が使えなければ実績12か月分）。`dividend_basis` で予想（`forecast`）と実績（`actual`）を区別する。
+J-REIT の `dividend` は1口当たりの年額（12か月分の会社予想を合計し、そろわなければ確定実績12か月分）。`dividend_basis` で予想（`forecast`）と実績（`actual`）を区別する。
 
 ## 応答の主要型
 
@@ -93,3 +96,9 @@ J-REIT の `dividend` は1口当たりの年額（予想を合計または年換
 2つの分析APIは `private, no-store`。`status` は `ready` / `not_generated`、`update_status` は `not_started` / `running` / `ready` / `failed`、`attempted_at` は更新試行時刻。公開版がある場合は `run_id, generated_at, price_date, items` を返す。`generated_at` はrunの入力基準時刻で、処理終了時刻ではない。
 
 銘柄の `items` は最大1件で `assessment, evidence, verified_metrics, document_issue` を含む。セクターの `items` は `sector, members, periods, ai_summary` を含む。期間の値は `sessions, return, direction, count, available, up_share, series, missing_codes`。欠損の騰落率はnull。定義は[REIT分析](17_reit_analysis.md)。
+
+### J-REIT定量評価
+
+`profile=total|distribution|profitability|finance|nav|valuation`（既定は `total`）。`sector` は用途コード、`min_yield` は確定12か月利回りの下限、`max_floating_ratio`・`max_ltv` は上限（各比率は小数）、`min_coverage` は充足率下限（0〜100）。閾値を指定した指標が欠損の場合は除外する。暫定評価は `rank`、`sector_rank` が `null`。日付指定時は `as_of` 以下で最新の公開版を返す。
+
+応答は `status`、`run`、`items`。未公開は `not_generated` と空配列。ランキングの `items` は順位と要約、詳細・比較の `items` は `summary` と `detail`（カテゴリ・指標内訳・数値と出典・履歴）を持つ。比較の出力順は指定順。明示的に `run_id` を指定すると該当の公開版に固定する。Clerk認証が必要。キャッシュは `private, no-store`。[評価・データ仕様](20_reit_scoring.md)。

@@ -26,3 +26,6 @@ pub mod stock_json;
 
 #[cfg(target_arch = "wasm32")]
 pub mod d1_reit_rag;
+
+#[cfg(target_arch = "wasm32")]
+pub mod d1_reit_scoring;

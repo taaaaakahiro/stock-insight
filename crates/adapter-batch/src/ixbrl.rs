@@ -389,9 +389,10 @@ pub fn non_numeric(html: &str, local_name: &str) -> Option<String> {
 /// Strict monetary facts for RAG. Unlike the legacy debt parser, missing/dash/nil
 /// values never become zero and context dates and currency units are mandatory.
 #[derive(Debug, Clone, PartialEq)]
-pub struct VerifiedInstantFact {
+pub struct VerifiedFact {
     pub name: String,
     pub context: String,
+    pub period_start: Option<domain::Date>,
     pub value: f64,
     pub raw: String,
     pub location: String,
@@ -400,36 +401,63 @@ pub struct VerifiedInstantFact {
 pub fn verified_instant_facts(
     documents: &[(String, String)],
     period_end: domain::Date,
-) -> Vec<VerifiedInstantFact> {
-    instant_facts(documents, period_end, false)
+) -> Vec<VerifiedFact> {
+    monetary_facts(documents, period_end, false, false)
 }
 
 pub fn verified_reit_instant_facts(
     documents: &[(String, String)],
     period_end: domain::Date,
-) -> Vec<VerifiedInstantFact> {
-    instant_facts(documents, period_end, true)
+) -> Vec<VerifiedFact> {
+    monetary_facts(documents, period_end, true, false)
 }
 
-fn instant_facts(
+/// Current-period, standard EDINET monetary facts for the investment corporation.
+pub(crate) fn verified_reit_duration_facts(
+    documents: &[(String, String)],
+    period_end: domain::Date,
+) -> Vec<VerifiedFact> {
+    let mut facts = monetary_facts(documents, period_end, true, true);
+    if facts
+        .iter()
+        .any(|fact| fact.context == "CurrentYearDuration_NonConsolidatedMember")
+    {
+        facts.retain(|fact| fact.context == "CurrentYearDuration_NonConsolidatedMember");
+        return facts;
+    }
+    // A bare duration context is also used for consolidated values. Only
+    // accept it when the issuer explicitly reports that it is nonconsolidated.
+    let mut declarations = documents.iter().filter_map(|(_, html)| {
+        non_numeric(html, "WhetherConsolidatedFinancialStatementsArePreparedDEI")
+    });
+    if declarations.next().as_deref() != Some("false")
+        || !declarations.all(|value| value == "false")
+    {
+        facts.clear();
+    }
+    facts
+}
+
+fn monetary_facts(
     documents: &[(String, String)],
     period_end: domain::Date,
     allow_nonconsolidated: bool,
-) -> Vec<VerifiedInstantFact> {
-    #[derive(Default)]
+    duration: bool,
+) -> Vec<VerifiedFact> {
+    #[derive(Default, PartialEq)]
     struct Context {
         id: String,
-        date: String,
+        dates: [String; 3],
         scenario: bool,
         nonconsolidated: bool,
         invalid: bool,
     }
 
-    let mut contexts: HashMap<String, (String, bool, bool)> = HashMap::new();
+    let mut contexts = HashMap::<String, Context>::new();
     let mut units: HashMap<String, String> = HashMap::new();
     for (_, html) in documents {
         let mut context: Option<Context> = None;
-        let mut instant = false;
+        let mut date_field = None;
         let mut member: Option<String> = None;
         let mut unit: Option<(String, String, bool)> = None;
         let mut measure = false;
@@ -444,8 +472,13 @@ fn instant_facts(
                                 ..Context::default()
                             });
                         }
-                        ("instant", false) => instant = true,
-                        ("instant", true) => instant = false,
+                        ("instant" | "startdate" | "enddate", _) => {
+                            date_field = (!t.closing).then_some(match local {
+                                "instant" => 0,
+                                "startdate" => 1,
+                                _ => 2,
+                            });
+                        }
                         ("scenario", false) => {
                             if let Some(c) = context.as_mut() {
                                 c.invalid |= c.scenario || !allow_nonconsolidated;
@@ -473,18 +506,18 @@ fn instant_facts(
                             }
                         }
                         ("context", true) => {
-                            if let Some(c) = context.take() {
-                                let invalid = c.invalid || (c.scenario && !c.nonconsolidated);
-                                let date = c.date;
-                                // A contradictory resource definition invalidates the context.
+                            if let Some(mut c) = context.take() {
+                                c.invalid |= c.scenario && !c.nonconsolidated;
+                                let id = std::mem::take(&mut c.id);
+                                // Conflicting resource definitions make the context unusable.
                                 contexts
-                                    .entry(c.id)
+                                    .entry(id)
                                     .and_modify(|old| {
-                                        if old.0 != date || old.2 != c.nonconsolidated || invalid {
-                                            old.1 = true;
+                                        if *old != c {
+                                            old.invalid = true;
                                         }
                                     })
-                                    .or_insert((date, invalid, c.nonconsolidated));
+                                    .or_insert(c);
                             }
                         }
                         ("unit", false) => {
@@ -518,10 +551,8 @@ fn instant_facts(
                     }
                 }
                 Ev::Text(text) => {
-                    if instant {
-                        if let Some(c) = context.as_mut() {
-                            c.date.push_str(text);
-                        }
+                    if let (Some(index), Some(c)) = (date_field, context.as_mut()) {
+                        c.dates[index].push_str(text);
                     }
                     if let Some(value) = member.as_mut() {
                         value.push_str(text);
@@ -535,6 +566,7 @@ fn instant_facts(
             }
         }
     }
+    let fiscal_end = period_end.to_string();
     let mut out = vec![];
     for (file, html) in documents {
         // name, context, scale, negative, valid
@@ -545,13 +577,8 @@ fn instant_facts(
             match event {
                 Ev::Tag(t) if t.name == "ix:nonfraction" && !t.closing => {
                     ordinal += 1;
-                    let name = t
-                        .attr("name")
-                        .unwrap_or("")
-                        .rsplit(':')
-                        .next()
-                        .unwrap_or("")
-                        .to_string();
+                    let qualified_name = t.attr("name").unwrap_or("");
+                    let name = qualified_name.rsplit(':').next().unwrap_or("").to_owned();
                     let ctx = t.attr("contextref").unwrap_or("").to_string();
                     let scale = t.attr("scale").unwrap_or("0").parse::<i32>().ok();
                     let format = t
@@ -561,8 +588,29 @@ fn instant_facts(
                         .next()
                         .unwrap_or("");
                     let currency = units.get(t.attr("unitref").unwrap_or(""));
-                    let valid = contexts.get(&ctx).is_some_and(|(date, invalid, _)| {
-                        !invalid && date.trim() == period_end.to_string()
+                    let valid = contexts.get(&ctx).is_some_and(|c| {
+                        if c.invalid {
+                            return false;
+                        }
+                        let [instant, start, end] = c.dates.each_ref().map(|s| s.trim());
+                        if duration {
+                            let valid_scope = match ctx.as_str() {
+                                "CurrentYearDuration" => !c.nonconsolidated,
+                                "CurrentYearDuration_NonConsolidatedMember" => c.nonconsolidated,
+                                _ => false,
+                            };
+                            valid_scope
+                                && qualified_name.starts_with("jppfs_cor:")
+                                && instant.is_empty()
+                                && end == fiscal_end
+                                && domain::Date::parse(start).is_some_and(|date| {
+                                    date.to_string() == start
+                                        && domain::Date::from_days(date.to_days()) == date
+                                        && date <= period_end
+                                })
+                        } else {
+                            instant == fiscal_end && start.is_empty() && end.is_empty()
+                        }
                     }) && currency.is_some_and(|u| u == "iso4217:JPY")
                         && scale.is_some_and(|v| (-6..=12).contains(&v))
                         && matches!(format, "" | "numdotdecimal" | "num-dot-decimal")
@@ -590,9 +638,15 @@ fn instant_facts(
                                 let value =
                                     number * 10f64.powi(scale) * if negative { -1.0 } else { 1.0 };
                                 if value.is_finite() {
-                                    out.push(VerifiedInstantFact {
+                                    let period_start = duration
+                                        .then(|| {
+                                            domain::Date::parse(contexts[&context].dates[1].trim())
+                                        })
+                                        .flatten();
+                                    out.push(VerifiedFact {
                                         name,
                                         context,
+                                        period_start,
                                         value,
                                         raw: raw.clone(),
                                         location: format!("{file}#nonFraction:{ordinal}"),

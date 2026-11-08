@@ -119,6 +119,9 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/api/stocks/:code/reit", reit)
         .get_async("/api/stocks/:code/reit-assessment", reit_assessment)
         .get_async("/api/reit/sectors", reit_sectors)
+        .get_async("/api/reits/rankings", reit_scores::rankings)
+        .get_async("/api/reits/compare", reit_scores::compare)
+        .get_async("/api/reits/:ticker/score", reit_scores::detail)
         .get_async("/api/status", status)
         .get_async("/api/portfolio", portfolio)
         .put_async("/api/portfolio/:code", portfolio_add)
@@ -858,3 +861,5 @@ async fn reit_rag_response(env: &Env, code: Option<&str>) -> Result<Response> {
         .set("Cache-Control", "private, no-store")?;
     Ok(response)
 }
+
+mod reit_scores;

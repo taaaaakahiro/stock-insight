@@ -301,6 +301,26 @@ pub fn annual_report(r: &Value) -> Option<AnnualReport> {
     })
 }
 
+/// 決算期と開示番号を保持し、訂正を上書きせずに保存する。
+pub fn reit_actual_observations(rows: &[Value], now: i64) -> Vec<crate::reit_scoring::Observation> {
+    rows.iter()
+        .filter(|r| is_reit_row(r))
+        .filter_map(|r| {
+            let a = annual_report(r)?;
+            crate::reit_scoring::jq_actual(
+                a.code.as_str(),
+                a.financial.dps,
+                r["CurFYSt"].as_str().and_then(Date::parse),
+                a.financial.period_end?,
+                a.disclosed?,
+                r["DiscTime"].as_str(),
+                &a.doc_id,
+                now,
+            )
+        })
+        .collect()
+}
+
 /// 開示1件の年間配当予想。本決算の行は翌事業年度の予想（Nx）、四半期・予想の修正の行は当事業年度の予想を使う。
 /// 予想の修正で配当予想が空の行（業績予想だけの修正）は、配当予想を変えていないので取らない
 pub fn forecast_report(r: &Value) -> Option<ForecastReport> {

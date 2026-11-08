@@ -7,7 +7,7 @@ use domain::analysis::{
 use domain::reit_distribution::{
     Actual, DistributionHistory, Forecast, ForecastDetails, ForecastPeriod,
 };
-use domain::split::{adjust_bars, factor_after, Split};
+use domain::split::{adjust_bars, distribution_unit_basis, factor_after, Split};
 use domain::{
     compute, AnnualFinancial, Date, Dividend, FinancialData, MarketData, PriceBar, StockCode,
 };
@@ -39,13 +39,8 @@ const ASSUMED_DISCLOSURE_LAG_DAYS: i64 = 45;
 /// 指標に使う年次財務の期数
 const MAX_YEARS: usize = 5;
 /// 期末の配当の権利落ち日は期末の数営業日前。期末の1週間前より後に権利落ちした分割は、その期の配当に入っていない
-const RECORD_DATE_MARGIN_DAYS: i64 = 7;
-
-/// 事業年度の配当が、どの日の株数の基準か。配当は期末の株主に払うので、期末の権利落ち日の株数
-/// （期末の翌日に効力が出る分割は、権利落ちが期末より前でも配当には入っていない）。
-/// 期の途中で分割すると中間配当は分割前・期末配当は分割後になるが、そこは分割後とみなす
 fn dividend_basis(fiscal_year_end: Date) -> Date {
-    fiscal_year_end.add_days(-RECORD_DATE_MARGIN_DAYS)
+    distribution_unit_basis(fiscal_year_end)
 }
 
 fn effective_date(a: &StoredAnnual) -> Option<Date> {

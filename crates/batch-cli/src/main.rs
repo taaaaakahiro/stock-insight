@@ -115,7 +115,7 @@ struct Args {
 fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     let cmd = it.next().ok_or(
-        "command required: migrate | sync-master | sync-jq | sync-reit-forecast-pdfs | sync-edinet | sync-reit | reit-probe | compute | quality-report | generate-recommendations [--force] | should-run",
+        "command required: migrate | sync-master | sync-jq | sync-reit-forecast-pdfs | sync-edinet | sync-reit | reit-probe | compute | compute-reit-scores | import-reit-observations | quality-report | generate-recommendations [--force] | should-run",
     )?;
     let mut a = Args {
         cmd,
@@ -257,6 +257,8 @@ async fn main() {
         "refill-reit-prices" => refill_reit_prices(args).await,
         "sync-edinet" => sync_edinet(args).await,
         "sync-reit" => sync_reit(args).await,
+        "compute-reit-scores" => reit_scores(args, false).await,
+        "import-reit-observations" => reit_scores(args, true).await,
         "reit-rag" if args.dry_run.is_some() || args.from_file.is_some() || args.from.is_some() || args.until.is_some() => Err("reit-rag does not support dry-run/from-file/date overrides; use the offline RAG tests".into()),
         "reit-rag" => match d1_store(http::client()) {
             Ok(store) => {
@@ -392,6 +394,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0026_reit_distribution_forecasts",
         include_str!("../../../migrations/0026_reit_distribution_forecasts.sql"),
     ),
+    (
+        "0027_reit_scoring",
+        include_str!("../../../migrations/0027_reit_scoring.sql"),
+    ),
 ];
 
 async fn sync_master(args: Args) -> Result<(), String> {
@@ -484,6 +490,7 @@ struct Pending {
     /// 株式分割・併合（AdjFactor が 1 でない日）
     splits: Vec<(String, domain::split::Split)>,
     forecasts: Vec<ForecastReport>,
+    reit_actuals: Vec<adapter_batch::reit_scoring::Observation>,
 }
 
 fn price_sync_start(cursor: Date, until: Date) -> Date {
@@ -682,6 +689,9 @@ async fn sync_jq(args: Args) -> Result<(), String> {
                 .await
                 .map_err(|e| format!("{day} financials: {}", e.0))?;
             raw::write_day(&raw_dir, "fins", day, &rows).map_err(|e| e.0)?;
+            pending
+                .reit_actuals
+                .extend(jquants::reit_actual_observations(&rows, now));
             let annuals = jquants::annual_reports(&rows);
             let periods = jquants::period_reports(&rows);
             pending.forecasts.extend(jquants::forecast_reports(&rows));
@@ -700,6 +710,9 @@ async fn sync_jq(args: Args) -> Result<(), String> {
                 .summaries_on(day)
                 .await
                 .map_err(|e| format!("{day} forecasts: {}", e.0))?;
+            pending
+                .reit_actuals
+                .extend(jquants::reit_actual_observations(&rows, now));
             let forecasts = jquants::forecast_reports(&rows);
             if !forecasts.is_empty() {
                 println!("{day}: {} dividend forecasts (refill)", forecasts.len());
@@ -842,6 +855,9 @@ async fn persist(
         .map_err(|e| e.0)?;
     store
         .save_forecasts(&pending.forecasts, now)
+        .await
+        .map_err(|e| e.0)?;
+    adapter_batch::reit_scoring::save_observations(store, &pending.reit_actuals)
         .await
         .map_err(|e| e.0)?;
     println!(
@@ -1281,6 +1297,38 @@ const REIT_CURSOR_KEY: &str = "reit_listed_until";
 const REIT_SECTORS: &str = include_str!("../../../data/reit_sectors.csv");
 
 /// REIT の有報を古い順に取り込む。同じ銘柄のもっと新しい期がすでにあれば、要約・明細は上書きされない（SQL 側で判定）
+async fn reit_scores(args: Args, import: bool) -> Result<(), String> {
+    if args.from.is_some()
+        || args.until.is_some()
+        || args.dry_run.is_some()
+        || (!import && args.from_file.is_some())
+    {
+        return Err(
+            "use compute-reit-scores or import-reit-observations --from-file <json>".into(),
+        );
+    }
+    let store = d1_store(http::client())?;
+    let now = SystemClock.now_unix();
+    if import {
+        let file = args
+            .from_file
+            .ok_or("import-reit-observations requires --from-file")?;
+        let rows: Vec<adapter_batch::reit_scoring::Observation> = serde_json::from_reader(
+            std::io::BufReader::new(std::fs::File::open(file).map_err(|e| e.to_string())?),
+        )
+        .map_err(|e| e.to_string())?;
+        adapter_batch::reit_scoring::import(&store, &rows, Date::from_unix_jst(now))
+            .await
+            .map_err(|e| e.0)?;
+        println!("import-reit-observations: {} observations", rows.len());
+        Ok(())
+    } else {
+        adapter_batch::reit_scoring::compute(&store, Date::from_unix_jst(now), now)
+            .await
+            .map_err(|e| e.0)
+    }
+}
+
 async fn sync_reit(args: Args) -> Result<(), String> {
     let started = Instant::now();
     let deadline = std::time::Duration::from_secs(args.max_minutes * 60);
@@ -1304,19 +1352,18 @@ async fn sync_reit(args: Args) -> Result<(), String> {
                 .map_err(|e| e.0)?
                 .and_then(|s| Date::parse(&s));
             match (cursor, from) {
-                (Some(c), _) => c.add_days(1),
-                (None, Some(f)) => f,
+                (_, Some(f)) => f,
+                (Some(c), None) => c.add_days(1).min(today),
                 (None, None) => today.add_days(-EDINET_BACKFILL_DAYS),
             }
         }
         (None, Some(f)) => f,
         (None, None) => return Err("--dry-run needs --from".into()),
     };
-    let days = usecase::fins::weekdays(start, until);
-    println!(
-        "sync-reit: listing {start}..{until} ({} weekdays)",
-        days.len()
-    );
+    let days = (start.to_days()..=until.to_days())
+        .map(Date::from_days)
+        .collect::<Vec<_>>();
+    println!("sync-reit: listing {start}..{until} ({} days)", days.len());
 
     // 1. 書類一覧（1日1回の呼び出し）。時間切れなら読めた日までで先に進む
     let mut docs = vec![];
@@ -1327,11 +1374,16 @@ async fn sync_reit(args: Args) -> Result<(), String> {
             println!("sync-reit: time limit while listing; listed until {listed_until}");
             break;
         }
-        docs.extend(
-            ed.list_reit_day(*day)
+        let (reports, issues) = ed
+            .list_reit_scoring_day(*day)
+            .await
+            .map_err(|e| format!("{day} list: {}", e.0))?;
+        docs.extend(reports);
+        if let Some(st) = &store {
+            adapter_batch::reit_scoring::save_disclosure_issues(st, &issues, *day, now)
                 .await
-                .map_err(|e| format!("{day} list: {}", e.0))?,
-        );
+                .map_err(|e| e.0)?;
+        }
     }
     docs.sort_by(|a, b| (a.submitted, &a.doc_id).cmp(&(b.submitted, &b.doc_id)));
     println!("sync-reit: {} REIT annual reports", docs.len());
@@ -1385,10 +1437,17 @@ async fn sync_reit(args: Args) -> Result<(), String> {
         ];
         match &store {
             Some(st) => {
-                for s in &stmts {
-                    st.exec(s)
-                        .await
-                        .map_err(|e| format!("{}: {}", r.code, e.0))?;
+                let rows = adapter_batch::reit_scoring::edinet_observations(&r, &zip, now)
+                    .map_err(|e| e.0)?;
+                adapter_batch::reit_scoring::save_observations(st, &rows)
+                    .await
+                    .map_err(|e| e.0)?;
+                if args.from.is_none() {
+                    for s in &stmts {
+                        st.exec(s)
+                            .await
+                            .map_err(|e| format!("{}: {}", r.code, e.0))?;
+                    }
                 }
             }
             None => stmts.iter().for_each(|s| {
@@ -1414,13 +1473,27 @@ async fn sync_reit(args: Args) -> Result<(), String> {
     let sector_stmts = adapter_batch::sql::reit_sector_stmts(&sectors);
     match (&store, &dry) {
         (Some(st), _) => {
+            if args.from.is_some() {
+                return if listed_until == until {
+                    println!(
+                        "sync-reit: backfilled {saved} scoring reports through {listed_until}"
+                    );
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "sync-reit backfill incomplete; processed through {listed_until}"
+                    ))
+                };
+            }
             for s in &sector_stmts {
                 st.exec(s).await.map_err(|e| e.0)?;
             }
-            backfill_reit_assets(st, &ed, &cache, started, deadline).await?;
-            st.set_state(REIT_CURSOR_KEY, &listed_until.to_string(), now)
-                .await
-                .map_err(|e| e.0)?;
+            backfill_reit_assets(st, &ed, &cache, started, deadline, now).await?;
+            if args.from.is_none() && args.until.is_none() {
+                st.set_state(REIT_CURSOR_KEY, &listed_until.to_string(), now)
+                    .await
+                    .map_err(|e| e.0)?;
+            }
         }
         (None, Some(path)) => {
             sector_stmts.iter().for_each(|s| {
@@ -1433,6 +1506,9 @@ async fn sync_reit(args: Args) -> Result<(), String> {
         (None, None) => unreachable!(),
     }
     println!("sync-reit: saved {saved} reports, listed until {listed_until}");
+    if listed_until < until && dry.is_none() {
+        return Err(format!("sync-reit incomplete; rerun after {listed_until}"));
+    }
     Ok(())
 }
 
@@ -1443,6 +1519,7 @@ async fn backfill_reit_assets(
     cache: &std::path::Path,
     started: Instant,
     deadline: std::time::Duration,
+    now: i64,
 ) -> Result<(), String> {
     use adapter_batch::edinet::REIT_ASSETS_PARSE_VERSION;
     use adapter_batch::sql::{Stmt, Val};
@@ -1450,14 +1527,16 @@ async fn backfill_reit_assets(
     let rows = store
         .query(&Stmt {
             sql:
-                "SELECT p.code, p.doc_id, p.period_end FROM reit_profile p \
+                "SELECT p.code, p.doc_id, p.period_end, p.submitted FROM reit_profile p \
               JOIN stocks s ON s.code=p.code AND s.kind='reit' \
               JOIN reit_detail d ON d.code=p.code AND d.period_end=p.period_end \
               WHERE json_extract(d.body, '$.doc_id')=p.doc_id \
-                AND json_extract(d.body, '$.assets.nav_per_unit') IS NULL \
-                AND COALESCE(json_extract(d.body, '$.assets_parse_version'), 0) < ? ORDER BY p.code"
+                AND ((json_extract(d.body, '$.assets.nav_per_unit') IS NULL \
+                      AND COALESCE(json_extract(d.body, '$.assets_parse_version'), 0) < ?) \
+                  OR NOT EXISTS(SELECT 1 FROM reit_metric_observations o WHERE o.ticker=p.code \
+                    AND o.fiscal_period_end=p.period_end AND o.revision_id=p.doc_id AND o.metric_key='period_interest' AND o.method_version=?)) ORDER BY p.code"
                     .into(),
-            params: vec![Val::Int(REIT_ASSETS_PARSE_VERSION)],
+            params: vec![Val::Int(REIT_ASSETS_PARSE_VERSION), Val::Text(adapter_batch::reit_scoring::EDINET_INCOME_METHOD.into())],
         })
         .await
         .map_err(|e| e.0)?;
@@ -1465,10 +1544,11 @@ async fn backfill_reit_assets(
         if started.elapsed() > deadline {
             break;
         }
-        let (Some(code), Some(doc_id), Some(period)) = (
+        let (Some(code), Some(doc_id), Some(period), Some(submitted)) = (
             row["code"].as_str(),
             row["doc_id"].as_str(),
             row["period_end"].as_str().and_then(Date::parse),
+            row["submitted"].as_str().and_then(Date::parse),
         ) else {
             continue;
         };
@@ -1476,10 +1556,11 @@ async fn backfill_reit_assets(
             Ok(bytes) => Ok(bytes),
             Err(_) => ed.fetch_ixbrl_zip(doc_id).await,
         };
-        let report = match zip.and_then(|bytes| {
+        let (report, zip) = match zip.and_then(|bytes| {
             adapter_batch::edinet::read_reit_report_for_period(&bytes, Some(period))
+                .map(|r| (r, bytes))
         }) {
-            Ok(report) if report.code.as_deref() == Some(code) => report,
+            Ok((report, zip)) if report.code.as_deref() == Some(code) => (report, zip),
             Ok(_) => {
                 eprintln!("sync-reit: {code} {doc_id}: NAV補完の証券コードが一致しません");
                 continue;
@@ -1492,8 +1573,23 @@ async fn backfill_reit_assets(
                 continue;
             }
         };
-        let assets = match report.assets {
-            Some(assets) => Val::Text(serde_json::to_string(&assets).map_err(|e| e.to_string())?),
+        let doc = adapter_batch::edinet::ReitDocRef {
+            doc_id: doc_id.into(),
+            edinet_code: String::new(),
+            filer_name: String::new(),
+            submitted,
+            period_end: Some(period),
+        };
+        let Some(record) = adapter_batch::edinet::reit_record(doc, report) else {
+            continue;
+        };
+        let observations = adapter_batch::reit_scoring::edinet_observations(&record, &zip, now)
+            .map_err(|e| e.0)?;
+        adapter_batch::reit_scoring::save_observations(store, &observations)
+            .await
+            .map_err(|e| e.0)?;
+        let assets = match &record.report.assets {
+            Some(assets) => Val::Text(serde_json::to_string(assets).map_err(|e| e.to_string())?),
             None => Val::Null,
         };
         store
@@ -1578,7 +1674,8 @@ fn agree(got: f64, want: f64) -> &'static str {
 async fn reit_probe(args: Args) -> Result<(), String> {
     use domain::reit::{rate_mix, LoanKind};
     let ed = EdinetClient::new(http::client(), env("EDINET_API_KEY")?, args.rate);
-    let today = Date::from_unix_jst(SystemClock.now_unix());
+    let now = SystemClock.now_unix();
+    let today = Date::from_unix_jst(now);
     let until = args.until.unwrap_or(today);
     let from = args.from.unwrap_or(until.add_days(-200));
     let dir = PathBuf::from(&args.raw_dir).join("reit");
@@ -1711,7 +1808,16 @@ async fn reit_probe(args: Args) -> Result<(), String> {
             rents,
             if r.debt.rate_notes.is_empty() { String::new() } else { format!(" 注記[{}]", r.debt.rate_notes.join(", ")) },
         );
+        let income_observations = adapter_batch::edinet::reit_record(d.clone(), r.clone())
+            .map(|record| adapter_batch::reit_scoring::edinet_observations(&record, &zip, now))
+            .transpose()
+            .map_err(|e| e.0)?
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|row| row.method_version == adapter_batch::reit_scoring::EDINET_INCOME_METHOD)
+            .collect::<Vec<_>>();
         out.push(serde_json::json!({
+            "income_observations": income_observations,
             "edinet_code": d.edinet_code,
             "code": r.code,
             "name": d.filer_name,

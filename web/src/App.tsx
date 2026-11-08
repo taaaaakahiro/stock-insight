@@ -10,11 +10,12 @@ import { stockCodeFromPath, usePath } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { PortfolioPage } from "@/pages/portfolio-page";
 import { RecommendPage } from "@/pages/recommend-page";
+import { ReitRankingPage } from "@/pages/reit-ranking-page";
 import { ScreeningPage } from "@/pages/screening-page";
 import { StockDetailPage } from "@/pages/stock-detail-page";
 import { ThemesPage } from "@/pages/themes-page";
 
-type View = "screening" | "portfolio" | "recommend" | "themes";
+type View = "screening" | "portfolio" | "recommend" | "themes" | "reits";
 
 // 画面の切り替えは URL の # に残す（? はスクリーニングの条件が使う）
 const viewFromHash = (): View => {
@@ -23,6 +24,8 @@ const viewFromHash = (): View => {
       return "portfolio";
     case "#recommend":
       return "recommend";
+    case "#reits":
+      return "reits";
     case "#themes":
       return "themes";
     default:
@@ -146,6 +149,7 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
                   ポートフォリオ
                   {codes.size > 0 && <span className="ml-1 tabular-nums">({codes.size})</span>}
                 </TabsTrigger>
+                <TabsTrigger value="reits">J-REITランキング</TabsTrigger>
                 <TabsTrigger value="recommend">AIレコメンド</TabsTrigger>
                 {me.permissions.manage_themes && (
                   <TabsTrigger value="themes">注目テーマ</TabsTrigger>
@@ -153,6 +157,7 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
               </TabsList>
             </Tabs>
             {view === "screening" && <ScreeningPage />}
+            {view === "reits" && <ReitRankingPage />}
             {view === "portfolio" && <PortfolioPage />}
             {view === "recommend" && (
               <RecommendPage canRegenerate={me.permissions.regenerate_recommendations} />

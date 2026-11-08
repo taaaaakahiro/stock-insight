@@ -39,21 +39,67 @@ pub struct DistributionHistory {
     pub forecasts: Vec<Forecast>,
 }
 
-fn year_from(day: Date, offset: i32) -> Date {
-    let date = Date::new(day.y + offset, day.m, day.d);
-    // うるう日の翌年・前年は2月末まで。
-    if Date::from_days(date.to_days()).m != day.m {
-        date.add_days(-1)
+/// Preserve fiscal month-end, including February across leap years.
+pub fn year_from(day: Date, offset: i32) -> Date {
+    let shifted = Date::new(day.y + offset, day.m, day.d);
+    let shifted = if Date::from_days(shifted.to_days()).m != day.m {
+        shifted.add_days(-1)
     } else {
-        date
+        shifted
+    };
+    if day.add_days(1).m != day.m {
+        let next = Date::new(shifted.y, shifted.m, 1).add_days(32);
+        next.add_days(-i64::from(next.d))
+    } else {
+        shifted
     }
 }
 
-fn annual_frequency(days: i64) -> Option<u32> {
-    // 通常の決算周期だけを採用する。月の日数差は許容するが、変則決算をそのまま繰り返さない。
+fn cycle(days: i64) -> Option<usize> {
     [1, 2, 3, 4, 6, 12]
         .into_iter()
-        .find(|&n| (days - 365 / i64::from(n)).abs() <= 5)
+        .find(|&n| (days - 365 / n as i64).abs() <= 5)
+}
+
+/// Periods are sorted oldest first. A year-long legacy gap does not prove an annual cycle.
+pub fn complete_actual_year(periods: &[(Date, Option<Date>)], end: Date) -> bool {
+    let Some(i) = periods.iter().rposition(|p| p.0 == end) else {
+        return false;
+    };
+    let periods = &periods[..=i];
+    let frequency = periods[i].1.map_or_else(
+        || {
+            periods
+                .windows(2)
+                .rev()
+                .take(12)
+                .filter_map(|w| cycle(w[1].0.to_days() - w[0].0.to_days()))
+                .filter(|&n| n > 1)
+                .max()
+        },
+        |start| cycle(end.to_days() - start.to_days() + 1),
+    );
+    let since = year_from(end, -1);
+    let window = &periods[periods.partition_point(|&(d, _)| d <= since)..];
+    let mut previous = since;
+    frequency == Some(window.len())
+        && window.iter().all(|&(period_end, start)| {
+            let valid = cycle(period_end.to_days() - previous.to_days()) == frequency
+                && start.is_none_or(|s| s == previous.add_days(1));
+            previous = period_end;
+            valid
+        })
+}
+
+/// Only an explicitly contiguous twelve-month forecast has an annual yield.
+pub fn complete_forecast_year(periods: &[(Date, Option<Date>)]) -> bool {
+    let Some((&(_, Some(start)), &(end, _))) = periods.first().zip(periods.last()) else {
+        return false;
+    };
+    end == year_from(start.add_days(-1), 1)
+        && periods
+            .windows(2)
+            .all(|w| w[1].1 == Some(w[0].0.add_days(1)))
 }
 
 impl DistributionHistory {
@@ -78,37 +124,21 @@ impl DistributionHistory {
                 *old = f;
             }
         }
-        let forecast = match forecasts.len() {
-            0 => None,
-            1 => {
-                let period = &forecasts.values().next()?.period;
-                let frequency = match period.start {
-                    Some(start) => annual_frequency(period.end.to_days() - start.to_days() + 1),
-                    None => {
-                        let mut ends = known_actuals.keys().rev();
-                        ends.next().zip(ends.next()).and_then(|(last, previous)| {
-                            annual_frequency(last.to_days() - previous.to_days())
-                        })
-                    }
-                };
-                frequency.map(|n| period.amount * f64::from(n))
-            }
-            _ => Some(forecasts.values().map(|f| f.period.amount).sum()),
-        };
+        let periods: Vec<_> = forecasts
+            .values()
+            .map(|f| (f.period.end, f.period.start))
+            .collect();
+        let forecast = complete_forecast_year(&periods)
+            .then(|| forecasts.values().map(|f| f.period.amount).sum());
         let (annual, forecast) = match forecast {
             Some(amount) => (amount, true),
             None => {
-                // 直近の開示済み決算期末を起点にする。次の期の発表待ちで
-                // 前年同期の実績だけが先に抜け、分配金が半減するのを防ぐ。
                 let latest = *known_actuals.last_key_value()?.0;
-                if latest <= year_from(day, -1) {
+                let actual_periods: Vec<_> = known_actuals.keys().map(|&d| (d, None)).collect();
+                if latest <= year_from(day, -1) || !complete_actual_year(&actual_periods, latest) {
                     return None;
                 }
-                let since = if latest.m == 2 && latest.add_days(1).m == 3 {
-                    Date::new(latest.y - 1, 3, 1).add_days(-1)
-                } else {
-                    year_from(latest, -1)
-                };
+                let since = year_from(latest, -1);
                 let mut actuals = known_actuals
                     .range((std::ops::Bound::Excluded(since), std::ops::Bound::Unbounded));
                 let first = (*actuals.next()?.1)?;
@@ -163,7 +193,7 @@ mod tests {
         };
         let at = |day| history.at(d(day)).map(|div| div.annual);
         assert_eq!(at("2026-04-30"), None);
-        assert_eq!(at("2026-05-01"), Some(6000.0));
+        assert_eq!(at("2026-05-01"), None);
         assert_eq!(at("2026-06-01"), Some(6200.0)); // 3500 + 2700
         assert_eq!(at("2026-09-29"), Some(6200.0));
         assert_eq!(at("2026-09-30"), Some(12699.0)); // 入れ替わった次の2期
@@ -186,14 +216,14 @@ mod tests {
             forecasts: vec![forecast("2025-03-01", "2025-08-31", "2025-04-15", 0.0)],
         };
         let at = |day| history.at(d(day)).map(|div| (div.annual, div.forecast));
-        assert_eq!(at("2025-08-30"), Some((0.0, true)));
+        assert_eq!(at("2025-08-30"), Some((6000.0, false)));
         assert_eq!(at("2025-09-30"), Some((6000.0, false)));
         assert_eq!(at("2025-10-15"), Some((6100.0, false)));
         assert_eq!(at("2026-08-31"), None);
     }
 
     #[test]
-    fn single_forecast_uses_the_issuers_cadence() {
+    fn single_forecast_requires_twelve_months_or_falls_back_to_actuals() {
         let mut f = forecast("2026-04-01", "2027-03-31", "2026-04-01", 3000.0);
         let day = d("2026-04-01");
         let mut history = DistributionHistory {
@@ -213,6 +243,7 @@ mod tests {
                 amount: Some(3100.0),
             })
             .collect();
-        assert_eq!(history.at(day).unwrap().annual, 6000.0);
+        assert_eq!(history.at(day).unwrap().annual, 6200.0);
+        assert!(!history.at(day).unwrap().forecast);
     }
 }

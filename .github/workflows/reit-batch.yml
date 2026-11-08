@@ -88,6 +88,19 @@ jobs:
         run: ./batch-cli refill-reit-prices --from "$REFILL_PRICE_DATE" --until "$REFILL_PRICE_DATE"
       - run: ./batch-cli sync-reit --rate 30 --max-minutes 100 --raw-dir raw
 
+  reit-scoring:
+    needs: [gate, build, sync-reit]
+    if: needs.gate.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: batch-cli
+      - run: chmod +x batch-cli
+      - name: Publish the complete quantitative J-REIT snapshot
+        run: ./batch-cli compute-reit-scores
+
   preflight:
     needs: gate
     if: needs.gate.outputs.run == 'true' && !contains(needs.gate.outputs.mode, 'diagnose') && vars.REIT_RAG_ENABLED == 'true'

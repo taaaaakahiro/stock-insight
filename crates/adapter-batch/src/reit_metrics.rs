@@ -1,10 +1,10 @@
 //! Verified same-period monetary observations. No AI number is silently promoted.
-use crate::ixbrl::{self, VerifiedInstantFact};
+use crate::ixbrl::{self, VerifiedFact};
 use domain::Date;
 use serde_json::{json, Value};
 
 /// Conflicting aliases or contexts are missing, not first-row-wins.
-fn unique(facts: &[VerifiedInstantFact], names: &[&str]) -> Option<(f64, Vec<Value>)> {
+fn unique(facts: &[VerifiedFact], names: &[&str]) -> Option<(f64, Vec<Value>)> {
     let found: Vec<_> = facts
         .iter()
         .filter(|f| names.contains(&f.name.as_str()))

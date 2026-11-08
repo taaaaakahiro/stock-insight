@@ -21,6 +21,8 @@
 | `financials_annual` | 銘柄コード・期末。通期財務 |
 | `financials_quarterly` | 銘柄コード・年度末・期種別。累計四半期財務 |
 | `dividend_forecasts` | 銘柄コード・開示ID。配当予想。REIT の2期目の予想・対象期の開始日・開示時刻は [0026](../migrations/0026_reit_distribution_forecasts.sql) |
+| `reit_metric_observations` | 銘柄・指標・決算期末・リビジョン。単位、出典、開示時点、品質を保存 |
+| `reit_scoring_runs`, `reit_scores`, `reit_score_components` | [0027](../migrations/0027_reit_scoring.sql)。基準日別の公開版・銘柄得点・採点根拠 |
 | `indicators_latest` | 銘柄コード。最新の計算指標 |
 | `batch_runs` | 実行ID。指標計算の日時・件数・成否 |
 | `sync_state` | キー。取得カーソル・更新時刻・実行状態 |
