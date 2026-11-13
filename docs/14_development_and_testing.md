@@ -66,12 +66,14 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 python3 scripts/test_dividend_breakdowns.py
+python3 scripts/test_stock_financial_quality.py
 python3 scripts/test_batch_guard.py
 python3 scripts/test_recommendation_tracking.py
 python3 scripts/test_reit_rag.py
 python3 scripts/test_reit_scoring.py
 python3 scripts/test_diagnose_cloudflare.py
 python3 scripts/test_reit_workflow_gate.py
+python3 scripts/test_docs_consistency.py
 cargo clippy -p api-worker -p adapter-cf --target wasm32-unknown-unknown -- -D warnings
 pnpm --dir web lint
 pnpm --dir web typecheck

@@ -55,9 +55,9 @@
 | `order` | `asc` / `desc`。既定 `desc` |
 | `page` | 1〜1000、既定1。ページサイズは50固定 |
 
-metricは22種類:
+metricは23種類:
 
-`price`, `dividend_ttm`, `dividend_yield`, `yield_percentile`, `pbr`, `per`, `payout_ratio`, `doe`, `consecutive_increases`, `operating_margin`, `sales_growth`, `op_growth`, `floating_ratio`, `unknown_ratio`, `reprice_ratio`, `reprice_max_ratio`, `avg_rate`, `occupancy`, `doe_floor`, `doe_margin`, `op_growth_q`, `op_growth_ttm`。
+`price`, `dividend_ttm`, `dividend_yield`, `yield_percentile`, `pbr`, `per`, `payout_ratio`, `doe`, `consecutive_increases`, `operating_margin`, `sales_growth`, `op_growth`, `floating_ratio`, `unknown_ratio`, `reprice_ratio`, `reprice_max_ratio`, `avg_rate`, `occupancy`, `nav_multiple`, `doe_floor`, `doe_margin`, `op_growth_q`, `op_growth_ttm`。
 
 `dividend_ttm` は検索キーで、応答では採用配当を `dividend` として返す。条件間はAND、同一分類の複数選択はOR。NULLは数値範囲に一致せず、並べ替えでは末尾、同順位はコード昇順。未定義のクエリキーに独自の効果を期待しない。
 
