@@ -61,9 +61,9 @@ EDINETの原本は種類ごとに上書きし、削除対象キーをmanifestへ
 
 ## CLI
 
-コマンド: `migrate`, `sync-master`, `sync-jq`, `sync-reit-forecast-pdfs`, `sync-edinet`, `sync-reit`, `compute`, `should-run`, `reit-probe`, `reit-dump`, `evaluate-recommendations`, `reit-rag`, `quality-report`, `generate-recommendations`。
+コマンド: `migrate`, `sync-master`, `sync-jq`, `sync-reit-forecast-pdfs`, `refill-reit-prices`, `sync-edinet`, `sync-reit`, `compute`, `compute-reit-scores`, `import-reit-observations`, `should-run`, `reit-probe`, `reit-dump`, `evaluate-recommendations`, `reit-rag`, `quality-report`, `generate-recommendations`。
 
-オプション: `--dry-run <file>`, `--from-file <file>`, `--label <英数字>`, `--force`, `--from <YYYY-MM-DD>`, `--until <YYYY-MM-DD>`, `--rate <回/分>`, `--max-minutes`, `--persist-every`, `--raw-dir`, `--limit`, `--out`, `--refill-prices`, `--refill-forecasts`, `--refetch-doe`, `--refetch-business`。各コマンドで使用するオプションはmain.rsの該当処理を参照する。すべてのオプションがすべてのコマンドに作用するわけではない。
+オプション: `--dry-run <file>`, `--from-file <file>`, `--label <英数字>`, `--force`, `--from <YYYY-MM-DD>`, `--until <YYYY-MM-DD>`, `--rate <回/分>`, `--max-minutes`, `--persist-every`, `--raw-dir`, `--limit`, `--out`, `--run-id`, `--shard`, `--shards`, `--stage`, `--refill-prices`, `--refill-forecasts`, `--refetch-doe`, `--refetch-business`。各コマンドで使用するオプションはmain.rsの該当処理を参照する。すべてのオプションがすべてのコマンドに作用するわけではない。
 
 停止する場合はGitHub側のscheduleを対象にする。アプリの管理者権限だけではバッチ・基盤を操作できない。
 

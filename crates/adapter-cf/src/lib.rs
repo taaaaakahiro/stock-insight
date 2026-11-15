@@ -18,8 +18,6 @@ pub mod d1_recommend;
 #[cfg(target_arch = "wasm32")]
 pub mod d1_themes;
 #[cfg(target_arch = "wasm32")]
-pub mod github;
-#[cfg(target_arch = "wasm32")]
 pub mod users;
 
 pub mod stock_json;

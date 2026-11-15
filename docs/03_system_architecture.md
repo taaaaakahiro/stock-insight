@@ -7,8 +7,7 @@ flowchart LR
   Worker --> Clerk
   Worker --> D1[(D1)]
   Worker --> AI[Workers AI]
-  Cron[Cron Trigger] --> Worker
-  Worker -->|workflow_dispatch| Actions[GitHub Actions / batch-cli]
+  GHA[GitHub Actions schedule] -->|workflow実行| Actions[GitHub Actions / batch-cli]
   Actions --> Sources[JPX / J-Quants / EDINET]
   Actions --> D1
   Actions --> R2[(R2 原本)]
@@ -22,8 +21,8 @@ flowchart LR
 |---|---|
 | `crates/domain` | 指標・配当方針・銘柄コード・権限・ランキングなど、外部基盤に依存しない計算 |
 | `crates/usecase` | 認証、検索、ポートフォリオ、AI生成、テーマ、日次計算の処理と入出力ポート |
-| `crates/adapter-cf` | D1、Clerk JWT検証・ユーザー取得、Workers AI、GitHub起動 |
-| `crates/api-worker` | HTTPルーティング、認可、JSON変換、キャッシュ、Cron処理 |
+| `crates/adapter-cf` | D1、Clerk JWT検証・ユーザー取得、Workers AI |
+| `crates/api-worker` | HTTPルーティング、認可、JSON変換、キャッシュ |
 | `crates/adapter-batch` | 外部データ取得・解析、D1 HTTPアクセス、REITの資料検索・AI評価 |
 | `crates/batch-cli` | GitHub Actionsで動くネイティブCLI |
 | `web` | React・TypeScript・Vite、Tailwind、RadixベースのUI、SVGグラフ |
