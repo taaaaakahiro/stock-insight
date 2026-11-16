@@ -50,7 +50,7 @@ routes・Cronなどの設定も変更する場合は、その設定の反映が�
 
 Google アカウントは入力しない。Google から戻った後のセッション確立とログイン済みの `/api/me` は、公開時に許可済みの一般ユーザーで確認する。利用者から報告があった場合は、Cloudflare の Workers Logs で `/api/me` の応答と `auth unavailable` または `unauthenticated` のログを時刻で照合する。
 
-同じワークフローの `d1-capacity` は、既存の Cloudflare 用シークレットで本番 D1 の容量を読み取り、450 MB 以上で失敗する。これは [Workers Free の1データベース上限 500 MB](https://developers.cloudflare.com/d1/platform/limits/) に達する前に気付くためのしきい値。プランが変わったらリポジトリ変数 `D1_STORAGE_ALERT_BYTES` で見直す。超過中は D1 への保存が失敗し、ポートフォリオ更新やバッチにも影響する。Workers Logs に `auth_cache_write_failed reason=d1_capacity` が出ている場合も、D1 の使用量と契約を確認する。
+D1 の容量監視（`d1-capacity` ジョブ）は廃止した。[Workers Free の1データベース上限 500 MB](https://developers.cloudflare.com/d1/platform/limits/) に近づくと D1 への保存が失敗し、ポートフォリオ更新やバッチにも影響する。Workers Logs に `auth_cache_write_failed reason=d1_capacity` が出ている場合は、D1 の使用量と契約を確認する。
 
 ## 切り戻し
 
